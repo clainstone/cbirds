@@ -238,3 +238,5 @@ void update_birds(bird_t **birds, int screen_width, int screen_height,
         free(close);
     }
 }
+
+

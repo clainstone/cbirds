@@ -53,12 +53,11 @@ static void update_direction(bird_t *bird, double next_direction)
 bird_t *init_bird(int id, int speed, int width, int heigth,
                   int screen_width, int screen_heigth)
 {
-    srand(time(NULL));
     bird_t *bird = (bird_t *) malloc(sizeof(bird_t));
 
-    bird->x = screen_width * (rand() / RAND_MAX);
-    bird->y = screen_heigth * (rand() / RAND_MAX);
-    bird->direction = 2 * M_PI * (rand() / RAND_MAX);
+    bird->x = screen_width * ((double)rand() / RAND_MAX);
+    bird->y = screen_heigth * ((double)rand() / RAND_MAX);
+    bird->direction = 2 * M_PI * ((double)rand() / RAND_MAX);
     bird->id = id;
     bird->speed = speed;
     bird->width = width;

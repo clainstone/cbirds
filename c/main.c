@@ -19,6 +19,9 @@
 #define PNG_FORMAT 100
 #define ESC "\033"
 
+#define DEF_TERMINAL_WIDTH 100
+#define DEF_TERMINAL_HEIGHT 100
+
 typedef int rotation_frame_id_t;
 
 typedef struct {
@@ -41,19 +44,20 @@ int to_degrees(double radians);
 void display_birds(drawn_bird_t ** birds_array,
                    uint8_t ** images_data_array);
 void update_rotation_frame_id(drawn_bird_t ** birds_array);
-uint8_t* base64_encode(const uint8_t * input, size_t input_length);
+uint8_t *base64_encode(const uint8_t * input, size_t input_length);
 void print_escape(int data_format, int not_last_chunk, int frame_id, int x,
-                  int y, int s, int v, int frame_gap, uint8_t *payload);
+                  int y, int s, int v, int frame_gap, uint8_t * payload);
 void run_animation();
 void delete_current_frame();
 void print_bird(drawn_bird_t ** birds_array, uint8_t ** images_data_array,
                 int not_last_chunk, int bird_no, int x, int y,
                 int frame_id);
+void clean_screen();
 
 int main(int argc, char *argv[])
 {
 
-    char *base_path = "resources/bird_";
+    char *base_path = "../resources/bird_";
     uint8_t *images_data[ROTATION_FRAME];
     drawn_bird_t *draw_birds[BIRDS_NUM];
     bird_t *birds[BIRDS_NUM];
@@ -63,12 +67,27 @@ int main(int argc, char *argv[])
     ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
     screen_width = w.ws_xpixel;
     screen_heigth = w.ws_ypixel;
+    if (!screen_heigth || !screen_width) {
+        screen_heigth = DEF_TERMINAL_HEIGHT;
+        screen_width = DEF_TERMINAL_WIDTH;
+    }
+    printf("Terminal width: %zd, height: %zd\n", screen_width,
+           screen_heigth);
+
+    for (int i = 0; i < BIRDS_NUM; i++) {
+        draw_birds[i] = (drawn_bird_t *) malloc(sizeof(drawn_bird_t));
+        birds[i] = (bird_t *) malloc(sizeof(bird_t));
+        if (i < ROTATION_FRAME)
+            images_data[i] = (uint8_t *) malloc(sizeof(uint8_t));
+    }
+
     init_birds(draw_birds, images_data, base_path, screen_width,
                screen_heigth);
 
     for (int i = 0; i < BIRDS_NUM; i++) {
         birds[i] = draw_birds[i]->bird_ref;
     }
+    clean_screen();
     run_animation();
     while (1) {
         display_birds(draw_birds, images_data);
@@ -81,7 +100,7 @@ void get_image_path(char *base_path, int rotation_frame_id)
 {
     char buf[3];
     sprintf(buf, "%d", rotation_frame_id);
-    strcat(base_path,buf);
+    strcat(base_path, buf);
     strcat(base_path, ".png");
 }
 
@@ -135,7 +154,12 @@ int to_degrees(double radians)
 void display_birds(drawn_bird_t **birds_array, uint8_t **images_data_array)
 {
     for (int i = 0; i < BIRDS_NUM; i++) {
-        print_bird(birds_array, images_data_array, 0, i,
+        int more_frame;
+        if (i < BIRDS_NUM - 1)
+            more_frame = 1;
+        else
+            more_frame = 0;
+        print_bird(birds_array, images_data_array, more_frame, i,
                    birds_array[i]->bird_ref->x,
                    birds_array[i]->bird_ref->y, frame_id);
     }
@@ -154,13 +178,13 @@ void update_rotation_frame_id(drawn_bird_t **birds_array)
 /**
  * @return an encoded base64 string which is terminated with the null character
  */
-uint8_t* base64_encode(const uint8_t *input, size_t input_length)
+uint8_t *base64_encode(const uint8_t *input, size_t input_length)
 {
 
     uint8_t char_array_3[3];
     uint8_t char_array_4[4];
     size_t output_size = ((input_length + 2) / 3) * 4 + 1;
-    uint8_t *output = (uint8_t *) malloc(output_size * sizeof(uint8_t));
+    uint8_t *output = (uint8_t *) malloc((output_size+1) * sizeof(uint8_t));
 
     int i = 0;
     int chunk_count = 0;
@@ -221,7 +245,7 @@ uint8_t* base64_encode(const uint8_t *input, size_t input_length)
         }
 
     }
-    output[output_size - 1] = '\0';
+    output[output_size] = '\0';
     return output;
 }
 
@@ -231,10 +255,14 @@ uint8_t* base64_encode(const uint8_t *input, size_t input_length)
 void print_escape(int data_format, int not_last_chunk, int frame_id, int x,
                   int y, int s, int v, int frame_gap, uint8_t *payload)
 {
+    char buf[1000];
     printf
         ("\033_Ga=f,i=1,f=%d,m=%d,c=%d,x=%d,y=%d,s=%d,v=%d,z=%d;%s\033\\",
          data_format, not_last_chunk, frame_id, x, y, s, v, frame_gap,
-         payload);
+         (char *) payload);
+    fflush(stdout);
+    scanf("ciao:", buf);
+    fprintf(stderr, "%s", buf);
 }
 
 void run_animation()
@@ -242,11 +270,14 @@ void run_animation()
     printf("\033_Ga=a,s=3;\033\\");
 }
 
-
+void clean_screen()
+{
+    system("clear");
+}
 
 void delete_current_frame()
 {
-    printf("\033_Ga=d,i=1;\\033");
+    printf("\033_Ga=d,i=1,d=a;\\033");
 }
 
 

@@ -63,6 +63,7 @@ bird_t *init_bird(int id, int speed, int width, int heigth,
     bird->speed = speed;
     bird->width = width;
     bird->heigth = heigth;
+    return bird;
 }
 
 static void init_vector(vector2d_t *vector, int x, int y)
@@ -184,7 +185,7 @@ static int distance(bird_t *b1, bird_t *b2)
 static bird_t **close_birds(bird_t *target, bird_t **birds, int num_birds,
                             int perception_radius, int *counter)
 {
-    bird_t **close_birds = (bird_t *) malloc(num_birds * sizeof(bird_t));
+    bird_t **close_birds = (bird_t **) malloc(num_birds * sizeof(bird_t));
 
     for (int i = 0; i < num_birds; i++) {
         bird_t *boid = birds[i];
@@ -192,7 +193,7 @@ static bird_t **close_birds(bird_t *target, bird_t **birds, int num_birds,
         if (boid->id != target->id) {
             if (distance(target, boid) < perception_radius) {
                 close_birds[*counter] = boid;
-                *counter++;
+                (*counter)++;
             }
         }
     }
@@ -200,8 +201,8 @@ static bird_t **close_birds(bird_t *target, bird_t **birds, int num_birds,
     if (*counter == 0) {
         free(close_birds);
         return NULL;
-    } else if (*counter <= num_birds) {
-        bird_t *resized_close_birds = (bird_t *) realloc(close_birds,
+    } else {
+        bird_t **resized_close_birds = (bird_t **) realloc(close_birds,
                                                          *counter *
                                                          sizeof(bird_t));
         if (resized_close_birds != NULL) {

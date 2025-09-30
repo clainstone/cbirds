@@ -1,5 +1,4 @@
 
-
 #ifndef BOIDS_H
 #define BOIDS_H
 #include <stdio.h>
@@ -8,12 +7,12 @@
 #include <stdlib.h>
 
 typedef struct {
-    int x, y, id, width, heigth, speed;
-    double direction;
+    int id, width, heigth, speed;
+    double direction, x, y;
 } bird_t;
 
 typedef struct {
-    int x, y;
+    double x, y;
 } vector2d_t;
 
 bird_t *init_bird(int id, int speed, int width, int heigth,
@@ -35,7 +34,7 @@ static vector2d_t *calculate_boundary_av_direction(bird_t * bird,
                                                    int screen_width,
                                                    int screen_heigth,
                                                    int turn_radius);
-static void add_vector(vector2d_t * vector, int x, int y);
+static void add_vector(vector2d_t * vector, double x, double y);
 static void prod_vector(vector2d_t * vector, double scalar);
 static int distance(bird_t * b1, bird_t * b2);
 static bird_t **close_birds(bird_t * target, bird_t ** birds,

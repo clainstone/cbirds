@@ -4,8 +4,8 @@
 #include <stdlib.h>
 #include "boids.h"
 
-const int PERCEPTION_RADIUS;
-const int TURN_RADIUS;
+const int PERCEPTION_RADIUS = 20;
+const int TURN_RADIUS = 10;
 const double SEPARATION_WEIGHT = 0.01;
 const double ALIGNMENT_WEIGHT = 0.01;
 const double COHESION_WEIGHT = 0.01;
@@ -30,7 +30,7 @@ static vector2d_t *calculate_boundary_av_direction(bird_t * bird,
                                                    int screen_width,
                                                    int screen_heigth,
                                                    int turn_radius);
-static void add_vector(vector2d_t * vector, int x, int y);
+static void add_vector(vector2d_t * vector, double x, double y);
 static void prod_vector(vector2d_t * vector, double scalar);
 static int distance(bird_t * b1, bird_t * b2);
 static bird_t **close_birds(bird_t * target, bird_t ** birds,
@@ -42,8 +42,8 @@ static bird_t **close_birds(bird_t * target, bird_t ** birds,
 static void update_direction(bird_t *bird, double next_direction)
 {
     bird->direction = next_direction;
-    bird->x += bird->speed * cos(next_direction);
-    bird->y += bird->speed * sin(next_direction);
+    bird->x += (double)bird->speed * cos(next_direction);
+    bird->y += (double)bird->speed * sin(next_direction);
 }
 
 /**
@@ -65,13 +65,13 @@ bird_t *init_bird(int id, int speed, int width, int heigth,
     return bird;
 }
 
-static void init_vector(vector2d_t *vector, int x, int y)
+static void init_vector(vector2d_t *vector, double x, double y)
 {
     vector->x = x;
     vector->y = y;
 }
 
-static void add_vector(vector2d_t *vector, int x, int y)
+static void add_vector(vector2d_t *vector, double x, double y)
 {
     vector->x += x;
     vector->y += y;
@@ -130,14 +130,14 @@ calculate_rules_direction(bird_t *target, bird_t **birds,
     int close_count = 0;
 
     for (int i = 0; i < num_birds; i++) {
-        bird_t boid = *birds[i];
+        bird_t *boid = birds[i];
 
-        if (boid.id != target->id) {
-            add_vector(&separation, target->x - boid.x,
-                       target->y - boid.y);
-            add_vector(&alignment, cos(boid.direction),
-                       sin(boid.direction));
-            add_vector(&cohesion, boid.x, boid.y);
+        if (boid->id != target->id) {
+            add_vector(&separation, target->x - boid->x,
+                       target->y - boid->y);
+            add_vector(&alignment, cos(boid->direction),
+                       sin(boid->direction));
+            add_vector(&cohesion, boid->x, boid->y);
             close_count++;
         }
     }

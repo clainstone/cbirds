@@ -81,13 +81,12 @@ int main(int argc, char *argv[])
     
     while (1) {
         system("clear");
-        //printf("\033[H");
-        printf("\033_Ga=d;\033\\");
+        //printf("\033_Ga=d;\033\\");
         update_birds(birds, screen_width, screen_heigth, BIRDS_NUM);
         update_rotation_frame_id(draw_birds);
         display_birds(draw_birds, images_data);
         fflush(stdout);
-        usleep(5000);  // 50ms = 20 FPS, non 5ms
+        usleep(30000);  // 50ms = 20 FPS, non 5ms
     }
 }
 

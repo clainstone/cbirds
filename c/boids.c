@@ -8,9 +8,10 @@
 #define Y_START_OFF 20
 
 
-const int PERCEPTION_RADIUS = 50;
-const int TURN_RADIUS = 100;
-const double SEPARATION_WEIGHT = 0.02;
+const int PERCEPTION_RADIUS = 200;
+const int TURN_RADIUS = 20;
+const int PERCEPTION_RADIUS_SQUARED = PERCEPTION_RADIUS  * PERCEPTION_RADIUS ;
+const double SEPARATION_WEIGHT = 0.01;
 const double ALIGNMENT_WEIGHT = 8;
 const double COHESION_WEIGHT = 0.02;
 const double BOUNDARY_AV_WEIGHT = 5.0;
@@ -46,8 +47,8 @@ static bird_t **close_birds(bird_t * target, bird_t ** birds,
 static void update_direction(bird_t *bird, double next_direction)
 {
     bird->direction = next_direction;
-    bird->x += (double)bird->speed * cos(next_direction);
-    bird->y += (double)bird->speed * sin(next_direction);
+    bird->x += (double) bird->speed * cos(next_direction);
+    bird->y += (double) bird->speed * sin(next_direction);
 }
 
 /**
@@ -59,9 +60,9 @@ bird_t *init_bird(int id, int speed, int width, int heigth,
 {
     bird_t *bird = (bird_t *) malloc(sizeof(bird_t));
 
-    bird->x = screen_width * ((double)rand() / RAND_MAX) + X_START_OFF;
-    bird->y = screen_heigth * ((double)rand() / RAND_MAX) + Y_START_OFF;
-    bird->direction = 2 * M_PI * ((double)rand() / RAND_MAX);
+    bird->x = screen_width * ((double) rand() / RAND_MAX) + X_START_OFF;
+    bird->y = screen_heigth * ((double) rand() / RAND_MAX) + Y_START_OFF;
+    bird->direction = 2 * M_PI * ((double) rand() / RAND_MAX);
     bird->id = id;
     bird->speed = speed;
     bird->width = width;
@@ -180,6 +181,11 @@ static int distance(bird_t *b1, bird_t *b2)
                 (b1->y - b2->y) * (b1->y - b2->y));
 }
 
+static int squared_distance(bird_t *b1, bird_t *b2){
+    return ((b1->x - b2->x) * (b1->x - b2->x) +
+                (b1->y - b2->y) * (b1->y - b2->y));
+}
+
 /**
  * @brief Returns an array of birds that are within the perception radius of the target bird.
  * The returned array is dynamically allocated and should be freed by the caller.
@@ -191,7 +197,7 @@ static bird_t **close_birds(bird_t *target, bird_t **birds, int num_birds,
     *counter = 0;
     for (int i = 0; i < num_birds; i++) {
         if (birds[i]->id != target->id) {
-            if (distance(target, birds[i]) < perception_radius) {
+            if (squared_distance(target, birds[i]) < perception_radius) {
                 (*counter)++;
             }
         }
@@ -199,7 +205,8 @@ static bird_t **close_birds(bird_t *target, bird_t **birds, int num_birds,
     if (*counter == 0) {
         return NULL;
     }
-    bird_t **close_birds_list = (bird_t **) malloc(*counter * sizeof(bird_t*));
+    bird_t **close_birds_list =
+        (bird_t **) malloc(*counter * sizeof(bird_t *));
     if (close_birds_list == NULL) {
         perror("Malloc failed in close_birds");
         *counter = 0;
@@ -211,12 +218,12 @@ static bird_t **close_birds(bird_t *target, bird_t **birds, int num_birds,
         bird_t *boid = birds[i];
 
         if (boid->id != target->id) {
-            if (distance(target, boid) < perception_radius) {
+            if (squared_distance(target, boid) < perception_radius) {
                 close_birds_list[current_index++] = boid;
             }
         }
     }
-    
+
     return close_birds_list;
 }
 
@@ -226,10 +233,10 @@ void update_birds(bird_t **birds, int screen_width, int screen_height,
     for (int i = 0; i < num_birds; i++) {
         int counter = 0;
         bird_t **close = close_birds(birds[i], birds, num_birds,
-                                     PERCEPTION_RADIUS,
+                                     PERCEPTION_RADIUS_SQUARED,
                                      &counter);
 
-        if (close!=NULL&&counter > 0) {
+        if (close != NULL && counter > 0) {
             double direction = calculate_rules_direction(birds[i], close,
                                                          counter,
                                                          SEPARATION_WEIGHT,
@@ -242,8 +249,6 @@ void update_birds(bird_t **birds, int screen_width, int screen_height,
             update_direction(birds[i], direction);
             free(close);
         }
-        
+
     }
 }
-
-

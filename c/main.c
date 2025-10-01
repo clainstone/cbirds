@@ -10,7 +10,7 @@
 
 #define ROTATION_FRAME 360
 #define FRAME_ANGLE 1
-#define BIRDS_NUM 100
+#define BIRDS_NUM 200
 #define OPTIMAL_CHUNK_SIZE 4096
 #define SPEED 100
 #define BIRD_WIDTH 20
@@ -24,6 +24,7 @@
 
 typedef int rotation_frame_id_t;
 
+
 typedef struct {
     rotation_frame_id_t prev_id;
     rotation_frame_id_t curr_id;
@@ -32,26 +33,33 @@ typedef struct {
 
 static const char base64_chars[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static int max_payload_len = -1;
+static char *control_string =
+    "\033[%d;%dH\033_Ga=T,f=100,q=1,I=%d,X=%d,Y=%d;";
+static char *end = "\033\\";
+
 void get_image_path(char *base_path, int rotation_frame_id);
-int init_rotation_frames(uint8_t ** images_data_array,
-                         drawn_bird_t ** birds_array, char *base_path);
+int init_rotation_frames(uint8_t ** images_data_array, char *base_path);
 void init_birds(drawn_bird_t ** birds_array, uint8_t ** images_data_array,
                 char *base_path, int screen_width, int screen_heigth);
 int to_degrees(double radians);
 void display_birds(drawn_bird_t ** birds_array,
-                   uint8_t ** images_data_array);
+                   uint8_t ** images_data_array, char *output_buf);
 void update_rotation_frame_id(drawn_bird_t ** birds_array);
 uint8_t *base64_encode(const uint8_t * input, size_t input_length);
 void print_bird(drawn_bird_t ** birds_array, uint8_t ** images_data_array,
-                int bird_no);
+                int bird_no, char *output_buf);
 void clean_screen();
 void print_unchanged_direction(int id, int x, int y);
 void print_changed_direction(int id, int x, int y, uint8_t * payload);
 
-int main(int argc, char *argv[])
+int main()
 {
 
     char *base_path = "../resources/bird_";
+    char *output_buf;
+    int output_buf_len;
     uint8_t *images_data[ROTATION_FRAME];
     drawn_bird_t *draw_birds[BIRDS_NUM];
     bird_t *birds[BIRDS_NUM];
@@ -65,9 +73,6 @@ int main(int argc, char *argv[])
         screen_heigth = DEF_TERMINAL_HEIGHT;
         screen_width = DEF_TERMINAL_WIDTH;
     }
-    printf("Terminal width: %zd, height: %zd\n", screen_width,
-           screen_heigth);
-
     for (int i = 0; i < BIRDS_NUM; i++) {
         draw_birds[i] = (drawn_bird_t *) malloc(sizeof(drawn_bird_t));
     }
@@ -78,15 +83,19 @@ int main(int argc, char *argv[])
     for (int i = 0; i < BIRDS_NUM; i++) {
         birds[i] = draw_birds[i]->bird_ref;
     }
+    output_buf_len =
+        strlen(control_string) + max_payload_len + strlen(end);
+    output_buf =
+        (char *) malloc(sizeof(char) * output_buf_len * BIRDS_NUM + 1);
+    output_buf[0] = '\0';
 
     while (1) {
         system("clear");
-        //printf("\033_Ga=d;\033\\");
         update_birds(birds, screen_width, screen_heigth, BIRDS_NUM);
         update_rotation_frame_id(draw_birds);
-        display_birds(draw_birds, images_data);
-        fflush(stdout);
-        usleep(30000);          
+        display_birds(draw_birds, images_data, output_buf);
+        output_buf[0] = '\0';
+        usleep(30000);
     }
 }
 
@@ -98,8 +107,7 @@ void get_image_path(char *base_path, int rotation_frame_id)
     strcat(base_path, ".png");
 }
 
-int init_rotation_frames(uint8_t **images_data_array,
-                         drawn_bird_t **birds_array, char *base_path)
+int init_rotation_frames(uint8_t **images_data_array, char *base_path)
 {
     for (int i = 0; i < ROTATION_FRAME; i++) {
         char base_path_copy[strlen(base_path) + 20];
@@ -136,7 +144,7 @@ void init_birds(drawn_bird_t **birds_array, uint8_t **images_data_array,
             to_degrees(birds_array[i]->bird_ref->direction) / FRAME_ANGLE;
         birds_array[i]->prev_id = 0;
     }
-    init_rotation_frames(images_data_array, birds_array, base_path);
+    init_rotation_frames(images_data_array, base_path);
 }
 
 int to_degrees(double radians)
@@ -145,11 +153,14 @@ int to_degrees(double radians)
     return (deg % 360 + 360) % 360;
 }
 
-void display_birds(drawn_bird_t **birds_array, uint8_t **images_data_array)
+void display_birds(drawn_bird_t **birds_array, uint8_t **images_data_array,
+                   char *output_buf)
 {
     for (int i = 0; i < BIRDS_NUM; i++) {
-        print_bird(birds_array, images_data_array, i);
+        print_bird(birds_array, images_data_array, i, output_buf);
     }
+    printf("%s", output_buf);
+    fflush(stdout);
 }
 
 void update_rotation_frame_id(drawn_bird_t **birds_array)
@@ -232,19 +243,27 @@ uint8_t *base64_encode(const uint8_t *input, size_t input_length)
 
     }
     output[output_size] = '\0';
+
+    if (max_payload_len == -1
+        || (int) strlen((char *) output) > max_payload_len)
+        max_payload_len = (int) strlen((char *) output) + 1;
+
     return output;
 }
 
 
 void print_bird(drawn_bird_t **birds_array, uint8_t **images_data_array,
-                int bird_no)
+                int bird_no, char *output_buf)
 {
+    char buf[strlen(control_string) + max_payload_len + strlen(end) + 1];
+    buf[strlen(control_string) + max_payload_len + strlen(end)] = '\0';
     drawn_bird_t *bird = birds_array[bird_no];
     uint8_t *payload = images_data_array[bird->curr_id];
     int col = bird->bird_ref->x / 10;
     int row = bird->bird_ref->y / 20;
     int offset_x = (int) bird->bird_ref->x % 10;
     int offset_y = (int) bird->bird_ref->y % 20;
-    printf("\033[%d;%dH\033_Ga=T,f=100,q=1,I=%d,X=%d,Y=%d;%s\033\\",
-           row, col, bird_no, offset_x, offset_y, payload);
+    sprintf(buf, "\033[%d;%dH\033_Ga=T,f=100,q=1,I=%d,X=%d,Y=%d;%s\033\\",
+            row, col, bird_no, offset_x, offset_y, payload);
+    strcat(output_buf, buf);
 }

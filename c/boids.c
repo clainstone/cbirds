@@ -11,10 +11,10 @@
 const int PERCEPTION_RADIUS = 130;
 const int TURN_RADIUS = 10;
 const int PERCEPTION_RADIUS_SQUARED = PERCEPTION_RADIUS  * PERCEPTION_RADIUS ;
-const double SEPARATION_WEIGHT = 0.02;
+const double SEPARATION_WEIGHT = 0.03;
 const double ALIGNMENT_WEIGHT = 8;
-const double COHESION_WEIGHT = 0.03;
-const double BOUNDARY_AV_WEIGHT = 30.0;
+const double COHESION_WEIGHT = 0.2;
+const double BOUNDARY_AV_WEIGHT = 60.0;
 
 bird_t *init_bird(int id, int speed, int width, int heigth,
                   int screen_width, int screen_heigth);

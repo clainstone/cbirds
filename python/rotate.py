@@ -1,8 +1,8 @@
 import cv2
 import imutils
 path = "resources/matrix.png" 
-offs = 5
-max_images = 72
+offs = 1
+max_images = 360
 img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
 print(img.shape)
 

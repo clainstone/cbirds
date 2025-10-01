@@ -1,8 +1,8 @@
 import cv2
 import imutils
 path = "resources/matrix.png" 
-offs = 1
-max_images = 360
+offs = 2
+max_images = 180
 img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
 print(img.shape)
 
@@ -11,7 +11,7 @@ if img is None:
 else:
     for i in range(max_images):
         angle = i * offs
-        rotated = imutils.rotate(img, angle)
+        rotated = imutils.rotate(img, -angle)
         resized = cv2.resize(rotated, (20, 20))
         print(resized.shape)
         current_file_name = f"resources/bird_{i}.png" 

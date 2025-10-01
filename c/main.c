@@ -8,11 +8,11 @@
 #include <stdio.h>
 #include <sys/ioctl.h>
 
-#define ROTATION_FRAME 360
-#define FRAME_ANGLE 1
+#define ROTATION_FRAME 180
+#define FRAME_ANGLE 2
 #define BIRDS_NUM 200
 #define OPTIMAL_CHUNK_SIZE 4096
-#define SPEED 100
+#define SPEED 70
 #define BIRD_WIDTH 20
 #define BIRD_HEIGTH 20
 #define FRAME_GAP 30
@@ -149,7 +149,7 @@ void init_birds(drawn_bird_t **birds_array, uint8_t **images_data_array,
 
 int to_degrees(double radians)
 {
-    int deg = (int) (radians * (180.0 / M_PI)) + 90;
+    int deg = (int) (radians * (180.0 / M_PI));
     return (deg % 360 + 360) % 360;
 }
 
@@ -263,7 +263,7 @@ void print_bird(drawn_bird_t **birds_array, uint8_t **images_data_array,
     int row = bird->bird_ref->y / 20;
     int offset_x = (int) bird->bird_ref->x % 10;
     int offset_y = (int) bird->bird_ref->y % 20;
-    sprintf(buf, "\033[%d;%dH\033_Ga=T,f=100,q=1,I=%d,X=%d,Y=%d;%s\033\\",
+    sprintf(buf,"\033[%d;%dH\033_Ga=T,f=100,q=1,I=%d,X=%d,Y=%d;%s\033\\",
             row, col, bird_no, offset_x, offset_y, payload);
     strcat(output_buf, buf);
 }

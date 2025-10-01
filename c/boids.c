@@ -8,13 +8,13 @@
 #define Y_START_OFF 20
 
 
-const int PERCEPTION_RADIUS = 200;
-const int TURN_RADIUS = 20;
+const int PERCEPTION_RADIUS = 130;
+const int TURN_RADIUS = 10;
 const int PERCEPTION_RADIUS_SQUARED = PERCEPTION_RADIUS  * PERCEPTION_RADIUS ;
-const double SEPARATION_WEIGHT = 0.01;
+const double SEPARATION_WEIGHT = 0.02;
 const double ALIGNMENT_WEIGHT = 8;
-const double COHESION_WEIGHT = 0.02;
-const double BOUNDARY_AV_WEIGHT = 5.0;
+const double COHESION_WEIGHT = 0.03;
+const double BOUNDARY_AV_WEIGHT = 30.0;
 
 bird_t *init_bird(int id, int speed, int width, int heigth,
                   int screen_width, int screen_heigth);
@@ -41,6 +41,7 @@ static int distance(bird_t * b1, bird_t * b2);
 static bird_t **close_birds(bird_t * target, bird_t ** birds,
                             int num_birds, int perception_radius,
                             int *counter);
+static double my_atan2(double y, double x);
 
 
 
@@ -168,7 +169,7 @@ calculate_rules_direction(bird_t *target, bird_t **birds,
             separation.y + alignment.y + cohesion.y + boundary_av_ptr->y;
         free(boundary_av_ptr);
 
-        return atan2(result_y, result_x);
+        return my_atan2(result_y, result_x);
     } else {
         free(boundary_av_ptr);
         return target->direction;
@@ -251,4 +252,12 @@ void update_birds(bird_t **birds, int screen_width, int screen_height,
         }
 
     }
+}
+
+double my_atan2(double y, double x){
+    double angle = atan2(y, x);
+    if (angle < 0.0) {
+        angle += 2.0 * M_PI;
+    }
+    return angle;
 }

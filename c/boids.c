@@ -4,12 +4,12 @@
 #include <stdlib.h>
 #include "boids.h"
 
-const int PERCEPTION_RADIUS = 20;
-const int TURN_RADIUS = 10;
-const double SEPARATION_WEIGHT = 0.01;
-const double ALIGNMENT_WEIGHT = 0.01;
-const double COHESION_WEIGHT = 0.01;
-const double BOUNDARY_AV_WEIGHT = 5.0;
+const int PERCEPTION_RADIUS = 120;
+const int TURN_RADIUS = 50;
+const double SEPARATION_WEIGHT = 0.02;
+const double ALIGNMENT_WEIGHT = 3;
+const double COHESION_WEIGHT = 0.02;
+const double BOUNDARY_AV_WEIGHT = 30.0;
 
 bird_t *init_bird(int id, int speed, int width, int heigth,
                   int screen_width, int screen_heigth);
@@ -184,34 +184,36 @@ static int distance(bird_t *b1, bird_t *b2)
 static bird_t **close_birds(bird_t *target, bird_t **birds, int num_birds,
                             int perception_radius, int *counter)
 {
-    bird_t **close_birds = (bird_t **) malloc(num_birds * sizeof(bird_t));
+    *counter = 0;
+    for (int i = 0; i < num_birds; i++) {
+        if (birds[i]->id != target->id) {
+            if (distance(target, birds[i]) < perception_radius) {
+                (*counter)++;
+            }
+        }
+    }
+    if (*counter == 0) {
+        return NULL;
+    }
+    bird_t **close_birds_list = (bird_t **) malloc(*counter * sizeof(bird_t*));
+    if (close_birds_list == NULL) {
+        perror("Malloc failed in close_birds");
+        *counter = 0;
+        return NULL;
+    }
 
+    int current_index = 0;
     for (int i = 0; i < num_birds; i++) {
         bird_t *boid = birds[i];
 
         if (boid->id != target->id) {
             if (distance(target, boid) < perception_radius) {
-                close_birds[*counter] = boid;
-                (*counter)++;
+                close_birds_list[current_index++] = boid;
             }
         }
     }
-
-    if (*counter == 0) {
-        free(close_birds);
-        return NULL;
-    } else {
-        bird_t **resized_close_birds = (bird_t **) realloc(close_birds,
-                                                         *counter *
-                                                         sizeof(bird_t));
-        if (resized_close_birds != NULL) {
-            close_birds = resized_close_birds;
-            return close_birds;
-        } else {
-            perror("Realloc failed");
-            return NULL;
-        }
-    }
+    
+    return close_birds_list;
 }
 
 void update_birds(bird_t **birds, int screen_width, int screen_height,
@@ -223,7 +225,7 @@ void update_birds(bird_t **birds, int screen_width, int screen_height,
                                      PERCEPTION_RADIUS,
                                      &counter);
 
-        if (counter > 0) {
+        if (close!=NULL&&counter > 0) {
             double direction = calculate_rules_direction(birds[i], close,
                                                          counter,
                                                          SEPARATION_WEIGHT,
@@ -234,8 +236,9 @@ void update_birds(bird_t **birds, int screen_width, int screen_height,
                                                          screen_height,
                                                          TURN_RADIUS);
             update_direction(birds[i], direction);
+            free(close);
         }
-        free(close);
+        
     }
 }
 

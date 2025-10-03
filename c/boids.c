@@ -10,13 +10,16 @@
 
 const int PERCEPTION_RADIUS = 130;
 const int TURN_RADIUS = 10;
+const int SPEED = 40;
 const int PERCEPTION_RADIUS_SQUARED = PERCEPTION_RADIUS  * PERCEPTION_RADIUS ;
 const double SEPARATION_WEIGHT = 0.03;
 const double ALIGNMENT_WEIGHT = 8;
 const double COHESION_WEIGHT = 0.2;
 const double BOUNDARY_AV_WEIGHT = 60.0;
 
-bird_t *init_bird(int id, int speed, int width, int heigth,
+
+
+bird_t *init_bird(int id, int width, int heigth,
                   int screen_width, int screen_heigth);
 
 void update_birds(bird_t ** birds, int screen_width, int screen_height,
@@ -56,7 +59,7 @@ static void update_direction(bird_t *bird, double next_direction)
  * @brief Initializes a bird with random position and direction.
  * The returned bird is dynamically allocated and should be freed by the caller.
  */
-bird_t *init_bird(int id, int speed, int width, int heigth,
+bird_t *init_bird(int id, int width, int heigth,
                   int screen_width, int screen_heigth)
 {
     bird_t *bird = (bird_t *) malloc(sizeof(bird_t));
@@ -65,7 +68,7 @@ bird_t *init_bird(int id, int speed, int width, int heigth,
     bird->y = screen_heigth * ((double) rand() / RAND_MAX) + Y_START_OFF;
     bird->direction = 2 * M_PI * ((double) rand() / RAND_MAX);
     bird->id = id;
-    bird->speed = speed;
+    bird->speed = SPEED;
     bird->width = width;
     bird->heigth = heigth;
     return bird;

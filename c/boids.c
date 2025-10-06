@@ -9,7 +9,7 @@
 
 const int PERCEPTION_RADIUS = 130;
 const int TURN_RADIUS = 10;
-const int SPEED = 40;
+const int SPEED = 35;
 const int PERCEPTION_RADIUS_SQUARED = PERCEPTION_RADIUS * PERCEPTION_RADIUS;
 const double SEPARATION_WEIGHT = 0.03;
 const double ALIGNMENT_WEIGHT = 8;
@@ -227,8 +227,8 @@ void update_birds_index(bird_t **birds_copy_to_read, bird_t **birds_to_write, in
 	for (int i = start_index; i < end_index; i++) {
 		int counter = 0;
 		bird_t *close[birds_num];
-		close_birds(close, birds_copy_to_read[i], birds_copy_to_read,
-			    end_index - start_index, PERCEPTION_RADIUS_SQUARED, &counter);
+		close_birds(close, birds_copy_to_read[i], birds_copy_to_read, birds_num,
+			    PERCEPTION_RADIUS_SQUARED, &counter);
 		if (counter > 0) {
 			double direction = calculate_rules_direction(
 				birds_copy_to_read[i], close, counter, SEPARATION_WEIGHT,

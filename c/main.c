@@ -15,16 +15,16 @@
 #define _XOPEN_SOURCE 600
 #define ROTATION_FRAME 180
 #define FRAME_ANGLE (360 / ROTATION_FRAME)
-#define BIRDS_NUM 1000
+#define BIRDS_NUM 150
 #define BIRD_WIDTH 20
 #define BIRD_HEIGTH 20
 #define PNG_FORMAT 100
-#define FRAME_RATE 20
+#define FRAME_RATE 80
 #define PERIOD_MULTIPL 1000000
 #define DEF_TERMINAL_WIDTH 100
 #define DEF_TERMINAL_HEIGHT 100
-#define THREAD_DEF_NUM 5
-#define POLLING_WAIT_MILLIS 1
+#define THREAD_DEF_NUM 1
+#define POLLING_WAIT_MILLIS 2
 
 typedef int rotation_frame_id_t;
 typedef struct {
@@ -72,7 +72,7 @@ char *base_path = "../resources/bird_";
 ssize_t screen_width;
 ssize_t screen_heigth;
 
-char *new_output_buf[BIRDS_NUM];
+char new_output_buf[BIRDS_NUM * 500];
 
 void get_image_path(char *base_path, int rotation_frame_id);
 int init_rotation_frames(uint8_t **images_data_array, char *base_path);
@@ -126,35 +126,18 @@ int main()
 	init(&output_buf, images_data, draw_birds, birds, birds_copy, &output_buf_len);
 	init_threads(output_buf, images_data, draw_birds, birds, birds_copy, &atomic_integer,
 		     task_queue_head, task_list, &queue_mutex, &cond);
-
 	while (1) {
 		while (!atomic_is_equal(atomic_integer, THREAD_DEF_NUM)) {
 			usleep(1000 * POLLING_WAIT_MILLIS);
 		}
-		printf("\033[2J\033[H");
-
-		char *write_ptr = output_buf;
-		size_t remaining = output_buf_len * BIRDS_NUM;
-		for (int i = 0; i < BIRDS_NUM; i++) {
-			size_t len = strlen(new_output_buf[i]);
-			if (len > 0 && len < remaining) {
-				memcpy(write_ptr, new_output_buf[i], len);
-				write_ptr += len;
-				remaining -= len;
-				new_output_buf[i][0] = '\0';
-			}
-		}
-
-		fwrite(output_buf, 1, write_ptr - output_buf, stdout);
+		system("clear");
+		write(STDOUT_FILENO, new_output_buf, strlen(new_output_buf));
 		fflush(stdout);
-
+		new_output_buf[0] = '\0';
 		copy(birds, birds_copy, BIRDS_NUM);
-		atomic_reset(atomic_integer);
-		output_buf[0] = '\0';
+		atomic_integer->value = 0;
 		*task_queue_head = *task_list;
-		for (int i = 0; i < THREAD_DEF_NUM; i++)
-			pthread_cond_signal(cond);
-		pthread_cond_signal(cond);
+		pthread_cond_broadcast(cond);
 		usleep(1000000 / FRAME_RATE);
 	}
 }
@@ -300,9 +283,12 @@ void print_bird_mutex(drawn_bird_t **birds_array, uint8_t **images_data_array, i
 	int row = bird->bird_ref->y / 20;
 	int offset_x = (int)bird->bird_ref->x % 10;
 	int offset_y = (int)bird->bird_ref->y % 20;
-	sprintf(buf, "\033[%d;%dH\033_Ga=T,f=100,q=1,I=%d,X=%d,Y=%d;%s\033\\", row, col, bird_no,
-		offset_x, offset_y, payload);
-	strcat(new_output_buf[bird_no], buf);
+	int len = sprintf(buf, "\033[%d;%dH\033_Ga=T,f=100,q=1,I=%d,X=%d,Y=%d;%s\033\\", row, col,
+			  bird_no, offset_x, offset_y, payload);
+
+	pthread_mutex_lock(mutex);
+	strcat(new_output_buf, buf);
+	pthread_mutex_unlock(mutex);
 }
 
 // Returns the number of active logic processors of this system
@@ -495,8 +481,7 @@ void init(char **output_buf, uint8_t **images_data, drawn_bird_t **draw_birds, b
 
 	for (int i = 0; i < BIRDS_NUM; i++) {
 		birds[i] = draw_birds[i]->bird_ref;
-		new_output_buf[i] = (char *)malloc(sizeof(char) * (*output_buf_len) + 1);
-		new_output_buf[i][0] = '\0';
+		new_output_buf[BIRDS_NUM * 500 - 1] = '\0';
 	}
 }
 

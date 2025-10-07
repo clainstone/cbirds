@@ -1,10 +1,9 @@
 import cv2
 import imutils
 path = "resources/matrix.png" 
-offs = 2
-max_images = 180
+offs = 1
+max_images = 360
 img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
-print(img.shape)
 
 if img is None:
     print(f"Error: Could not read image from path: {path}")

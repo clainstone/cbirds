@@ -13,18 +13,18 @@
 #include <unistd.h>
 
 #define _XOPEN_SOURCE 600
-#define ROTATION_FRAME 180
+#define ROTATION_FRAME 360
 #define FRAME_ANGLE (360 / ROTATION_FRAME)
-#define BIRDS_NUM 150
+#define BIRDS_NUM 100
 #define BIRD_WIDTH 20
 #define BIRD_HEIGTH 20
 #define PNG_FORMAT 100
-#define FRAME_RATE 80
+#define FRAME_RATE 40
 #define PERIOD_MULTIPL 1000000
 #define DEF_TERMINAL_WIDTH 100
 #define DEF_TERMINAL_HEIGHT 100
 #define THREAD_DEF_NUM 1
-#define POLLING_WAIT_MILLIS 2
+#define POLLING_WAIT_MILLIS 1
 
 typedef int rotation_frame_id_t;
 typedef struct {
@@ -108,7 +108,7 @@ void init_threads(char *output_buf, uint8_t **images_data, drawn_bird_t **draw_b
 void init(char **output_buf, uint8_t **images_data, drawn_bird_t **draw_birds, bird_t **birds,
 	  bird_t **birds_copy, int *output_buf_len);
 void atomic_reset(atomic_integer_t *atomic_integer);
-
+void send_payload_data(uint8_t **payload_data);
 int main()
 {
 	get_num_processors();
@@ -126,12 +126,15 @@ int main()
 	init(&output_buf, images_data, draw_birds, birds, birds_copy, &output_buf_len);
 	init_threads(output_buf, images_data, draw_birds, birds, birds_copy, &atomic_integer,
 		     task_queue_head, task_list, &queue_mutex, &cond);
+	send_payload_data(images_data);
 	while (1) {
 		while (!atomic_is_equal(atomic_integer, THREAD_DEF_NUM)) {
 			usleep(1000 * POLLING_WAIT_MILLIS);
 		}
-		system("clear");
-		write(STDOUT_FILENO, new_output_buf, strlen(new_output_buf));
+		printf("\033_Gs=1;\033\\");
+		printf("%s", new_output_buf);
+		printf("\033_Gs=2;\033\\");
+
 		fflush(stdout);
 		new_output_buf[0] = '\0';
 		copy(birds, birds_copy, BIRDS_NUM);
@@ -139,6 +142,7 @@ int main()
 		*task_queue_head = *task_list;
 		pthread_cond_broadcast(cond);
 		usleep(1000000 / FRAME_RATE);
+		clean_screen();
 	}
 }
 
@@ -184,7 +188,7 @@ void init_birds(drawn_bird_t **birds_array, uint8_t **images_data_array, char *b
 			init_bird(i, BIRD_WIDTH, BIRD_HEIGTH, screen_width, screen_heigth);
 		birds_array[i]->curr_id =
 			to_degrees(birds_array[i]->bird_ref->direction) / FRAME_ANGLE;
-		birds_array[i]->prev_id = 0;
+		birds_array[i]->prev_id = birds_array[i]->curr_id;
 	}
 	init_rotation_frames(images_data_array, base_path);
 }
@@ -275,20 +279,32 @@ uint8_t *base64_encode(const uint8_t *input, size_t input_length)
 void print_bird_mutex(drawn_bird_t **birds_array, uint8_t **images_data_array, int bird_no,
 		      char *output_buf, pthread_mutex_t *mutex)
 {
-	char buf[strlen(control_string) + max_payload_len + strlen(end) + 1];
-	buf[strlen(control_string) + max_payload_len + strlen(end)] = '\0';
+	char buf[strlen(control_string) + strlen(end) + 1];
+	char buf1[100];
+	buf[strlen(control_string) + strlen(end)] = '\0';
 	drawn_bird_t *bird = birds_array[bird_no];
-	uint8_t *payload = images_data_array[bird->curr_id];
 	int col = bird->bird_ref->x / 10;
 	int row = bird->bird_ref->y / 20;
 	int offset_x = (int)bird->bird_ref->x % 10;
 	int offset_y = (int)bird->bird_ref->y % 20;
-	int len = sprintf(buf, "\033[%d;%dH\033_Ga=T,f=100,q=1,I=%d,X=%d,Y=%d;%s\033\\", row, col,
-			  bird_no, offset_x, offset_y, payload);
-
+	rotation_frame_id_t id = bird->curr_id;
+	rotation_frame_id_t prev_id = bird->prev_id;
+	// sprintf(buf1, "\033_Ga=d,i=%d,p=%d;\033\\", prev_id, bird_no);
+	sprintf(buf, "\033[%d;%dH\033_Ga=p,q=1,i=%d,p=%d,X=%d,Y=%d;\033\\", row, col, id, bird_no,
+		offset_x, offset_y);
 	pthread_mutex_lock(mutex);
+	// strcat(new_output_buf, buf1);
 	strcat(new_output_buf, buf);
 	pthread_mutex_unlock(mutex);
+}
+
+void send_payload_data(uint8_t **images_data)
+{
+	for (int i = 0; i < ROTATION_FRAME; i++) {
+		printf("\033_Ga=T,t=d,f=100,q=2,i=%d;%s\033\\", i, (char *)images_data[i]);
+		fflush(stdout);
+	}
+	system("clear");
 }
 
 // Returns the number of active logic processors of this system
@@ -485,3 +501,7 @@ void init(char **output_buf, uint8_t **images_data, drawn_bird_t **draw_birds, b
 	}
 }
 
+void clean_screen()
+{
+	system("clear");
+}

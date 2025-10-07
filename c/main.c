@@ -15,15 +15,15 @@
 #define _XOPEN_SOURCE 600
 #define ROTATION_FRAME 360
 #define FRAME_ANGLE (360 / ROTATION_FRAME)
-#define BIRDS_NUM 200
+#define BIRDS_NUM 1600
 #define BIRD_WIDTH 20
 #define BIRD_HEIGTH 20
 #define PNG_FORMAT 100
-#define FRAME_RATE 30
+#define FRAME_RATE 144
 #define PERIOD_MULTIPL 1000000
 #define DEF_TERMINAL_WIDTH 100
 #define DEF_TERMINAL_HEIGHT 100
-#define THREAD_DEF_NUM 4
+#define THREAD_DEF_NUM 8
 #define POLLING_WAIT_MILLIS 5
 
 typedef int rotation_frame_id_t;
@@ -73,6 +73,7 @@ ssize_t screen_width;
 ssize_t screen_heigth;
 
 char new_output_buf[BIRDS_NUM * 100];
+int z_index = 0;
 
 void get_image_path(char *base_path, int rotation_frame_id);
 int init_rotation_frames(uint8_t **images_data_array, char *base_path);
@@ -111,6 +112,7 @@ void atomic_reset(atomic_integer_t *atomic_integer);
 void send_payload_data(uint8_t **payload_data);
 int main()
 {
+	system("clear");
 	get_num_processors();
 	char *output_buf;
 	int output_buf_len;
@@ -131,20 +133,19 @@ int main()
 		while (!atomic_is_equal(atomic_integer, THREAD_DEF_NUM)) {
 			usleep(1000 * POLLING_WAIT_MILLIS);
 		}
+
+		clean_screen();
 		printf("\033_Gs=1;\033\\");
-
 		printf("%s", new_output_buf);
-
+		fflush(stdout);
 		printf("\033_Gs=2;\033\\");
 
-		fflush(stdout);
 		new_output_buf[0] = '\0';
 		copy(birds, birds_copy, BIRDS_NUM);
 		atomic_integer->value = 0;
 		*task_queue_head = *task_list;
 		pthread_cond_broadcast(cond);
 		usleep(1000000 / FRAME_RATE);
-		clean_screen();
 	}
 }
 
@@ -165,7 +166,7 @@ int init_rotation_frames(uint8_t **images_data_array, char *base_path)
 		FILE *file = fopen(base_path_copy, "rb");
 		if (file == NULL) {
 			perror("Error during file opening");
-			return -1;
+			exit(1);
 		}
 		int size = lseek(fileno(file), 0, SEEK_END);
 		lseek(fileno(file), 0, SEEK_SET);
@@ -173,7 +174,7 @@ int init_rotation_frames(uint8_t **images_data_array, char *base_path)
 		if (fread(buf, sizeof(char), size, file) != (unsigned long)size) {
 			perror("Error during file reading");
 			fclose(file);
-			return -1;
+			exit(1);
 		}
 		images_data_array[i] = base64_encode(buf, size);
 		fclose(file);
@@ -292,8 +293,8 @@ void print_bird_mutex(drawn_bird_t **birds_array, uint8_t **images_data_array, i
 	rotation_frame_id_t id = bird->curr_id;
 	// rotation_frame_id_t prev_id = bird->prev_id;
 	// sprintf(buf1, "\033_Ga=d,i=%d,p=%d;\033\\", prev_id, bird_no);
-	sprintf(buf, "\033[%d;%dH\033_Ga=p,q=1,i=%d,p=%d,X=%d,Y=%d,z=%d;\033\\", row, col, id,
-		bird_no + 1, offset_x, offset_y, bird_no);
+	sprintf(buf, "\033[%d;%dH\033_Ga=p,q=1,I=%d,p=%d,X=%d,Y=%d,z=%d\033\\", row, col, id + 1, 0,
+		offset_x, offset_y, z_index++);
 	pthread_mutex_lock(mutex);
 	// strcat(new_output_buf, buf1);
 	strcat(new_output_buf, buf);
@@ -303,14 +304,15 @@ void print_bird_mutex(drawn_bird_t **birds_array, uint8_t **images_data_array, i
 void send_payload_data(uint8_t **images_data)
 {
 	for (int i = 0; i < ROTATION_FRAME; i++) {
-		printf("\033_Ga=T,f=100,q=2,i=%d;%s\033\\", i, (char *)images_data[i]);
+		printf("\033_Ga=t,f=100,q=2,I=%d;%s\033\\", i + 1, (char *)images_data[i]);
 		fflush(stdout);
 	}
-	system("clear");
+	clean_screen();
 }
 
 // Returns the number of active logic processors of this system
 int get_num_processors()
+
 {
 	int nprocs = -1;
 #ifdef _WIN32
@@ -329,6 +331,13 @@ void _task(pthread_mutex_t *buf_mutex, btask_args_t *args)
 			   screen_heigth, args->first_bird_index, args->last_bird_index, BIRDS_NUM);
 	update_rotation_frame_id_parallel(args->draw_birds, args->first_bird_index,
 					  args->last_bird_index);
+
+	// debug
+	if (THREAD_DEF_NUM == 1 &&
+	    (!(args->first_bird_index == 0) || !(args->last_bird_index == BIRDS_NUM))) {
+		printf("First:%d Last:%d", args->first_bird_index, args->last_bird_index);
+		exit(1);
+	}
 	for (int i = args->first_bird_index; i < args->last_bird_index; i++)
 		print_bird_mutex(args->draw_birds, args->images_data_array, i, args->output_buf,
 				 buf_mutex);
@@ -505,5 +514,6 @@ void init(char **output_buf, uint8_t **images_data, drawn_bird_t **draw_birds, b
 
 void clean_screen()
 {
-	system("clear");
+	// system("clear");
+	printf("\033_Ga=d,d=a\033\\");
 }

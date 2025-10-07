@@ -7,9 +7,9 @@
 #define X_START_OFF 20
 #define Y_START_OFF 20
 
-const int PERCEPTION_RADIUS = 130;
+const int PERCEPTION_RADIUS = 60;
 const int TURN_RADIUS = 10;
-const int SPEED = 35;
+const int SPEED = 50;
 const int PERCEPTION_RADIUS_SQUARED = PERCEPTION_RADIUS * PERCEPTION_RADIUS;
 const double SEPARATION_WEIGHT = 0.03;
 const double ALIGNMENT_WEIGHT = 8;

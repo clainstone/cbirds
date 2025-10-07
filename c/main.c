@@ -15,16 +15,16 @@
 #define _XOPEN_SOURCE 600
 #define ROTATION_FRAME 360
 #define FRAME_ANGLE (360 / ROTATION_FRAME)
-#define BIRDS_NUM 100
+#define BIRDS_NUM 200
 #define BIRD_WIDTH 20
 #define BIRD_HEIGTH 20
 #define PNG_FORMAT 100
-#define FRAME_RATE 40
+#define FRAME_RATE 30
 #define PERIOD_MULTIPL 1000000
 #define DEF_TERMINAL_WIDTH 100
 #define DEF_TERMINAL_HEIGHT 100
-#define THREAD_DEF_NUM 1
-#define POLLING_WAIT_MILLIS 1
+#define THREAD_DEF_NUM 4
+#define POLLING_WAIT_MILLIS 5
 
 typedef int rotation_frame_id_t;
 typedef struct {
@@ -72,7 +72,7 @@ char *base_path = "../resources/bird_";
 ssize_t screen_width;
 ssize_t screen_heigth;
 
-char new_output_buf[BIRDS_NUM * 500];
+char new_output_buf[BIRDS_NUM * 100];
 
 void get_image_path(char *base_path, int rotation_frame_id);
 int init_rotation_frames(uint8_t **images_data_array, char *base_path);
@@ -132,7 +132,9 @@ int main()
 			usleep(1000 * POLLING_WAIT_MILLIS);
 		}
 		printf("\033_Gs=1;\033\\");
+
 		printf("%s", new_output_buf);
+
 		printf("\033_Gs=2;\033\\");
 
 		fflush(stdout);
@@ -280,7 +282,7 @@ void print_bird_mutex(drawn_bird_t **birds_array, uint8_t **images_data_array, i
 		      char *output_buf, pthread_mutex_t *mutex)
 {
 	char buf[strlen(control_string) + strlen(end) + 1];
-	char buf1[100];
+	// char buf1[100];
 	buf[strlen(control_string) + strlen(end)] = '\0';
 	drawn_bird_t *bird = birds_array[bird_no];
 	int col = bird->bird_ref->x / 10;
@@ -288,10 +290,10 @@ void print_bird_mutex(drawn_bird_t **birds_array, uint8_t **images_data_array, i
 	int offset_x = (int)bird->bird_ref->x % 10;
 	int offset_y = (int)bird->bird_ref->y % 20;
 	rotation_frame_id_t id = bird->curr_id;
-	rotation_frame_id_t prev_id = bird->prev_id;
+	// rotation_frame_id_t prev_id = bird->prev_id;
 	// sprintf(buf1, "\033_Ga=d,i=%d,p=%d;\033\\", prev_id, bird_no);
-	sprintf(buf, "\033[%d;%dH\033_Ga=p,q=1,i=%d,p=%d,X=%d,Y=%d;\033\\", row, col, id, bird_no,
-		offset_x, offset_y);
+	sprintf(buf, "\033[%d;%dH\033_Ga=p,q=1,i=%d,p=%d,X=%d,Y=%d,z=%d;\033\\", row, col, id,
+		bird_no + 1, offset_x, offset_y, bird_no);
 	pthread_mutex_lock(mutex);
 	// strcat(new_output_buf, buf1);
 	strcat(new_output_buf, buf);
@@ -301,7 +303,7 @@ void print_bird_mutex(drawn_bird_t **birds_array, uint8_t **images_data_array, i
 void send_payload_data(uint8_t **images_data)
 {
 	for (int i = 0; i < ROTATION_FRAME; i++) {
-		printf("\033_Ga=T,t=d,f=100,q=2,i=%d;%s\033\\", i, (char *)images_data[i]);
+		printf("\033_Ga=T,f=100,q=2,i=%d;%s\033\\", i, (char *)images_data[i]);
 		fflush(stdout);
 	}
 	system("clear");
@@ -497,8 +499,8 @@ void init(char **output_buf, uint8_t **images_data, drawn_bird_t **draw_birds, b
 
 	for (int i = 0; i < BIRDS_NUM; i++) {
 		birds[i] = draw_birds[i]->bird_ref;
-		new_output_buf[BIRDS_NUM * 500 - 1] = '\0';
 	}
+	new_output_buf[0] = '\0';
 }
 
 void clean_screen()

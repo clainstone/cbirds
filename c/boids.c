@@ -7,14 +7,14 @@
 #define X_START_OFF 20
 #define Y_START_OFF 20
 
-const int PERCEPTION_RADIUS = 60;
+const int PERCEPTION_RADIUS = 70;
 const int TURN_RADIUS = 10;
-const int SPEED = 50;
+const int SPEED = 25;
 const int PERCEPTION_RADIUS_SQUARED = PERCEPTION_RADIUS * PERCEPTION_RADIUS;
-const double SEPARATION_WEIGHT = 0.03;
+const double SEPARATION_WEIGHT = 0.01;
 const double ALIGNMENT_WEIGHT = 8;
-const double COHESION_WEIGHT = 0.2;
-const double BOUNDARY_AV_WEIGHT = 60.0;
+const double COHESION_WEIGHT = 0.15;
+const double BOUNDARY_AV_WEIGHT = 100.0;
 
 bird_t *init_bird(int id, int width, int heigth, int screen_width, int screen_heigth);
 

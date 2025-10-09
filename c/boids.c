@@ -20,12 +20,8 @@ const double BOUNDARY_AV_WEIGHT = 100.0;
 bird_t *init_bird(int id, int width, int heigth, int screen_width,
                   int screen_heigth);
 
-void update_birds(bird_t **birds, bird_t **close, int screen_width,
-                  int screen_height, int num_birds);
-
-void update_birds_index(bird_t **birds_copy_to_read, bird_t **birds_to_write,
-                        int screen_width, int screen_height, int start_index,
-                        int end_index, int birds_num);
+void update_birds(bird_t **birds_copy_to_read, bird_t **birds_to_write,
+                  int screen_width, int screen_height, int birds_num);
 static void update_direction(bird_t *bird, double next_direction);
 static double calculate_rules_direction(
     bird_t *bird, bird_t **birds, int num_birds, double separation_weight,
@@ -196,23 +192,6 @@ static void close_birds(bird_t **close_birds_list, bird_t *target,
     }
 }
 
-void update_birds(bird_t **birds, bird_t **close, int screen_width,
-                  int screen_height, int num_birds) {
-    for (int i = 0; i < num_birds; i++) {
-        int counter = 0;
-        close_birds(close, birds[i], birds, num_birds,
-                    PERCEPTION_RADIUS_SQUARED, &counter);
-
-        if (close != NULL && counter > 0) {
-            double direction = calculate_rules_direction(
-                birds[i], close, counter, SEPARATION_WEIGHT, ALIGNMENT_WEIGHT,
-                COHESION_WEIGHT, BOUNDARY_AV_WEIGHT, screen_width,
-                screen_height, TURN_RADIUS);
-            update_direction(birds[i], direction);
-        }
-    }
-}
-
 double my_atan2(double y, double x) {
     double angle = atan2(y, x);
     if (angle < 0.0) {
@@ -221,12 +200,9 @@ double my_atan2(double y, double x) {
     return angle;
 }
 
-void update_birds_index(bird_t **birds_copy_to_read, bird_t **birds_to_write,
-                        int screen_width, int screen_height, int start_index,
-                        int end_index, int birds_num) {
-    // REMEMBER:need to choose a different close_buffer
-    // for every thread
-    for (int i = start_index; i < end_index; i++) {
+void update_birds(bird_t **birds_copy_to_read, bird_t **birds_to_write,
+                  int screen_width, int screen_height, int birds_num) {
+    for (int i = 0; i < birds_num; i++) {
         int counter = 0;
         bird_t *close[birds_num];
         close_birds(close, birds_copy_to_read[i], birds_copy_to_read, birds_num,

@@ -17,8 +17,8 @@
 #define _XOPEN_SOURCE 600
 #define ROTATION_FRAME 360
 #define FRAME_ANGLE (360 / ROTATION_FRAME)
-#define BIRD_WIDTH 20
-#define BIRD_HEIGTH 20
+#define BIRD_WIDTH 15
+#define BIRD_HEIGTH 15
 #define PNG_FORMAT 100
 #define PERIOD_MULTIPL 1000000
 #define DEF_TERMINAL_WIDTH 100
@@ -29,14 +29,14 @@
 
 // Simulation parameters
 
-const int BIRDS_N = 200;
-const int FRAME_RATE = 120;
-const int PERCEPTION_RADIUS = 70;
+const int BIRDS_N = 300;
+const int FRAME_RATE = 60;
+const int PERCEPTION_RADIUS = 50;
 const int TURN_RADIUS = 10;
-const int SPEED = 15;
+const int SPEED = 20;
 const int PERCEPTION_RADIUS_SQUARED = (PERCEPTION_RADIUS * PERCEPTION_RADIUS);
 const double SEPARATION_W = 0.01;
-const double ALIGNMENT_W = 20;
+const double ALIGNMENT_W = 9;
 const double COHESION_W = 0.01;
 const double BOUNDARY_AV_W = 100.0;
 

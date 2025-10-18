@@ -30,15 +30,15 @@
 // Simulation parameters
 
 const int BIRDS_N = 300;
-const int FRAME_RATE = 60;
-const int PERCEPTION_RADIUS = 50;
-const int TURN_RADIUS = 10;
+const int FRAME_RATE = 120;
+const int PERCEPTION_RADIUS = 70;
+const int TURN_RADIUS = 80;
 const int SPEED = 20;
 const int PERCEPTION_RADIUS_SQUARED = (PERCEPTION_RADIUS * PERCEPTION_RADIUS);
 const double SEPARATION_W = 0.01;
-const double ALIGNMENT_W = 9;
+const double ALIGNMENT_W = 30;
 const double COHESION_W = 0.01;
-const double BOUNDARY_AV_W = 100.0;
+const double BOUNDARY_AV_W = 2000.0;
 
 static enum { RESET, RAW } ttystate = RESET;
 

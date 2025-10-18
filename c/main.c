@@ -17,8 +17,8 @@
 #define _XOPEN_SOURCE 600
 #define ROTATION_FRAME 360
 #define FRAME_ANGLE (360 / ROTATION_FRAME)
-#define BIRD_WIDTH 15
-#define BIRD_HEIGTH 15
+#define BIRD_WIDTH 20
+#define BIRD_HEIGTH 20
 #define PNG_FORMAT 100
 #define PERIOD_MULTIPL 1000000
 #define DEF_TERMINAL_WIDTH 100
@@ -75,6 +75,10 @@ int max_payload_len = -1;
 char *base_path = "../resources/bird_";
 ssize_t screen_width;
 ssize_t screen_heigth;
+ssize_t n_col;
+ssize_t n_raw;
+ssize_t character_width_p;  /*character pixel width*/
+ssize_t character_height_p; /*character pixel heigth*/
 struct termios saved_termios;
 
 void get_image_path(char *base_path, int rotation_frame_id);
@@ -124,6 +128,10 @@ void get_screen_dimensions() {
     ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
     screen_width = w.ws_xpixel;
     screen_heigth = w.ws_ypixel;
+    n_col = w.ws_col;
+    n_raw = w.ws_row;
+    character_width_p = (double)screen_width / n_col;
+    character_height_p = (double)screen_heigth / n_raw;
     if (!screen_heigth || !screen_width) {
         screen_heigth = DEF_TERMINAL_HEIGHT;
         screen_width = DEF_TERMINAL_WIDTH;
@@ -302,11 +310,19 @@ void print_bird(drawn_bird_t **birds_array, int bird_no, char *output_buf) {
     char buf[150];
     drawn_bird_t *bird = birds_array[bird_no];
 
+    int col, row, offset_x, offset_y;
     /* pixels to col conversions*/
-    int col = bird->bird_ref->x / 8;
-    int row = bird->bird_ref->y / 16;
-    int offset_x = (int)bird->bird_ref->x % 8;
-    int offset_y = (int)bird->bird_ref->y % 16;
+    /*
+        col = bird->bird_ref->x / 8;
+        row = bird->bird_ref->y / 16;
+        offset_x = (int)bird->bird_ref->x % 8;
+        offset_y = (int)bird->bird_ref->y % 16;
+    */
+
+    col = bird->bird_ref->x / character_width_p;
+    row = bird->bird_ref->y / character_height_p;
+    offset_x = (int)bird->bird_ref->x % character_width_p;
+    offset_y = (int)bird->bird_ref->y % character_height_p;
 
     rotation_frame_id_t id = bird->curr_id;
     sprintf(buf, "\033[%d;%dH\033_Ga=p,I=%d,q=2,p=%d,X=%d,Y=%d,z=%d\033\\", row,

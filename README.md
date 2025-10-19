@@ -1,4 +1,4 @@
-# Cboids: a C-Based Flocking Simulation
+# Cbirds: a C-Based Flocking Simulation
 
 ![Language](https://img.shields.io/badge/Language-C-blue.svg)
 
@@ -40,7 +40,7 @@ make main
 ## Executing
 
 ```bash
-./main [options]
+./cbirds [options]
 ```
 Available options are:
 

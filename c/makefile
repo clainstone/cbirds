@@ -10,5 +10,5 @@ clean:
 %.o: %.c $(DEPS)
 	$(CC) -c -o $@ $< $(CFLAGS)
 
-cboids : $(OBJ)
+cbirds : $(OBJ)
 	$(CC) -o $@ $^ $(CFLAGS)

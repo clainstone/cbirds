@@ -12,7 +12,7 @@ else:
     for i in range(max_images):
         angle = i * offs
         rotated = imutils.rotate(img, -angle)
-        resized = cv2.resize(rotated, (15, 15))
+        resized = cv2.resize(rotated, (10, 10))
         print(resized.shape)
         current_file_name = f"resources/bird_{i}.png" 
         cv2.imwrite(current_file_name, resized) 

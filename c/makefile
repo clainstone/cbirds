@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=-Wall -O3 -g -Wextra
+CFLAGS=-Wall -O3 -g -Wextra -lm
 DEPS =	
 OBJ = main.o
 
@@ -10,5 +10,5 @@ clean:
 %.o: %.c $(DEPS)
 	$(CC) -c -o $@ $< $(CFLAGS)
 
-cbirds : $(OBJ)
+main : $(OBJ)
 	$(CC) -o $@ $^ $(CFLAGS)

@@ -42,7 +42,7 @@ const int PERCEPTION_RADIUS_SQUARED = (PERCEPTION_RADIUS * PERCEPTION_RADIUS);
 const double SEPARATION_W = 0.005;
 const double ALIGNMENT_W = 1.5;
 const double COHESION_W = 0.01;
-const double BOUNDARY_AV_W = 0.1;
+const double BOUNDARY_AV_W = 0.2;
 
 static enum { RESET, RAW } ttystate = RESET;
 
@@ -62,15 +62,6 @@ typedef struct {
     rotation_frame_id_t curr_id;
     bird_t *bird_ref;
 } drawn_bird_t;
-
-typedef struct {
-    int first_bird_index, last_bird_index;
-    bird_t **birds_copy_to_read;
-    bird_t **birds_to_write;
-    drawn_bird_t **draw_birds;
-    char *output_buf;
-    uint8_t **images_data_array;
-} btask_args_t;
 
 const char base64_chars[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -95,7 +86,6 @@ void display_birds(drawn_bird_t **birds_array, uint8_t **images_data_array,
                    char *output_buf);
 uint8_t *base64_encode(const uint8_t *input, size_t input_length);
 void clean_screen();
-void _task(pthread_mutex_t *buf_mutex, btask_args_t *args);
 void print_bird(drawn_bird_t **birds_array, int bird_no, char *output_buf);
 void update_rotation_frame_id(drawn_bird_t **birds_array);
 void init(char **output_buf, uint8_t **images_data, drawn_bird_t **draw_birds,
@@ -387,6 +377,13 @@ bird_t *init_bird(int id, int width, int heigth, int screen_width,
     bird->speed = SPEED;
     bird->width = width;
     bird->heigth = heigth;
+
+    /*Avoids blocked startin position*/
+    if (bird->x < TURN_RADIUS_X || bird->x > screen_width - TURN_RADIUS_X)
+        bird->x = screen_width / 2;
+    if (bird->y < TURN_RADIUS_Y || bird->y > screen_heigth - TURN_RADIUS_Y)
+        bird->y = screen_heigth / 2;
+
     return bird;
 }
 
@@ -609,6 +606,7 @@ void handle_input() {
 }
 
 int main() {
+    get_screen_dimensions();
     if (my_atenter() < 0) {
         perror("Can't enable raw mode :");
         exit(-1);

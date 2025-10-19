@@ -1,4 +1,4 @@
-# Cboids: A C-Based Flocking Simulation
+# Cboids: a C-Based Flocking Simulation
 
 ![Language](https://img.shields.io/badge/Language-C-blue.svg)
 
@@ -6,12 +6,11 @@ An a high-performance C implementation of Craig Reynolds' "Boids" flocking algor
 
 It uses the **Kitty Graphics Protocol** to render and animate hundreds of PNG sprites, bypassing the limitations of traditional text-based (ASCII/Unicode) rendering.
 
-**(INSERT SIMULATION GIF HERE!)**
-`![Boids Demo GIF](./demo.gif)`
+![](./demo.gif)
 
 ---
 
-## 🚀 Features
+##  Features
 
 * **Full Boids Algorithm:** Implements the three classic rules:
     * **Separation:** Steer to avoid crowding local flockmates.
@@ -24,7 +23,7 @@ It uses the **Kitty Graphics Protocol** to render and animate hundreds of PNG sp
 
 ---
 
-## 📋 Requirements
+##  Requirements
 
 1.  **Compatible Terminal:** You *must* use a terminal emulator that supports the **Kitty Graphics Protocol**.
     * ✅ **Supported:** `kitty`, `WezTerm`, `Konsole` (recent versions), `Ghostty`.
@@ -34,10 +33,17 @@ It uses the **Kitty Graphics Protocol** to render and animate hundreds of PNG sp
 
 ---
 
-## 🛠️ Compiling
+## Compiling
 
 The project is self-contained and can be compiled with `gcc`:
 
 ```bash
 cd c
 make main
+```
+
+## Executing
+
+```bash
+./main
+```

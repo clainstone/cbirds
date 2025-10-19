@@ -29,20 +29,20 @@
 
 // Simulation parameters
 
-const int BIRDS_N = 800;
-const double FAST_BIRDS_RATIO = 0;
-const int FRAME_RATE = 120;
+int BIRDS_N = 800;
+double FAST_BIRDS_RATIO = 0;
+const int DEF_FRAME_RATE = 60;
+int FRAME_RATE = 60;
 const int PERCEPTION_RADIUS = 35;
 int TURN_RADIUS_X;
 int TURN_RADIUS_Y;
-const int SPEED = 20;
-const double SPEED2_INCREASE = 1;
-const int SPEED2 = SPEED * SPEED2_INCREASE;
-const int PERCEPTION_RADIUS_SQUARED = (PERCEPTION_RADIUS * PERCEPTION_RADIUS);
-const double SEPARATION_W = 0.005;
-const double ALIGNMENT_W = 1.5;
-const double COHESION_W = 0.01;
-const double BOUNDARY_AV_W = 0.2;
+const int DEF_SPEED = 60;
+int SPEED = 40;
+int PERCEPTION_RADIUS_SQUARED = PERCEPTION_RADIUS * PERCEPTION_RADIUS;
+double SEPARATION_W = 0.005;
+double ALIGNMENT_W = 1.5;
+double COHESION_W = 0.01;
+double BOUNDARY_AV_W = 0.2;
 
 static enum { RESET, RAW } ttystate = RESET;
 
@@ -115,8 +115,8 @@ int enable_raw_mode();
 void my_atexit();
 int my_atenter();
 void refresh_screen();
-void read_input();
-
+void handle_key();
+void read_input(int argc, char **argv);
 //=======================Low level terminal handling===========================
 
 void get_screen_dimensions() {
@@ -346,7 +346,6 @@ void init(char **output_buf, uint8_t **images_data, drawn_bird_t **draw_birds,
     init_birds(draw_birds, images_data, base_path, screen_width, screen_heigth);
     for (int i = 0; i < BIRDS_N; i++) {
         birds[i] = draw_birds[i]->bird_ref;
-        if (i < BIRDS_N * FAST_BIRDS_RATIO) birds[i]->speed = SPEED2;
     }
 }
 
@@ -590,7 +589,7 @@ void fix_weights() {
     TURN_RADIUS_Y = screen_heigth / factor;
 }
 
-void handle_input() {
+void handle_key() {
     char input_buf[INPUT_BUF_DIM];
 
     ssize_t size;
@@ -605,7 +604,44 @@ void handle_input() {
     }
 }
 
-int main() {
+void read_input(int argc, char **argv) {
+    if (argc > 1) {
+        argv++;
+        argc--;
+        while (argc > 1) {
+            if (strcmp(*argv, "-n") == 0) { /*birds number flag*/
+                argv++;
+                argc--;
+                long arg = strtol(*argv, NULL, 10);
+                if (errno == ERANGE || arg <= 0) {
+                    perror("Invalid arguments for birds num");
+                    exit(-1);
+                }
+                BIRDS_N = (int)arg;
+
+            } else if (strcmp(*argv, "-f") == 0) {
+                argv++;
+                argc--;
+                long arg = strtol(*argv, NULL, 10);
+                if (errno == ERANGE || arg <= 0) {
+                    perror("Invalid arguments for frame rate");
+                    exit(-1);
+                }
+                FRAME_RATE = (int)arg;
+                SPEED = DEF_SPEED * (double)DEF_FRAME_RATE / FRAME_RATE;
+                if (SPEED == 0) SPEED = 1;
+            }
+
+            else
+                break;
+            argc--;
+            argv++;
+        }
+    }
+}
+
+int main(int argc, char *argv[]) {
+    read_input(argc, argv);
     get_screen_dimensions();
     if (my_atenter() < 0) {
         perror("Can't enable raw mode :");
@@ -636,7 +672,7 @@ int main() {
         output_buf_off = 0;
 
         /*Handles input*/
-        handle_input();
+        handle_key();
 
         usleep(1000000 / FRAME_RATE);
     }

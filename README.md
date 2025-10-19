@@ -8,8 +8,6 @@ It uses the **Kitty Graphics Protocol** to render and animate hundreds of PNG sp
 
 ![](./demo.gif)
 
----
-
 ##  Features
 
 * **Full Boids Algorithm:** Implements the three classic rules:
@@ -21,17 +19,14 @@ It uses the **Kitty Graphics Protocol** to render and animate hundreds of PNG sp
 * **Responsive Design:** Detects terminal resizing and dynamically adjusts simulation boundaries.
 
 
----
-
 ##  Requirements
 
 1.  **Compatible Terminal:** You *must* use a terminal emulator that supports the **Kitty Graphics Protocol**.
     * ✅ **Supported:** `kitty`, `WezTerm`, `Konsole` (recent versions), `Ghostty`.
     * ❌ **Not Supported:** `Alacritty`, `gnome-terminal`, `Terminator`, Windows Terminal (older versions), `st` (without patches).
 2.  **Build Tools:** `gcc` (or `clang`) and standard C libraries (`libm`, `libpthread`).
-3.  **Image Assets:** 360 PNG image files for the rotation sprites (see 'Running').
+3.  **Image Assets:** 360 PNG image files for the rotation sprites (see Resources).
 
----
 
 ## Compiling
 
@@ -45,5 +40,11 @@ make main
 ## Executing
 
 ```bash
-./main
+./main [options]
+```
+Available options are:
+
+```bash
+-n          #Birds number, default is 800
+-f          #Frame rate, default is 60 FPS
 ```

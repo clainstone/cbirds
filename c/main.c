@@ -15,11 +15,11 @@
 #include <unistd.h>
 
 #define _XOPEN_SOURCE 600
-#define ROTATION_FRAME 360
-#define FRAME_ANGLE (360 / ROTATION_FRAME)
+#define ROTATION_FRAME 360                 /*Number of roation frame*/
+#define FRAME_ANGLE (360 / ROTATION_FRAME) /*Difference in degrees from ajacents rotation frames*/
 #define BIRD_WIDTH 10
 #define BIRD_HEIGTH 10
-#define PNG_FORMAT 100
+#define PNG_FORMAT 100 /*Kitty's protocol png escape code*/
 #define PERIOD_MULTIPL 1000000
 #define DEF_TERMINAL_WIDTH 100
 #define DEF_TERMINAL_HEIGHT 100
@@ -79,13 +79,29 @@ ssize_t character_height_p; /*character pixel heigth*/
 int output_buf_off = 0; /*Offset within the outbuffer used to concatenate escape control strings*/
 struct termios saved_termios; /*Saved termios structure to be resumed after process termination*/
 
-void get_image_path(char *base_path, int rotation_frame_id);
+/*============================================================================================*/
+
+bird_t *init_bird(int id, int width, int heigth, int screen_width, int screen_heigth);
+
+double calculate_rules_direction(bird_t *bird, bird_t **birds, int num_birds, int screen_width,
+                                 int screen_heigth);
+double my_atan2(double y, double x);
+
 int init_rotation_frames(uint8_t **images_data_array, char *base_path);
+int to_degrees(double radians);
+int distance(bird_t *b1, bird_t *b2);
+int squared_distance(bird_t *b1, bird_t *b2);
+int enable_raw_mode();
+int my_atenter();
+
+uint8_t *base64_encode(const uint8_t *input, size_t input_length);
+
+vector2d_t calculate_boundary_av_direction(bird_t *bird, int screen_width, int screen_heigth);
+
+void get_image_path(char *base_path, int rotation_frame_id);
 void init_birds(drawn_bird_t **birds_array, uint8_t **images_data_array, char *base_path,
                 int screen_width, int screen_heigth);
-int to_degrees(double radians);
 void display_birds(drawn_bird_t **birds_array, uint8_t **images_data_array, char *output_buf);
-uint8_t *base64_encode(const uint8_t *input, size_t input_length);
 void clean_screen();
 void print_bird(drawn_bird_t **birds_array, int bird_no, char *output_buf);
 void update_rotation_frame_id(drawn_bird_t **birds_array);
@@ -94,28 +110,19 @@ void init(char **output_buf, uint8_t **images_data, drawn_bird_t **draw_birds, b
 void send_payload_data(uint8_t **payload_data);
 void get_screen_dimensions();
 void fix_weights();
-bird_t *init_bird(int id, int width, int heigth, int screen_width, int screen_heigth);
-
 void update_birds(bird_t **birds_copy_to_read, bird_t **birds_to_write, int screen_width,
                   int screen_height, int birds_num);
 void update_direction(bird_t *bird, double next_direction);
-double calculate_rules_direction(bird_t *bird, bird_t **birds, int num_birds, int screen_width,
-                                 int screen_heigth);
-vector2d_t calculate_boundary_av_direction(bird_t *bird, int screen_width, int screen_heigth);
 void add_vector(vector2d_t *vector, double x, double y);
 void prod_vector(vector2d_t *vector, double scalar);
 void init_vector(vector2d_t *vector, double x, double y);
-int distance(bird_t *b1, bird_t *b2);
-int squared_distance(bird_t *b1, bird_t *b2);
-double my_atan2(double y, double x);
 void close_birds(bird_t **close_birds_list, bird_t *target, bird_t **birds, int num_birds,
                  int *counter);
-int enable_raw_mode();
 void my_atexit();
-int my_atenter();
 void refresh_screen();
 void handle_key();
 void read_input(int argc, char **argv);
+
 //=======================Low level terminal handling===========================
 
 void get_screen_dimensions() {
@@ -623,14 +630,26 @@ void read_input(int argc, char **argv) {
     }
 }
 
+void refresh_screen(char **output_buf, drawn_bird_t **draw_birds, bird_t **birds,
+                    bird_t **birds_copy) {
+    for (int i = 0; i < BIRDS_N; i++) print_bird(draw_birds, i, *output_buf);
+    copy(birds, birds_copy, BIRDS_N);
+    update_rotation_frame_id(draw_birds);
+    update_birds(birds_copy, birds, screen_width, screen_heigth, BIRDS_N);
+    clean_screen();
+    fflush(stdout);
+    write(STDOUT_FILENO, output_buf, output_buf_off);
+    output_buf_off = 0;
+}
+
 int main(int argc, char *argv[]) {
-    read_input(argc, argv);
+    read_input(argc, argv); /*Reads cli input data*/
     get_screen_dimensions();
-    if (my_atenter() < 0) {
+    if (my_atenter() < 0) { /*Try to enable terminal raw mode*/
         perror("Can't enable raw mode :");
         exit(-1);
     }
-    atexit(my_atexit);
+    atexit(my_atexit); /*Defines exit callback*/
     clear();
     char *output_buf;
     int output_buf_len;
@@ -640,23 +659,17 @@ int main(int argc, char *argv[]) {
     bird_t *birds_copy[BIRDS_N];
 
     init(&output_buf, images_data, draw_birds, birds, birds_copy);
-    send_payload_data(images_data);
+    send_payload_data(images_data); /*Sends png images data base64 encoded*/
 
     while (1) {
         /*Refresh screen*/
         get_screen_dimensions();
-        for (int i = 0; i < BIRDS_N; i++) print_bird(draw_birds, i, output_buf);
-        copy(birds, birds_copy, BIRDS_N);
-        update_rotation_frame_id(draw_birds);
-        update_birds(birds_copy, birds, screen_width, screen_heigth, BIRDS_N);
-        clean_screen();
-        fflush(stdout);
-        write(STDOUT_FILENO, output_buf, output_buf_off);
-        output_buf_off = 0;
+        refresh_screen(&output_buf, draw_birds, birds, birds_copy);
 
         /*Handles input*/
         handle_key();
 
+        /*Sleeps to comply frame rate*/
         usleep(1000000 / FRAME_RATE);
     }
 }

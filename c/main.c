@@ -17,8 +17,8 @@
 #define _XOPEN_SOURCE 600
 #define ROTATION_FRAME 360
 #define FRAME_ANGLE (360 / ROTATION_FRAME)
-#define BIRD_WIDTH 20
-#define BIRD_HEIGTH 20
+#define BIRD_WIDTH 15
+#define BIRD_HEIGTH 15
 #define PNG_FORMAT 100
 #define PERIOD_MULTIPL 1000000
 #define DEF_TERMINAL_WIDTH 100
@@ -29,16 +29,20 @@
 
 // Simulation parameters
 
-const int BIRDS_N = 300;
+const int BIRDS_N = 800;
+const double FAST_BIRDS_RATIO = 0;
 const int FRAME_RATE = 120;
-const int PERCEPTION_RADIUS = 70;
-const int TURN_RADIUS = 80;
+const int PERCEPTION_RADIUS = 35;
+int TURN_RADIUS_X;
+int TURN_RADIUS_Y;
 const int SPEED = 20;
+const double SPEED2_INCREASE = 1;
+const int SPEED2 = SPEED * SPEED2_INCREASE;
 const int PERCEPTION_RADIUS_SQUARED = (PERCEPTION_RADIUS * PERCEPTION_RADIUS);
-const double SEPARATION_W = 0.01;
-const double ALIGNMENT_W = 30;
+const double SEPARATION_W = 0.005;
+const double ALIGNMENT_W = 1.5;
 const double COHESION_W = 0.01;
-const double BOUNDARY_AV_W = 2000.0;
+const double BOUNDARY_AV_W = 0.1;
 
 static enum { RESET, RAW } ttystate = RESET;
 
@@ -79,6 +83,7 @@ ssize_t n_col;
 ssize_t n_raw;
 ssize_t character_width_p;  /*character pixel width*/
 ssize_t character_height_p; /*character pixel heigth*/
+int output_buf_off = 0;
 struct termios saved_termios;
 
 void get_image_path(char *base_path, int rotation_frame_id);
@@ -97,6 +102,7 @@ void init(char **output_buf, uint8_t **images_data, drawn_bird_t **draw_birds,
           bird_t **birds, bird_t **birds_copy);
 void send_payload_data(uint8_t **payload_data);
 void get_screen_dimensions();
+void fix_weights();
 bird_t *init_bird(int id, int width, int heigth, int screen_width,
                   int screen_heigth);
 
@@ -105,8 +111,8 @@ void update_birds(bird_t **birds_copy_to_read, bird_t **birds_to_write,
 void update_direction(bird_t *bird, double next_direction);
 double calculate_rules_direction(bird_t *bird, bird_t **birds, int num_birds,
                                  int screen_width, int screen_heigth);
-vector2d_t *calculate_boundary_av_direction(bird_t *bird, int screen_width,
-                                            int screen_heigth);
+vector2d_t calculate_boundary_av_direction(bird_t *bird, int screen_width,
+                                           int screen_heigth);
 void add_vector(vector2d_t *vector, double x, double y);
 void prod_vector(vector2d_t *vector, double scalar);
 void init_vector(vector2d_t *vector, double x, double y);
@@ -136,6 +142,7 @@ void get_screen_dimensions() {
         screen_heigth = DEF_TERMINAL_HEIGHT;
         screen_width = DEF_TERMINAL_WIDTH;
     }
+    fix_weights();
 }
 
 int my_atenter() {
@@ -311,25 +318,21 @@ void print_bird(drawn_bird_t **birds_array, int bird_no, char *output_buf) {
     drawn_bird_t *bird = birds_array[bird_no];
 
     int col, row, offset_x, offset_y;
-    /* pixels to col conversions*/
-    /*
-        col = bird->bird_ref->x / 8;
-        row = bird->bird_ref->y / 16;
-        offset_x = (int)bird->bird_ref->x % 8;
-        offset_y = (int)bird->bird_ref->y % 16;
-    */
 
     col = bird->bird_ref->x / character_width_p;
     row = bird->bird_ref->y / character_height_p;
     offset_x = (int)bird->bird_ref->x % character_width_p;
     offset_y = (int)bird->bird_ref->y % character_height_p;
 
-    rotation_frame_id_t id = bird->curr_id;
-    sprintf(buf, "\033[%d;%dH\033_Ga=p,I=%d,q=2,p=%d,X=%d,Y=%d,z=%d\033\\", row,
-            col, id + 1, 0, offset_x, offset_y, bird_no);
-    /*Every escape sequence is concatened to the outpute buffer that is flushed
-     * output once a frame*/
-    strcat(output_buf, buf);
+    if (col >= 0 && col < n_col && row >= 0 && row < n_raw) {
+        rotation_frame_id_t id = bird->curr_id;
+        sprintf(buf, "\033[%d;%dH\033_Ga=p,I=%d,q=2,p=%d,X=%d,Y=%d,z=%d\033\\",
+                row + 1, col + 1, id + 1, 0, offset_x, offset_y, bird_no);
+        /*Every escape sequence is concatened to the outpute buffer that is
+         * flushed output once a frame*/
+        memcpy(output_buf + output_buf_off, buf, strlen(buf));
+        output_buf_off += strlen(buf);
+    }
 }
 
 /*Deletes all visible placements*/
@@ -353,6 +356,7 @@ void init(char **output_buf, uint8_t **images_data, drawn_bird_t **draw_birds,
     init_birds(draw_birds, images_data, base_path, screen_width, screen_heigth);
     for (int i = 0; i < BIRDS_N; i++) {
         birds[i] = draw_birds[i]->bird_ref;
+        if (i < BIRDS_N * FAST_BIRDS_RATIO) birds[i]->speed = SPEED2;
     }
 }
 
@@ -442,21 +446,24 @@ void close_birds(bird_t **close_birds_list, bird_t *target, bird_t **birds,
  * Calculates the steering vector of the given bird for border avoidance
  * only if is closer than radius.
  */
-vector2d_t *calculate_boundary_av_direction(bird_t *bird, int screen_width,
-                                            int screen_heigth) {
-    vector2d_t *boundary_av = (vector2d_t *)malloc(sizeof(vector2d_t));
+vector2d_t calculate_boundary_av_direction(bird_t *bird, int screen_width,
+                                           int screen_heigth) {
+    vector2d_t boundary_av;
+    int bottom_mult = 100000;
+    int bottom_off = 100;
 
-    init_vector(boundary_av, 0, 0);
-    if (bird->x < TURN_RADIUS) {
-        add_vector(boundary_av, 1, 0);
-    } else if (bird->x > screen_width - TURN_RADIUS) {
-        add_vector(boundary_av, -1, 0);
+    init_vector(&boundary_av, 0, 0);
+    if (bird->x < TURN_RADIUS_X) {
+        add_vector(&boundary_av, 1, 0);
+    } else if (bird->x > screen_width - TURN_RADIUS_X) {
+        add_vector(&boundary_av, -1, 0);
     }
-    if (bird->y < TURN_RADIUS) {
-        add_vector(boundary_av, 0, 1);
-    } else if (bird->y > screen_heigth - TURN_RADIUS) {
-        add_vector(boundary_av, 0, -1);
+    if (bird->y < TURN_RADIUS_Y) {
+        add_vector(&boundary_av, 0, 1);
+    } else if (bird->y > screen_heigth - bottom_off) {
+        add_vector(&boundary_av, 0, -1 * bottom_mult);
     }
+
     return boundary_av;
 }
 
@@ -474,7 +481,7 @@ double calculate_rules_direction(bird_t *target, bird_t **birds, int num_birds,
     vector2d_t alignment = {0, 0};
     vector2d_t cohesion = {0, 0};
 
-    vector2d_t *boundary_av_ptr =
+    vector2d_t boundary_av_ptr =
         calculate_boundary_av_direction(target, screen_width, screen_heigth);
 
     int close_count = 0;  // Calculate only if there are some birds nearby
@@ -506,18 +513,16 @@ double calculate_rules_direction(bird_t *target, bird_t **birds, int num_birds,
         prod_vector(&separation, SEPARATION_W);
         prod_vector(&alignment, ALIGNMENT_W);
         prod_vector(&cohesion, COHESION_W);
-        prod_vector(boundary_av_ptr, BOUNDARY_AV_W);
+        prod_vector(&boundary_av_ptr, BOUNDARY_AV_W);
 
         double result_x =
-            separation.x + alignment.x + cohesion.x + boundary_av_ptr->x;
+            separation.x + alignment.x + cohesion.x + boundary_av_ptr.x;
         double result_y =
-            separation.y + alignment.y + cohesion.y + boundary_av_ptr->y;
-        free(boundary_av_ptr);
+            separation.y + alignment.y + cohesion.y + boundary_av_ptr.y;
 
         return my_atan2(result_y, result_x);
     } else {
         // If there are no birds nearby simply returns the older direction
-        free(boundary_av_ptr);
         return target->direction;
     }
 }
@@ -582,6 +587,12 @@ void copy(bird_t **original, bird_t **copy, int birds_num) {
     }
 }
 
+void fix_weights() {
+    const int factor = 3;
+    TURN_RADIUS_X = screen_width / factor;
+    TURN_RADIUS_Y = screen_heigth / factor;
+}
+
 void handle_input() {
     char input_buf[INPUT_BUF_DIM];
 
@@ -622,11 +633,9 @@ int main() {
         update_rotation_frame_id(draw_birds);
         update_birds(birds_copy, birds, screen_width, screen_heigth, BIRDS_N);
         clean_screen();
-        printf("\033_Gs=1;\033\\");
-        printf("%s", output_buf);
         fflush(stdout);
-        printf("\033_Gs=2;\033\\");
-        output_buf[0] = '\0';
+        write(STDOUT_FILENO, output_buf, output_buf_off);
+        output_buf_off = 0;
 
         /*Handles input*/
         handle_input();

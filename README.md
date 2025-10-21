@@ -48,3 +48,15 @@ Available options are:
 -n          #Birds number, default is 800
 -f          #Frame rate, default is 60 FPS
 ```
+
+Runtime keyboard commands are:
+
+```bash
+q           #Quit
+=[-]        #Increase[decrease] bird image dimension
+B[b]        #Increase[decrease] boundary avoidance weight
+S[s]        #Increase[decrease] separation weight
+C[c]        #Increase[decrease] cohesion weight
+A[a]        #Increase[decrease] alignment weight
+R[r]        #Increase[decrease] frame rate
+```

@@ -1,21 +1,46 @@
 import cv2
 import imutils
-path = "resources/matrix.png" 
-offs = 1
-max_images = 360
-img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
-print(img.shape)
+import shutil
+import os
 
-if img is None:
-    print(f"Error: Could not read image from path: {path}")
-else:
+
+
+def create_rotation_frames(img, full_path, dim):
     for i in range(max_images):
+        filename = f"bird_{i}.png"
         angle = i * offs
         rotated = imutils.rotate(img, -angle)
-        resized = cv2.resize(rotated, (10, 10))
+        resized = cv2.resize(rotated, (dim, dim))
         print(resized.shape)
-        current_file_name = f"resources/bird_{i}.png" 
+        current_file_name = os.path.join(full_path, filename)
         cv2.imwrite(current_file_name, resized) 
-        print(f"Saved: {current_file_name}")
 
-print("Rotation and saving complete.")
+
+path = "resources/matrix.png" 
+offs = 4
+max_images = 90
+min_dimension = 5
+dimension_num = 40
+img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+directory_path = "resources"
+file_to_save = "matrix.png"
+dim_dir_name = "dim"
+
+for filename in os.listdir(directory_path):
+    full_path = os.path.join(directory_path, filename)
+
+    if(filename == file_to_save):
+        continue
+
+    if os.path.isdir(full_path):
+        shutil.rmtree(full_path)
+    elif os.path.isfile(full_path):
+        os.remove(full_path)
+
+for i in range (dimension_num):
+    full_path = os.path.join(directory_path, dim_dir_name)
+    full_path = full_path + str(i+min_dimension)
+    os.mkdir(full_path)
+    create_rotation_frames(img, full_path, min_dimension+i)
+
+

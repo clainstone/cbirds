@@ -1,0 +1,28 @@
+# .clang-format
+---
+# Stile Google Moderno e leggibile (compromesso K&R con indentazione a 4)
+
+Language: Cpp
+BasedOnStyle: Google
+ColumnLimit: 100
+# --- Regole Sovrascritte per la leggibilità ---
+
+# 1. Indentazione a 4 Spazi (più comune di 2)
+IndentWidth: 4
+ContinuationIndentWidth: 4
+
+# 2. Parentesi Graffe sulla stessa riga (Stile K&R Modificato)
+# Questo è un compromesso comune tra l'Allman di Google e lo stile K&R.
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterControlStatement: false # if (...) {
+  AfterFunction: false         # void foo() {
+  BeforeElse: false            # } else {
+  BeforeCatch: false
+
+# 3. Allineamento dei Pointers
+PointerAlignment: Right       # int *ptr; (Attaccato al nome, stile moderno)
+
+# 4. Parametri delle Funzioni
+BinPackParameters: true       # Impacchetta i parametri se stanno entro il limite
+AllowShortFunctionsOnASingleLine: Inline

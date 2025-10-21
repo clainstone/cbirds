@@ -15,10 +15,10 @@
 #include <unistd.h>
 
 #define _XOPEN_SOURCE 600
-#define ROTATION_FRAME 360                 /*Number of roation frame*/
+#define ROTATION_FRAME 90                  /*Number of roation frame*/
 #define FRAME_ANGLE (360 / ROTATION_FRAME) /*Difference in degrees from ajacents rotation frames*/
-#define BIRD_WIDTH 10
-#define BIRD_HEIGTH 10
+#define BASE_IMAGE_SIZE 5
+#define IMAGE_SIZES 40
 #define PNG_FORMAT 100 /*Kitty's protocol png escape code*/
 #define PERIOD_MULTIPL 1000000
 #define DEF_TERMINAL_WIDTH 100
@@ -29,22 +29,25 @@
 
 /*=========================== Simulation parameters ===============================*/
 
-int BIRDS_N = 800;             /*Birds number*/
-const int DEF_FRAME_RATE = 60; /*Default frame rate*/
-int FRAME_RATE = 60;
+const int DEF_FRAME_RATE = 60;    /*Default frame rate in case no one is specified*/
 const int PERCEPTION_RADIUS = 35; /*The maximum distance whereas two boids can interacts*/
 const int PERCEPTION_RADIUS_SQUARED = PERCEPTION_RADIUS * PERCEPTION_RADIUS;
+const int DEF_SPEED = 60; /*Default speed in case no one is specified as input arg*/
 
-int TURN_RADIUS_X; /*Border distance within the bird starts to steer to avoid the collision*/
+int BIRDS_N = 800;   /*Birds number*/
+int FRAME_RATE = 60; /*Frames per second*/
+int TURN_RADIUS_X;   /*Border distance within the bird starts to steer to avoid the collision*/
 int TURN_RADIUS_Y;
-const int DEF_SPEED = 60;
-int SPEED = 40;
+int SPEED = 40;     /*Pixels increment between two frames*/
+int BIRD_SIZE = 15; /*Bird size in pixels*/
 
 /*Animation weights, see https://en.wikipedia.org/wiki/Boids */
 double SEPARATION_W = 0.005;
 double ALIGNMENT_W = 1.5;
 double COHESION_W = 0.01;
 double BOUNDARY_AV_W = 0.2;
+
+/*=================================================================================*/
 
 static enum { RESET, RAW } ttystate = RESET; /*Terminal state : RAW, NORMAL*/
 
@@ -69,7 +72,6 @@ typedef struct {
 const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 int max_payload_len = -1;
-char *base_path = "../resources/bird_";
 ssize_t screen_width;
 ssize_t screen_heigth;
 ssize_t n_col;
@@ -87,7 +89,6 @@ double calculate_rules_direction(bird_t *bird, bird_t **birds, int num_birds, in
                                  int screen_heigth);
 double my_atan2(double y, double x);
 
-int init_rotation_frames(uint8_t **images_data_array, char *base_path);
 int to_degrees(double radians);
 int distance(bird_t *b1, bird_t *b2);
 int squared_distance(bird_t *b1, bird_t *b2);
@@ -98,9 +99,10 @@ uint8_t *base64_encode(const uint8_t *input, size_t input_length);
 
 vector2d_t calculate_boundary_av_direction(bird_t *bird, int screen_width, int screen_heigth);
 
-void get_image_path(char *base_path, int rotation_frame_id);
-void init_birds(drawn_bird_t **birds_array, uint8_t **images_data_array, char *base_path,
-                int screen_width, int screen_heigth);
+void init_rotation_frames(uint8_t **images_data_array);
+void get_image_path(char *base_path, int size_index, int rotation_frame_id);
+void init_birds(drawn_bird_t **birds_array, uint8_t **images_data_array, int screen_width,
+                int screen_heigth);
 void display_birds(drawn_bird_t **birds_array, uint8_t **images_data_array, char *output_buf);
 void clean_screen();
 void print_bird(drawn_bird_t **birds_array, int bird_no, char *output_buf);
@@ -120,8 +122,9 @@ void close_birds(bird_t **close_birds_list, bird_t *target, bird_t **birds, int 
                  int *counter);
 void my_atexit();
 void refresh_screen();
-void handle_key();
+void handle_key(uint8_t **images_data);
 void read_input(int argc, char **argv);
+void change_birds_dimensions(bool increase, uint8_t **bird_images);
 
 //=======================Low level terminal handling===========================
 
@@ -182,33 +185,34 @@ void my_atexit() {
 
 //========================Image data manipulation==============================
 
-/* Initializes the array of image frames */
-int init_rotation_frames(uint8_t **images_data_array, char *base_path) {
-    for (int i = 0; i < ROTATION_FRAME; i++) {
-        char base_path_copy[strlen(base_path) + 20];
-        strcpy(base_path_copy, base_path);
-        get_image_path(base_path_copy, i);
-        FILE *file = fopen(base_path_copy, "rb");
-        if (file == NULL) {
-            perror("Error during file opening");
-            exit(-1);
-        }
-        int size = lseek(fileno(file), 0, SEEK_END);
-        lseek(fileno(file), 0, SEEK_SET);
-        uint8_t *buf = (uint8_t *)malloc(sizeof(uint8_t) * size);
-        if (fread(buf, sizeof(char), size, file) != (unsigned long)size) {
-            perror("Error during file reading");
-            fclose(file);
-            exit(-1);
-        }
+void init_rotation_frames(uint8_t **images_data_array) {
+    char base_path[] = "../resources/dim";
+    char *base_path_copy = (char *)malloc(strlen(base_path) + 50);
+    int size_index;
+    int bird_index;
 
-        // Every image needs to be encoded base64 in order to be processed by
-        // the graphical protocol
-        images_data_array[i] = base64_encode(buf, size);
-        fclose(file);
-        free(buf);
+    for (size_index = 0; size_index < IMAGE_SIZES; size_index++) {
+        for (bird_index = 0; bird_index < ROTATION_FRAME; bird_index++) {
+            strcpy(base_path_copy, base_path);
+            get_image_path(base_path_copy, size_index + BASE_IMAGE_SIZE, bird_index);
+            FILE *file = fopen(base_path_copy, "rb");
+            if (file == NULL) {
+                perror("Error during file opening");
+                exit(-1);
+            }
+            int size = lseek(fileno(file), 0, SEEK_END);
+            lseek(fileno(file), 0, SEEK_SET);
+            uint8_t buf[size];
+            if (fread(buf, sizeof(char), size, file) != (unsigned long)size) {
+                perror("Error during file reading");
+                fclose(file);
+                exit(-1);
+            }
+
+            images_data_array[size_index * ROTATION_FRAME + bird_index] = base64_encode(buf, size);
+            fclose(file);
+        }
     }
-    return 0;
 }
 
 /*
@@ -277,8 +281,12 @@ uint8_t *base64_encode(const uint8_t *input, size_t input_length) {
     return output;
 }
 
-void get_image_path(char *base_path, int rotation_frame_id) {
+void get_image_path(char *base_path, int size_index, int rotation_frame_id) {
     char buf[20];
+    sprintf(buf, "%d", size_index);
+    strcat(base_path, buf);
+    strcat(base_path, "/bird_");
+
     sprintf(buf, "%d", rotation_frame_id);
     strcat(base_path, buf);
     strcat(base_path, ".png");
@@ -292,8 +300,10 @@ void get_image_path(char *base_path, int rotation_frame_id) {
  * new parameters without sending again the entire payload. */
 
 void send_payload_data(uint8_t **images_data) {
+    int image_size_index = BIRD_SIZE - BASE_IMAGE_SIZE;
     for (int i = 0; i < ROTATION_FRAME; i++) {
-        printf("\033_Ga=t,q=2,f=100,I=%d;%s\033\\", i + 1, (char *)images_data[i]);
+        printf("\033_Ga=t,q=2,f=100,I=%d;%s\033\\", i + 1,
+               (char *)images_data[ROTATION_FRAME * image_size_index + i]);
     }
     fflush(stdout);
     clean_screen();
@@ -331,6 +341,11 @@ void clean_screen() {
     printf("\033_Ga=d,d=a\033\\");
 }
 
+/*Deletes every cached placement*/
+void delete_placements() {
+    printf("\033_Ga=d,d=A\033\\");
+}
+
 /*=======================Birds behaviour logic==========================*/
 
 void init(char **output_buf, uint8_t **images_data, drawn_bird_t **draw_birds, bird_t **birds,
@@ -344,21 +359,20 @@ void init(char **output_buf, uint8_t **images_data, drawn_bird_t **draw_birds, b
         birds_copy[i] = (bird_t *)malloc(sizeof(bird_t));
     }
 
-    init_birds(draw_birds, images_data, base_path, screen_width, screen_heigth);
+    init_birds(draw_birds, images_data, screen_width, screen_heigth);
     for (int i = 0; i < BIRDS_N; i++) {
         birds[i] = draw_birds[i]->bird_ref;
     }
 }
 
-void init_birds(drawn_bird_t **birds_array, uint8_t **images_data_array, char *base_path,
-                int screen_width, int screen_heigth) {
+void init_birds(drawn_bird_t **birds_array, uint8_t **images_data_array, int screen_width,
+                int screen_heigth) {
     for (int i = 0; i < BIRDS_N; i++) {
-        birds_array[i]->bird_ref =
-            init_bird(i, BIRD_WIDTH, BIRD_HEIGTH, screen_width, screen_heigth);
+        birds_array[i]->bird_ref = init_bird(i, BIRD_SIZE, BIRD_SIZE, screen_width, screen_heigth);
         birds_array[i]->curr_id = to_degrees(birds_array[i]->bird_ref->direction) / FRAME_ANGLE;
         birds_array[i]->prev_id = birds_array[i]->curr_id;
     }
-    init_rotation_frames(images_data_array, base_path);
+    init_rotation_frames(images_data_array);
 }
 
 /**
@@ -579,19 +593,38 @@ void fix_weights() {
     TURN_RADIUS_Y = screen_heigth / factor;
 }
 
-void handle_key() {
+void handle_key(uint8_t **images_data) {
     char input_buf[INPUT_BUF_DIM];
-
     ssize_t size;
 
     size = read(STDIN_FILENO, (void *)input_buf, INPUT_BUF_DIM);
     if (size == 1) {
         char c = input_buf[0];
-        if (c == 'q') {
-            my_atexit();
-            exit(0);
+
+        switch (c) {
+            case 'q': /*quit*/
+                my_atexit();
+                exit(0);
+                break;
+            case '=': /*increase bird image size*/
+                if (BIRD_SIZE < IMAGE_SIZES + BASE_IMAGE_SIZE - 1)
+                    change_birds_dimensions(true, images_data);
+                break;
+            case '-': /*decrease bird image size*/
+                if (BIRD_SIZE > BASE_IMAGE_SIZE) change_birds_dimensions(false, images_data);
+                break;
         }
     }
+}
+
+/*Runtime bird dimension change*/
+void change_birds_dimensions(bool increase, uint8_t **images_data) {
+    if (increase)
+        BIRD_SIZE++;
+    else
+        BIRD_SIZE--;
+    delete_placements();
+    send_payload_data(images_data);
 }
 
 void read_input(int argc, char **argv) {
@@ -638,7 +671,7 @@ void refresh_screen(char **output_buf, drawn_bird_t **draw_birds, bird_t **birds
     update_birds(birds_copy, birds, screen_width, screen_heigth, BIRDS_N);
     clean_screen();
     fflush(stdout);
-    write(STDOUT_FILENO, output_buf, output_buf_off);
+    write(STDOUT_FILENO, *output_buf, output_buf_off);
     output_buf_off = 0;
 }
 
@@ -653,7 +686,7 @@ int main(int argc, char *argv[]) {
     clear();
     char *output_buf;
     int output_buf_len;
-    uint8_t *images_data[ROTATION_FRAME];
+    uint8_t *images_data[ROTATION_FRAME * IMAGE_SIZES];
     drawn_bird_t *draw_birds[BIRDS_N];
     bird_t *birds[BIRDS_N];
     bird_t *birds_copy[BIRDS_N];
@@ -667,7 +700,7 @@ int main(int argc, char *argv[]) {
         refresh_screen(&output_buf, draw_birds, birds, birds_copy);
 
         /*Handles input*/
-        handle_key();
+        handle_key(images_data);
 
         /*Sleeps to comply frame rate*/
         usleep(1000000 / FRAME_RATE);

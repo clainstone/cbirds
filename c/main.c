@@ -29,10 +29,9 @@
 
 /*=========================== Simulation parameters ===============================*/
 
-const int DEF_FRAME_RATE = 60;    /*Default frame rate in case no one is specified*/
-const int PERCEPTION_RADIUS = 35; /*The maximum distance whereas two boids can interacts*/
-const int PERCEPTION_RADIUS_SQUARED = PERCEPTION_RADIUS * PERCEPTION_RADIUS;
-const int DEF_SPEED = 60; /*Default speed in case no one is specified as input arg*/
+const int DEF_FRAME_RATE = 60; /*Default frame rate in case no one is specified*/
+const int DEF_SPEED = 60;      /*Default speed in case no one is specified as input arg*/
+const int DEF_PERCEPTION_RADIUS = 35;
 
 /* Runtime weights modification steps*/
 const double boundary_av_st = 0.02;
@@ -40,6 +39,7 @@ const double alignment_st = 0.1;
 const double separation_st = 0.001;
 const double cohesion_st = 0.002;
 const int frame_rate_st = 5;
+const int perception_radius_st = 3;
 
 const double boundary_av_min = 0.01;
 const double alignment_min = 0.1;
@@ -52,6 +52,9 @@ int TURN_RADIUS_X;   /*Border distance within the bird starts to steer to avoid 
 int TURN_RADIUS_Y;
 int SPEED = 40;     /*Pixels increment between two frames*/
 int BIRD_SIZE = 15; /*Bird size in pixels*/
+int PERCEPTION_RADIUS =
+    DEF_PERCEPTION_RADIUS; /*The maximum distance whereas two boids can interacts*/
+int PERCEPTION_RADIUS_SQUARED = DEF_PERCEPTION_RADIUS * DEF_PERCEPTION_RADIUS;
 
 /*Animation weights, see https://en.wikipedia.org/wiki/Boids */
 double SEPARATION_W = 0.005;
@@ -655,6 +658,16 @@ void handle_key(uint8_t **images_data) {
                 break;
             case 'r': /*decrease frame rate*/
                 if (FRAME_RATE - frame_rate_st > 0) FRAME_RATE -= frame_rate_st;
+                break;
+            case 'P': /*increase perception radius*/
+                PERCEPTION_RADIUS += perception_radius_st;
+                PERCEPTION_RADIUS_SQUARED = PERCEPTION_RADIUS * PERCEPTION_RADIUS;
+                break;
+            case 'p': /*decrease perception radius*/
+                if (PERCEPTION_RADIUS - perception_radius_st > 0) {
+                    PERCEPTION_RADIUS -= perception_radius_st;
+                    PERCEPTION_RADIUS_SQUARED = PERCEPTION_RADIUS * PERCEPTION_RADIUS;
+                }
                 break;
         }
     }

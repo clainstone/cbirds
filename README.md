@@ -157,6 +157,7 @@ While the simulation is running, use these keyboard commands:
 - `S` / `s` - Increase/decrease **separation** weight
 - `C` / `c` - Increase/decrease **cohesion** weight
 - `A` / `a` - Increase/decrease **alignment** weight
+- `P` / `p` - Increase/decrease **perception radius** 
 
 #### Performance
 - `R` / `r` - Increase/decrease frame rate

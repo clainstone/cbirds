@@ -34,6 +34,18 @@ const int PERCEPTION_RADIUS = 35; /*The maximum distance whereas two boids can i
 const int PERCEPTION_RADIUS_SQUARED = PERCEPTION_RADIUS * PERCEPTION_RADIUS;
 const int DEF_SPEED = 60; /*Default speed in case no one is specified as input arg*/
 
+/* Runtime weights modification steps*/
+const double boundary_av_st = 0.02;
+const double alignment_st = 0.1;
+const double separation_st = 0.001;
+const double cohesion_st = 0.002;
+const int frame_rate_st = 5;
+
+const double boundary_av_min = 0.01;
+const double alignment_min = 0.1;
+const double separation_min = 0.001;
+const double cohesion_min = 0.002;
+
 int BIRDS_N = 800;   /*Birds number*/
 int FRAME_RATE = 60; /*Frames per second*/
 int TURN_RADIUS_X;   /*Border distance within the bird starts to steer to avoid the collision*/
@@ -593,6 +605,7 @@ void fix_weights() {
     TURN_RADIUS_Y = screen_heigth / factor;
 }
 
+/*Handles raw mode input keys*/
 void handle_key(uint8_t **images_data) {
     char input_buf[INPUT_BUF_DIM];
     ssize_t size;
@@ -612,6 +625,36 @@ void handle_key(uint8_t **images_data) {
                 break;
             case '-': /*decrease bird image size*/
                 if (BIRD_SIZE > BASE_IMAGE_SIZE) change_birds_dimensions(false, images_data);
+                break;
+            case 'B': /*increase boundary_av*/
+                BOUNDARY_AV_W += boundary_av_st;
+                break;
+            case 'b': /*decrease boundary_av*/
+                if (BOUNDARY_AV_W - boundary_av_st > 0) BOUNDARY_AV_W -= boundary_av_st;
+                break;
+            case 'S': /*increase separation*/
+                SEPARATION_W += separation_st;
+                break;
+            case 's': /*decrease separation*/
+                if (SEPARATION_W - separation_st > 0) SEPARATION_W -= separation_st;
+                break;
+            case 'C': /*increase cohesion*/
+                COHESION_W += cohesion_st;
+                break;
+            case 'c': /*decrease cohesion*/
+                if (COHESION_W - cohesion_st > 0) COHESION_W -= cohesion_st;
+                break;
+            case 'A': /*increase alignment*/
+                ALIGNMENT_W += alignment_st;
+                break;
+            case 'a': /*decrease alignment*/
+                if (ALIGNMENT_W - alignment_st > 0) ALIGNMENT_W -= alignment_st;
+                break;
+            case 'R': /*increase frame rate*/
+                FRAME_RATE += frame_rate_st;
+                break;
+            case 'r': /*decrease frame rate*/
+                if (FRAME_RATE - frame_rate_st > 0) FRAME_RATE -= frame_rate_st;
                 break;
         }
     }

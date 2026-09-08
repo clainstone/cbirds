@@ -44,3 +44,4 @@ Thumbs.db
 #################
 cbirds
 *.dSYM/
+tools/mkasset

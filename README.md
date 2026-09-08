@@ -6,6 +6,8 @@
 
 A high-performance implementation of Craig Reynolds' **Boids algorithm** in pure C, featuring real-time GPU-accelerated terminal graphics rendering. This flocking simulation brings autonomous agent behavior to life directly in your terminal using the Kitty Graphics Protocol.
 
+Zero dependencies: no libraries beyond libc and libm, no asset files. The bird sprite is a PNG compiled into the binary, and every rotation frame is produced at startup by the PNG library included in the project.
+
 ![Cbirds Demo](./demo.gif)
 
 ## Table of Contents
@@ -45,7 +47,8 @@ These simple rules create surprisingly realistic emergent behavior resembling na
 
 ### Graphics & Performance
 - 🎨 **Native Terminal Graphics**: Direct PNG rendering via Kitty Graphics Protocol
-- 🔄 **360° Sprite Animation**: Full rotational sprites for smooth directional changes
+- 🔄 **360° Sprite Animation**: 90 rotation frames generated at startup, no files involved
+- 📦 **Self Contained**: own PNG decoder, encoder and DEFLATE implementation, no zlib, no libpng
 - ⚡ **High Performance**: Handles 800+ boids at 60 FPS on modern hardware
 - 📐 **Responsive Layout**: Automatic adaptation to terminal resizing
 - 🎮 **Real-time Control**: Interactive parameter adjustment during runtime
@@ -53,17 +56,18 @@ These simple rules create surprisingly realistic emergent behavior resembling na
 ### Customization
 - 🎛️ **Adjustable Population**: Scale from tens to thousands of boids
 - ⏱️ **Variable Frame Rate**: Configure FPS from 1 to 200+
-- 📏 **Dynamic Sizing**: Runtime adjustment of sprite dimensions
+- 📏 **Sprite Size**: chosen at startup with `-s`, the frames are rendered for that size
 - 🎚️ **Behavioral Tuning**: Fine-tune separation, alignment, cohesion, and boundary weights
 
 ## How It Works
 
 Cbirds combines several technologies to achieve high-performance terminal graphics:
 
-1. **Kitty Graphics Protocol**: Binary image data is Base64-encoded and transmitted to the terminal using escape sequences
-2. **Double Buffering**: State updates are computed on a separate copy to ensure consistency
-3. **Rotation Precomputation**: 90 pre-rendered rotation frames per sprite size reduce CPU load
-4. **Raw Terminal Mode**: Direct terminal control for responsive keyboard input
+1. **Sprite Generation**: the embedded PNG is decoded once, then rotated and scaled into 90 frames, each re-encoded as a PNG in memory
+2. **Kitty Graphics Protocol**: Binary image data is Base64-encoded and transmitted to the terminal using escape sequences
+3. **Double Buffering**: State updates are computed on a separate copy to ensure consistency
+4. **Rotation Precomputation**: the 90 frames are built at startup so the main loop only sends positions
+5. **Raw Terminal Mode**: Direct terminal control for responsive keyboard input
 
 ## Requirements
 
@@ -85,10 +89,10 @@ Cbirds requires a terminal that supports the **Kitty Graphics Protocol**:
 
 - **Operating System**: Linux or macOS
 - **Compiler**: GCC 7+ or Clang 10+
-- **Libraries**: 
+- **Libraries**:
   - `libm` (math library)
   - Standard C library
-- **Image Assets**: PNG sprite resources (included in repository)
+- **Image Assets**: none, the sprite is compiled into the binary
 
 ## Installation
 
@@ -105,26 +109,21 @@ cd cbirds
 make
 ```
 
-The compiled binary `cbirds` is created in the repository root.
+The compiled binary `cbirds` is created in the repository root. It needs
+nothing else at runtime: copy it anywhere and run it.
 
-### Verify Image Resources
+### Changing the Artwork
 
-Ensure the sprite images are properly located:
-
-```bash
-ls resources/dim5/  # Should contain bird_0.png through bird_89.png
-```
-
-Sprites are looked up in `./resources`, then `../resources`. To run the binary
-from anywhere else, point it at the directory explicitly:
+The bird is `resources/matrix.png`, embedded in the binary as `sprite_png.h`.
+After editing the artwork, regenerate the header:
 
 ```bash
-CBIRDS_RESOURCES=/path/to/cbirds/resources cbirds
+make asset
+make
 ```
 
-The sprites can be regenerated from `resources/matrix.png` with
-`python3 python/rotate.py` (run from the repository root; needs `opencv-python`
-and `imutils`).
+`make asset` builds `tools/mkasset`, which validates the PNG with the project's
+own decoder before writing the header.
 
 ## Usage
 
@@ -144,6 +143,7 @@ Run with default settings (800 boids at 60 FPS):
 Options:
   -n NUMBER    Set number of boids (default: 800, max: 200000)
   -f FPS       Set frame rate (default: 60, max: 1000)
+  -s SIZE      Set bird size in pixels (default: 15, from 4 to 64)
   -h           Show usage and exit
 
 Examples:
@@ -158,10 +158,6 @@ While the simulation is running, use these keyboard commands:
 
 #### General Controls
 - `q` or `Ctrl+C` - Quit the simulation (the terminal is always restored, crashes included)
-
-#### Visual Adjustments
-- `=` - Increase bird sprite size
-- `-` - Decrease bird sprite size
 
 #### Behavioral Parameters
 - `B` / `b` - Increase/decrease **boundary avoidance** weight
@@ -183,7 +179,7 @@ The simulation uses these default values (defined in source):
 BIRDS_N = 800              // Number of boids
 FRAME_RATE = 60            // Frames per second
 SPEED = 40                 // Movement speed (pixels/frame at 60 FPS)
-BIRD_SIZE = 15             // Sprite size (pixels)
+BIRD_SIZE = 15             // Sprite size (pixels), see -s
 PERCEPTION_RADIUS = 35     // Neighbor detection radius
 
 // Behavioral weights
@@ -202,7 +198,7 @@ flock faster or slower.
 **For smoother animation:**
 - Reduce boid count: `./cbirds -n 400`
 - Lower frame rate: `./cbirds -f 30`
-- Decrease sprite size at runtime: Press `-` key
+- Use smaller sprites: `./cbirds -s 10`
 
 **For more dramatic flocking:**
 - Increase cohesion: Press `C` multiple times
@@ -218,7 +214,7 @@ flock faster or slower.
 
 The simulation follows this execution flow:
 
-1. **Initialization**: Load and Base64-encode all rotation sprites
+1. **Initialization**: Decode the embedded PNG, build the 90 rotation frames, Base64-encode them
 2. **State Setup**: Initialize boid positions and velocities randomly
 3. **Main Loop**:
    - Copy current state for consistent calculations
@@ -228,6 +224,25 @@ The simulation follows this execution flow:
    - Render sprites using Kitty graphics commands
    - Process keyboard input
    - Sleep for the remainder of the frame budget, measured with a monotonic clock
+
+### The PNG Library
+
+`png.c` / `png.h` are self contained, no zlib and no libpng:
+
+| Function | What it does |
+|---|---|
+| `png_decode` | 8 bit non interlaced PNG (gray, RGB, with or without alpha) into RGBA, chunk CRCs verified |
+| `png_encode` | RGBA back into a PNG kept in memory |
+| `png_rotate` | rotation around the center, canvas preserved |
+| `png_resize` | box filter when shrinking, bilinear when enlarging |
+| `png_rotate_resize` | the two above in sequence, which is how the sprites are built |
+| `png_tint` | recolors, multiply or replace, alpha untouched |
+
+The DEFLATE decompressor supports all three block types (stored, fixed and
+dynamic Huffman), so any real PNG can be read. Compression on the way out uses
+stored blocks only: the sprites are a few hundred bytes each and are sent to the
+terminal once, so the ratio does not matter. Filtering runs on premultiplied
+alpha, otherwise the color of the transparent pixels bleeds into the wings.
 
 ### Key Algorithms
 
@@ -253,11 +268,14 @@ Cbirds uses Kitty's graphics protocol with these commands:
 
 *On an Intel i9-9880H with 8 cores
 
+Startup, sprite generation included, is about 50 ms at the default size and
+160 ms at `-s 64`.
+
 ## Contributing
 
 Contributions are welcome! Areas for improvement:
 
-- **Optimization**: SIMD vectorization, spatial hashing for neighbor queries
+- **Optimization**: spatial hashing for neighbor queries (currently O(n²)), a real DEFLATE compressor for the encoder
 - **Features**: Predator-prey dynamics, obstacle avoidance, 3D visualization
 - **Portability**: Windows support, additional terminal protocols
 

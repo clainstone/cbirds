@@ -16,11 +16,16 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "png.h"
+#include "sprite_png.h"
+
 #define ROTATION_FRAME 90                  /*Number of roation frame*/
 #define FRAME_ANGLE (360 / ROTATION_FRAME) /*Difference in degrees from ajacents rotation frames*/
-#define BASE_IMAGE_SIZE 5
-#define IMAGE_SIZES 40
-#define PNG_FORMAT 100 /*Kitty's protocol png escape code*/
+#define PNG_FORMAT 100                     /*Kitty's protocol png escape code*/
+#define SPRITE_SUPERSAMPLE 8               /*Rotation happens on a canvas this many times bigger*/
+#define SPRITE_WORK_MAX 256                /*Upper bound of that canvas*/
+#define MIN_BIRD_SIZE 4
+#define MAX_BIRD_SIZE 64
 #define DEF_TERMINAL_COLS 80
 #define DEF_TERMINAL_ROWS 24
 #define DEF_CELL_WIDTH 8 /*Cell size assumed when the terminal reports no pixel size*/
@@ -31,7 +36,6 @@
 #define BIRD_ESCAPE_DIM 150 /*Upper bound of a single placement escape sequence*/
 #define MAX_BIRDS 200000
 #define MAX_FRAME_RATE 1000
-#define PATH_DIM 256
 
 /*Alternate screen and cursor control, used instead of shelling out to tput*/
 #define ALT_SCREEN_ON "\033[?1049h"
@@ -44,6 +48,7 @@
 const int DEF_FRAME_RATE = 60; /*Default frame rate in case no one is specified*/
 const int DEF_SPEED = 40;      /*Pixels per frame at DEF_FRAME_RATE*/
 const int DEF_PERCEPTION_RADIUS = 35;
+const int DEF_BIRD_SIZE = 15;
 
 /* Runtime weights modification steps*/
 const double boundary_av_st = 0.02;
@@ -64,7 +69,7 @@ int FRAME_RATE = 60; /*Frames per second*/
 int TURN_RADIUS_X;   /*Border distance within the bird starts to steer to avoid the collision*/
 int TURN_RADIUS_Y;
 int SPEED = 40;     /*Pixels increment between two frames*/
-int BIRD_SIZE = 15; /*Bird size in pixels*/
+int BIRD_SIZE = 15; /*Bird size in pixels, see DEF_BIRD_SIZE and -s*/
 int PERCEPTION_RADIUS =
     DEF_PERCEPTION_RADIUS; /*The maximum distance whereas two boids can interacts*/
 int PERCEPTION_RADIUS_SQUARED = DEF_PERCEPTION_RADIUS * DEF_PERCEPTION_RADIUS;
@@ -99,7 +104,6 @@ typedef struct {
 /*base16 to base64 lookup*/
 const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-const char *resources_root = "resources"; /*Directory holding the dimNN sprite folders*/
 int screen_width;
 int screen_heigth;
 int n_col;
@@ -130,16 +134,12 @@ uint8_t *base64_encode(const uint8_t *input, size_t input_length);
 vector2d_t calculate_boundary_av_direction(bird_t *bird, int screen_width, int screen_heigth);
 
 void init_rotation_frames(uint8_t **images_data_array);
-void find_resources_root();
-void get_image_path(char *path, size_t path_size, int size_index, int rotation_frame_id);
-void init_birds(drawn_bird_t **birds_array, uint8_t **images_data_array, int screen_width,
-                int screen_heigth);
+void init_birds(drawn_bird_t **birds_array, int screen_width, int screen_heigth);
 void clean_screen();
 void delete_placements();
 void print_bird(drawn_bird_t **birds_array, int bird_no, char *output_buf);
 void update_rotation_frame_id(drawn_bird_t **birds_array);
-void init(char **output_buf, uint8_t **images_data, drawn_bird_t **draw_birds, bird_t **birds,
-          bird_t **birds_copy);
+void init(char **output_buf, drawn_bird_t **draw_birds, bird_t **birds, bird_t **birds_copy);
 void send_payload_data(uint8_t **payload_data);
 void get_screen_dimensions();
 void fix_weights();
@@ -157,10 +157,9 @@ void my_atexit();
 void install_signal_handlers();
 void refresh_screen(char **output_buf, drawn_bird_t **draw_birds, bird_t **birds,
                     bird_t **birds_copy);
-void handle_key(uint8_t **images_data);
+void handle_key();
 void read_input(int argc, char **argv);
 void usage(const char *prog);
-void change_birds_dimensions(bool increase, uint8_t **bird_images);
 void full_write(const char *data, size_t len);
 void copy(bird_t **original, bird_t **copy, int birds_num);
 void clear();
@@ -280,76 +279,49 @@ void install_signal_handlers() {
 
 //========================Image data manipulation==============================
 
-/*Picks the first directory that actually holds the sprites, so that the binary
- * can be run from the project root, from a build subdirectory or from anywhere
- * else by exporting CBIRDS_RESOURCES.*/
-void find_resources_root() {
-    static const char *candidates[] = {"resources", "../resources", NULL};
-    const char *env = getenv("CBIRDS_RESOURCES");
-    char path[PATH_DIM];
-
-    if (env != NULL && *env != '\0') {
-        resources_root = env;
-        return;
-    }
-    for (int i = 0; candidates[i] != NULL; i++) {
-        snprintf(path, sizeof(path), "%s/dim%d/bird_0.png", candidates[i], BASE_IMAGE_SIZE);
-        if (access(path, R_OK) == 0) {
-            resources_root = candidates[i];
-            return;
-        }
-    }
-    fprintf(stderr,
-            "Cannot find the sprite directory (looked for ./resources and ../resources).\n"
-            "Run cbirds from the project root or set CBIRDS_RESOURCES.\n");
-    exit(EXIT_FAILURE);
-}
-
+/*Builds the 90 rotation frames starting from the PNG embedded in the binary.
+ * The sprite is rotated on a supersampled canvas and only then boxed down to
+ * the final size : rotating directly at 15 pixels would destroy it.*/
 void init_rotation_frames(uint8_t **images_data_array) {
-    char path[PATH_DIM];
-    int size_index;
-    int bird_index;
+    png_image_t base = {0, 0, NULL};
+    png_image_t canvas = {0, 0, NULL};
+    png_status_t status;
 
-    for (size_index = 0; size_index < IMAGE_SIZES; size_index++) {
-        for (bird_index = 0; bird_index < ROTATION_FRAME; bird_index++) {
-            get_image_path(path, sizeof(path), size_index + BASE_IMAGE_SIZE, bird_index);
-            FILE *file = fopen(path, "rb");
-            if (file == NULL) {
-                perror("Error during file opening");
-                exit(EXIT_FAILURE);
-            }
-            if (fseek(file, 0, SEEK_END) < 0) {
-                perror("Error during file seeking");
-                fclose(file);
-                exit(EXIT_FAILURE);
-            }
-            long size = ftell(file);
-            if (size <= 0) {
-                fprintf(stderr, "Empty or unreadable image : %s\n", path);
-                fclose(file);
-                exit(EXIT_FAILURE);
-            }
-            rewind(file);
-
-            uint8_t *buf = (uint8_t *)malloc((size_t)size);
-            if (buf == NULL) {
-                perror("Out of memory while loading images");
-                fclose(file);
-                exit(EXIT_FAILURE);
-            }
-            if (fread(buf, 1, (size_t)size, file) != (size_t)size) {
-                perror("Error during file reading");
-                free(buf);
-                fclose(file);
-                exit(EXIT_FAILURE);
-            }
-
-            images_data_array[size_index * ROTATION_FRAME + bird_index] =
-                base64_encode(buf, (size_t)size);
-            free(buf);
-            fclose(file);
-        }
+    status = png_decode(sprite_png, sprite_png_len, &base);
+    if (status != PNG_OK) {
+        fprintf(stderr, "Cannot decode the embedded sprite : %s\n", png_status_string(status));
+        exit(EXIT_FAILURE);
     }
+
+    int canvas_size = BIRD_SIZE * SPRITE_SUPERSAMPLE;
+    if (canvas_size > SPRITE_WORK_MAX) canvas_size = SPRITE_WORK_MAX;
+    if (canvas_size > base.width) canvas_size = base.width;
+
+    status = png_resize(&base, canvas_size, canvas_size, &canvas);
+    png_image_free(&base);
+    if (status != PNG_OK) {
+        fprintf(stderr, "Cannot scale the embedded sprite : %s\n", png_status_string(status));
+        exit(EXIT_FAILURE);
+    }
+
+    for (int i = 0; i < ROTATION_FRAME; i++) {
+        png_image_t frame = {0, 0, NULL};
+        uint8_t *encoded = NULL;
+        size_t encoded_length = 0;
+        double radians = (double)i * FRAME_ANGLE * M_PI / 180.0;
+
+        status = png_rotate_resize(&canvas, radians, BIRD_SIZE, BIRD_SIZE, &frame);
+        if (status == PNG_OK) status = png_encode(&frame, &encoded, &encoded_length);
+        png_image_free(&frame);
+        if (status != PNG_OK) {
+            fprintf(stderr, "Cannot build the rotation frames : %s\n", png_status_string(status));
+            exit(EXIT_FAILURE);
+        }
+
+        images_data_array[i] = base64_encode(encoded, encoded_length);
+        free(encoded);
+    }
+    png_image_free(&canvas);
 }
 
 /*
@@ -420,11 +392,6 @@ uint8_t *base64_encode(const uint8_t *input, size_t input_length) {
     return output;
 }
 
-void get_image_path(char *path, size_t path_size, int size_index, int rotation_frame_id) {
-    snprintf(path, path_size, "%s/dim%d/bird_%d.png", resources_root, size_index,
-             rotation_frame_id);
-}
-
 /*====================Graphical protocol escapes handling=====================
  *
  * In order to send data to the terminal emulator, images needs to be encoded
@@ -433,10 +400,8 @@ void get_image_path(char *path, size_t path_size, int size_index, int rotation_f
  * new parameters without sending again the entire payload. */
 
 void send_payload_data(uint8_t **images_data) {
-    int image_size_index = BIRD_SIZE - BASE_IMAGE_SIZE;
     for (int i = 0; i < ROTATION_FRAME; i++) {
-        printf("\033_Ga=t,q=2,f=%d,I=%d;%s\033\\", PNG_FORMAT, i + 1,
-               (char *)images_data[ROTATION_FRAME * image_size_index + i]);
+        printf("\033_Ga=t,q=2,f=%d,I=%d;%s\033\\", PNG_FORMAT, i + 1, (char *)images_data[i]);
     }
     clean_screen();
     fflush(stdout);
@@ -484,8 +449,7 @@ void delete_placements() {
 
 /*=======================Birds behaviour logic==========================*/
 
-void init(char **output_buf, uint8_t **images_data, drawn_bird_t **draw_birds, bird_t **birds,
-          bird_t **birds_copy) {
+void init(char **output_buf, drawn_bird_t **draw_birds, bird_t **birds, bird_t **birds_copy) {
     get_screen_dimensions();
     output_buf_size = (size_t)BIRD_ESCAPE_DIM * (size_t)BIRDS_N + 1;
     *output_buf = (char *)malloc(output_buf_size);
@@ -503,20 +467,18 @@ void init(char **output_buf, uint8_t **images_data, drawn_bird_t **draw_birds, b
         }
     }
 
-    init_birds(draw_birds, images_data, screen_width, screen_heigth);
+    init_birds(draw_birds, screen_width, screen_heigth);
     for (int i = 0; i < BIRDS_N; i++) {
         birds[i] = draw_birds[i]->bird_ref;
     }
 }
 
-void init_birds(drawn_bird_t **birds_array, uint8_t **images_data_array, int screen_width,
-                int screen_heigth) {
+void init_birds(drawn_bird_t **birds_array, int screen_width, int screen_heigth) {
     for (int i = 0; i < BIRDS_N; i++) {
         birds_array[i]->bird_ref = init_bird(i, BIRD_SIZE, BIRD_SIZE, screen_width, screen_heigth);
         birds_array[i]->curr_id = to_degrees(birds_array[i]->bird_ref->direction) / FRAME_ANGLE;
         birds_array[i]->prev_id = birds_array[i]->curr_id;
     }
-    init_rotation_frames(images_data_array);
 }
 
 /**
@@ -757,7 +719,7 @@ void update_speed() {
 }
 
 /*Handles raw mode input keys*/
-void handle_key(uint8_t **images_data) {
+void handle_key() {
     char input_buf[INPUT_BUF_DIM];
     ssize_t size;
 
@@ -771,13 +733,6 @@ void handle_key(uint8_t **images_data) {
         switch (c) {
             case 'q': /*quit*/
                 exit(0);
-                break;
-            case '=': /*increase bird image size*/
-                if (BIRD_SIZE < IMAGE_SIZES + BASE_IMAGE_SIZE - 1)
-                    change_birds_dimensions(true, images_data);
-                break;
-            case '-': /*decrease bird image size*/
-                if (BIRD_SIZE > BASE_IMAGE_SIZE) change_birds_dimensions(false, images_data);
                 break;
             case 'B': /*increase boundary_av*/
                 BOUNDARY_AV_W += boundary_av_st;
@@ -830,35 +785,28 @@ void handle_key(uint8_t **images_data) {
     }
 }
 
-/*Runtime bird dimension change*/
-void change_birds_dimensions(bool increase, uint8_t **images_data) {
-    if (increase)
-        BIRD_SIZE++;
-    else
-        BIRD_SIZE--;
-    delete_placements();
-    send_payload_data(images_data);
-}
-
 void usage(const char *prog) {
     fprintf(stderr,
-            "Usage: %s [-n BIRDS] [-f FPS]\n"
+            "Usage: %s [-n BIRDS] [-f FPS] [-s SIZE]\n"
             "  -n NUMBER    number of boids (default %d, max %d)\n"
             "  -f FPS       frame rate (default %d, max %d)\n"
+            "  -s SIZE      bird size in pixels (default %d, from %d to %d)\n"
             "  -h           show this help\n",
-            prog, 800, MAX_BIRDS, DEF_FRAME_RATE, MAX_FRAME_RATE);
+            prog, 800, MAX_BIRDS, DEF_FRAME_RATE, MAX_FRAME_RATE, DEF_BIRD_SIZE, MIN_BIRD_SIZE,
+            MAX_BIRD_SIZE);
 }
 
 void read_input(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         bool is_birds = strcmp(argv[i], "-n") == 0;
         bool is_fps = strcmp(argv[i], "-f") == 0;
+        bool is_size = strcmp(argv[i], "-s") == 0;
 
         if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             usage(argv[0]);
             exit(EXIT_SUCCESS);
         }
-        if (!is_birds && !is_fps) {
+        if (!is_birds && !is_fps && !is_size) {
             fprintf(stderr, "Unknown option : %s\n", argv[i]);
             usage(argv[0]);
             exit(EXIT_FAILURE);
@@ -883,6 +831,13 @@ void read_input(int argc, char **argv) {
                 arg = MAX_BIRDS;
             }
             BIRDS_N = (int)arg;
+        } else if (is_size) {
+            if (arg < MIN_BIRD_SIZE || arg > MAX_BIRD_SIZE) {
+                fprintf(stderr, "Bird size must be between %d and %d\n", MIN_BIRD_SIZE,
+                        MAX_BIRD_SIZE);
+                exit(EXIT_FAILURE);
+            }
+            BIRD_SIZE = (int)arg;
         } else {
             if (arg > MAX_FRAME_RATE) {
                 fprintf(stderr, "Frame rate capped to %d\n", MAX_FRAME_RATE);
@@ -915,19 +870,11 @@ int main(int argc, char *argv[]) {
     struct timespec frame_start, frame_end;
 
     read_input(argc, argv); /*Reads cli input data*/
-    find_resources_root();
     srand((unsigned int)time(NULL));
     get_screen_dimensions();
-    install_signal_handlers();
-    atexit(my_atexit);      /*Defines exit callback*/
-    if (my_atenter() < 0) { /*Try to enable terminal raw mode*/
-        perror("Can't enable raw mode :");
-        exit(EXIT_FAILURE);
-    }
-    clear();
 
     char *output_buf;
-    uint8_t **images_data = (uint8_t **)malloc(sizeof(uint8_t *) * ROTATION_FRAME * IMAGE_SIZES);
+    uint8_t **images_data = (uint8_t **)malloc(sizeof(uint8_t *) * ROTATION_FRAME);
     drawn_bird_t **draw_birds = (drawn_bird_t **)malloc(sizeof(drawn_bird_t *) * (size_t)BIRDS_N);
     bird_t **birds = (bird_t **)malloc(sizeof(bird_t *) * (size_t)BIRDS_N);
     bird_t **birds_copy = (bird_t **)malloc(sizeof(bird_t *) * (size_t)BIRDS_N);
@@ -937,7 +884,19 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    init(&output_buf, images_data, draw_birds, birds, birds_copy);
+    /*The sprites are built out of the embedded png before the terminal is
+     * taken over, so that an error message stays readable*/
+    init_rotation_frames(images_data);
+
+    install_signal_handlers();
+    atexit(my_atexit);      /*Defines exit callback*/
+    if (my_atenter() < 0) { /*Try to enable terminal raw mode*/
+        perror("Can't enable raw mode :");
+        exit(EXIT_FAILURE);
+    }
+    clear();
+
+    init(&output_buf, draw_birds, birds, birds_copy);
     send_payload_data(images_data); /*Sends png images data base64 encoded*/
 
     while (1) {
@@ -948,7 +907,7 @@ int main(int argc, char *argv[]) {
         refresh_screen(&output_buf, draw_birds, birds, birds_copy);
 
         /*Handles input*/
-        handle_key(images_data);
+        handle_key();
 
         /*Sleeps to comply frame rate, taking the frame cost into account*/
         clock_gettime(CLOCK_MONOTONIC, &frame_end);

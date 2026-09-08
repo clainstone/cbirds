@@ -94,6 +94,18 @@ Cbirds requires a terminal that supports the **Kitty Graphics Protocol**:
   - Standard C library
 - **Image Assets**: none, the sprite is compiled into the binary
 
+## Project Layout
+
+Everything lives in the repository root, there are no subdirectories:
+
+| File | |
+|---|---|
+| `main.c` | simulation, terminal handling, Kitty protocol |
+| `png.c` / `png.h` | the PNG library (decode, encode, rotate, resize, tint) |
+| `sprite_png.h` | the bird PNG, generated, compiled into the binary |
+| `mkasset.c` | regenerates that header from `matrix.png` |
+| `matrix.png` | the original artwork |
+
 ## Installation
 
 ### Clone the Repository
@@ -114,7 +126,7 @@ nothing else at runtime: copy it anywhere and run it.
 
 ### Changing the Artwork
 
-The bird is `resources/matrix.png`, embedded in the binary as `sprite_png.h`.
+The bird is `matrix.png`, embedded in the binary as `sprite_png.h`.
 After editing the artwork, regenerate the header:
 
 ```bash
@@ -122,7 +134,7 @@ make asset
 make
 ```
 
-`make asset` builds `tools/mkasset`, which validates the PNG with the project's
+`make asset` builds `mkasset`, which validates the PNG with the project's
 own decoder before writing the header.
 
 ## Usage

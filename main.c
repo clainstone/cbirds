@@ -87,7 +87,7 @@ static enum { RESET, RAW } ttystate = RESET; /*Terminal state : RAW, NORMAL*/
 typedef int rotation_frame_id_t; /*The index that defines the id of the rotation frame*/
 
 typedef struct {
-    int id, width, heigth, speed;
+    int id;
     double direction, x, y;
 } bird_t;
 
@@ -96,7 +96,6 @@ typedef struct {
 } vector2d_t;
 
 typedef struct {
-    rotation_frame_id_t prev_id;
     rotation_frame_id_t curr_id;
     bird_t *bird_ref;
 } drawn_bird_t;
@@ -118,7 +117,7 @@ static volatile sig_atomic_t terminal_restored = 0;
 
 /*============================================================================================*/
 
-bird_t *init_bird(int id, int width, int heigth, int screen_width, int screen_heigth);
+bird_t *init_bird(int id, int screen_width, int screen_heigth);
 
 double calculate_rules_direction(bird_t *bird, bird_t **birds, int num_birds, int screen_width,
                                  int screen_heigth);
@@ -136,7 +135,6 @@ vector2d_t calculate_boundary_av_direction(bird_t *bird, int screen_width, int s
 void init_rotation_frames(uint8_t **images_data_array);
 void init_birds(drawn_bird_t **birds_array, int screen_width, int screen_heigth);
 void clean_screen();
-void delete_placements();
 void print_bird(drawn_bird_t **birds_array, int bird_no, char *output_buf);
 void update_rotation_frame_id(drawn_bird_t **birds_array);
 void init(char **output_buf, drawn_bird_t **draw_birds, bird_t **birds, bird_t **birds_copy);
@@ -442,11 +440,6 @@ void clean_screen() {
     printf("\033_Ga=d,d=a\033\\");
 }
 
-/*Deletes every cached placement*/
-void delete_placements() {
-    printf("\033_Ga=d,d=A\033\\");
-}
-
 /*=======================Birds behaviour logic==========================*/
 
 void init(char **output_buf, drawn_bird_t **draw_birds, bird_t **birds, bird_t **birds_copy) {
@@ -475,9 +468,8 @@ void init(char **output_buf, drawn_bird_t **draw_birds, bird_t **birds, bird_t *
 
 void init_birds(drawn_bird_t **birds_array, int screen_width, int screen_heigth) {
     for (int i = 0; i < BIRDS_N; i++) {
-        birds_array[i]->bird_ref = init_bird(i, BIRD_SIZE, BIRD_SIZE, screen_width, screen_heigth);
+        birds_array[i]->bird_ref = init_bird(i, screen_width, screen_heigth);
         birds_array[i]->curr_id = to_degrees(birds_array[i]->bird_ref->direction) / FRAME_ANGLE;
-        birds_array[i]->prev_id = birds_array[i]->curr_id;
     }
 }
 
@@ -485,7 +477,7 @@ void init_birds(drawn_bird_t **birds_array, int screen_width, int screen_heigth)
  * Bird constructor. Initializes bird direction, x and y coordinates as random
  * values.
  */
-bird_t *init_bird(int id, int width, int heigth, int screen_width, int screen_heigth) {
+bird_t *init_bird(int id, int screen_width, int screen_heigth) {
     bird_t *bird = (bird_t *)malloc(sizeof(bird_t));
 
     if (bird == NULL) {
@@ -499,9 +491,6 @@ bird_t *init_bird(int id, int width, int heigth, int screen_width, int screen_he
     bird->y = Y_START_OFF + (screen_heigth - 2 * Y_START_OFF) * ((double)rand() / RAND_MAX);
     bird->direction = 2 * M_PI * ((double)rand() / RAND_MAX);
     bird->id = id;
-    bird->speed = SPEED;
-    bird->width = width;
-    bird->heigth = heigth;
 
     /*Avoids blocked startin position*/
     if (bird->x < TURN_RADIUS_X || bird->x > screen_width - TURN_RADIUS_X)
@@ -534,10 +523,8 @@ void update_birds(bird_t **birds_copy_to_read, bird_t **birds_to_write, int scre
 
 /*Updates the bird frame_id according to his new direction*/
 void update_rotation_frame_id(drawn_bird_t **birds_array) {
-    for (int i = 0; i < BIRDS_N; i++) {
-        birds_array[i]->prev_id = birds_array[i]->curr_id;
+    for (int i = 0; i < BIRDS_N; i++)
         birds_array[i]->curr_id = to_degrees(birds_array[i]->bird_ref->direction) / FRAME_ANGLE;
-    }
 }
 
 /**
@@ -649,9 +636,8 @@ double calculate_rules_direction(bird_t *target, bird_t **birds, int num_birds, 
 
 void update_direction(bird_t *bird, double next_direction) {
     bird->direction = next_direction;
-    bird->speed = SPEED;
-    bird->x += (double)bird->speed * cos(next_direction);
-    bird->y += (double)bird->speed * sin(next_direction);
+    bird->x += SPEED * cos(next_direction);
+    bird->y += SPEED * sin(next_direction);
 }
 
 int to_degrees(double radians) {
@@ -697,10 +683,7 @@ double my_atan2(double y, double x) {
 void copy(bird_t **original, bird_t **copy, int birds_num) {
     for (int i = 0; i < birds_num; i++) {
         copy[i]->direction = original[i]->direction;
-        copy[i]->heigth = original[i]->heigth;
         copy[i]->id = original[i]->id;
-        copy[i]->speed = original[i]->speed;
-        copy[i]->width = original[i]->width;
         copy[i]->x = original[i]->x;
         copy[i]->y = original[i]->y;
     }

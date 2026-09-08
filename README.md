@@ -62,7 +62,7 @@ Cbirds combines several technologies to achieve high-performance terminal graphi
 
 1. **Kitty Graphics Protocol**: Binary image data is Base64-encoded and transmitted to the terminal using escape sequences
 2. **Double Buffering**: State updates are computed on a separate copy to ensure consistency
-3. **Rotation Precomputation**: 90 pre-rendered rotation frames reduce CPU load
+3. **Rotation Precomputation**: 90 pre-rendered rotation frames per sprite size reduce CPU load
 4. **Raw Terminal Mode**: Direct terminal control for responsive keyboard input
 
 ## Requirements
@@ -102,19 +102,29 @@ cd cbirds
 ### Build from Source
 
 ```bash
-cd c
-make main
+make
 ```
 
-The compiled binary `cbirds` will be created in the same directory.
+The compiled binary `cbirds` is created in the repository root.
 
 ### Verify Image Resources
 
 Ensure the sprite images are properly located:
 
 ```bash
-ls ../resources/dim5/  # Should contain bird_0.png through bird_89.png
+ls resources/dim5/  # Should contain bird_0.png through bird_89.png
 ```
+
+Sprites are looked up in `./resources`, then `../resources`. To run the binary
+from anywhere else, point it at the directory explicitly:
+
+```bash
+CBIRDS_RESOURCES=/path/to/cbirds/resources cbirds
+```
+
+The sprites can be regenerated from `resources/matrix.png` with
+`python3 python/rotate.py` (run from the repository root; needs `opencv-python`
+and `imutils`).
 
 ## Usage
 
@@ -132,8 +142,9 @@ Run with default settings (800 boids at 60 FPS):
 ./cbirds [OPTIONS]
 
 Options:
-  -n NUMBER    Set number of boids (default: 800)
-  -f FPS       Set frame rate (default: 60)
+  -n NUMBER    Set number of boids (default: 800, max: 200000)
+  -f FPS       Set frame rate (default: 60, max: 1000)
+  -h           Show usage and exit
 
 Examples:
   ./cbirds -n 1500 -f 75     # 1500 boids at 75 FPS
@@ -146,7 +157,7 @@ Examples:
 While the simulation is running, use these keyboard commands:
 
 #### General Controls
-- `q` - Quit the simulation
+- `q` or `Ctrl+C` - Quit the simulation (the terminal is always restored, crashes included)
 
 #### Visual Adjustments
 - `=` - Increase bird sprite size
@@ -171,7 +182,7 @@ The simulation uses these default values (defined in source):
 ```c
 BIRDS_N = 800              // Number of boids
 FRAME_RATE = 60            // Frames per second
-SPEED = 40                 // Movement speed (pixels/frame)
+SPEED = 40                 // Movement speed (pixels/frame at 60 FPS)
 BIRD_SIZE = 15             // Sprite size (pixels)
 PERCEPTION_RADIUS = 35     // Neighbor detection radius
 
@@ -181,6 +192,10 @@ ALIGNMENT_W = 1.5          // Direction matching strength
 COHESION_W = 0.01          // Grouping strength
 BOUNDARY_AV_W = 0.2        // Edge avoidance strength
 ```
+
+`SPEED` is derived from the frame rate so that the distance covered per second
+stays constant: changing FPS (`-f`, or `R`/`r` at runtime) does not make the
+flock faster or slower.
 
 ### Optimizing Performance
 
@@ -212,7 +227,7 @@ The simulation follows this execution flow:
    - Update rotation frame IDs based on new directions
    - Render sprites using Kitty graphics commands
    - Process keyboard input
-   - Sleep to maintain target frame rate
+   - Sleep for the remainder of the frame budget, measured with a monotonic clock
 
 ### Key Algorithms
 

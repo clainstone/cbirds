@@ -1,36 +1,48 @@
+/* Feature test macros must precede every include */
+#define _XOPEN_SOURCE 700
+#define _DEFAULT_SOURCE
+#define _DARWIN_C_SOURCE
+
 #include <errno.h>
-#include <fcntl.h>
 #include <math.h>
-#include <pthread.h>
-#include <semaphore.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
-#include <sys/termios.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
-#define _XOPEN_SOURCE 600
 #define ROTATION_FRAME 90                  /*Number of roation frame*/
 #define FRAME_ANGLE (360 / ROTATION_FRAME) /*Difference in degrees from ajacents rotation frames*/
 #define BASE_IMAGE_SIZE 5
 #define IMAGE_SIZES 40
 #define PNG_FORMAT 100 /*Kitty's protocol png escape code*/
-#define PERIOD_MULTIPL 1000000
-#define DEF_TERMINAL_WIDTH 100
-#define DEF_TERMINAL_HEIGHT 100
+#define DEF_TERMINAL_COLS 80
+#define DEF_TERMINAL_ROWS 24
+#define DEF_CELL_WIDTH 8 /*Cell size assumed when the terminal reports no pixel size*/
+#define DEF_CELL_HEIGHT 16
 #define X_START_OFF 20
 #define Y_START_OFF 20
 #define INPUT_BUF_DIM 100
+#define BIRD_ESCAPE_DIM 150 /*Upper bound of a single placement escape sequence*/
+#define MAX_BIRDS 200000
+#define MAX_FRAME_RATE 1000
+#define PATH_DIM 256
+
+/*Alternate screen and cursor control, used instead of shelling out to tput*/
+#define ALT_SCREEN_ON "\033[?1049h"
+#define ALT_SCREEN_OFF "\033[?1049l"
+#define CURSOR_HIDE "\033[?25l"
+#define CURSOR_SHOW "\033[?25h"
 
 /*=========================== Simulation parameters ===============================*/
 
 const int DEF_FRAME_RATE = 60; /*Default frame rate in case no one is specified*/
-const int DEF_SPEED = 60;      /*Default speed in case no one is specified as input arg*/
+const int DEF_SPEED = 40;      /*Pixels per frame at DEF_FRAME_RATE*/
 const int DEF_PERCEPTION_RADIUS = 35;
 
 /* Runtime weights modification steps*/
@@ -45,6 +57,7 @@ const double boundary_av_min = 0.01;
 const double alignment_min = 0.1;
 const double separation_min = 0.001;
 const double cohesion_min = 0.002;
+const int perception_radius_min = 3;
 
 int BIRDS_N = 800;   /*Birds number*/
 int FRAME_RATE = 60; /*Frames per second*/
@@ -86,15 +99,18 @@ typedef struct {
 /*base16 to base64 lookup*/
 const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-int max_payload_len = -1;
-ssize_t screen_width;
-ssize_t screen_heigth;
-ssize_t n_col;
-ssize_t n_row;
-ssize_t character_width_p;  /*character pixel width*/
-ssize_t character_height_p; /*character pixel heigth*/
-int output_buf_off = 0; /*Offset within the outbuffer used to concatenate escape control strings*/
+const char *resources_root = "resources"; /*Directory holding the dimNN sprite folders*/
+int screen_width;
+int screen_heigth;
+int n_col;
+int n_row;
+int character_width_p;  /*character pixel width*/
+int character_height_p; /*character pixel heigth*/
+size_t output_buf_off =
+    0; /*Offset within the outbuffer used to concatenate escape control strings*/
+size_t output_buf_size = 0;
 struct termios saved_termios; /*Saved termios structure to be resumed after process termination*/
+static volatile sig_atomic_t terminal_restored = 0;
 
 /*============================================================================================*/
 
@@ -103,10 +119,9 @@ bird_t *init_bird(int id, int width, int heigth, int screen_width, int screen_he
 double calculate_rules_direction(bird_t *bird, bird_t **birds, int num_birds, int screen_width,
                                  int screen_heigth);
 double my_atan2(double y, double x);
+double squared_distance(bird_t *b1, bird_t *b2);
 
 int to_degrees(double radians);
-int distance(bird_t *b1, bird_t *b2);
-int squared_distance(bird_t *b1, bird_t *b2);
 int enable_raw_mode();
 int my_atenter();
 
@@ -115,11 +130,12 @@ uint8_t *base64_encode(const uint8_t *input, size_t input_length);
 vector2d_t calculate_boundary_av_direction(bird_t *bird, int screen_width, int screen_heigth);
 
 void init_rotation_frames(uint8_t **images_data_array);
-void get_image_path(char *base_path, int size_index, int rotation_frame_id);
+void find_resources_root();
+void get_image_path(char *path, size_t path_size, int size_index, int rotation_frame_id);
 void init_birds(drawn_bird_t **birds_array, uint8_t **images_data_array, int screen_width,
                 int screen_heigth);
-void display_birds(drawn_bird_t **birds_array, uint8_t **images_data_array, char *output_buf);
 void clean_screen();
+void delete_placements();
 void print_bird(drawn_bird_t **birds_array, int bird_no, char *output_buf);
 void update_rotation_frame_id(drawn_bird_t **birds_array);
 void init(char **output_buf, uint8_t **images_data, drawn_bird_t **draw_birds, bird_t **birds,
@@ -127,6 +143,7 @@ void init(char **output_buf, uint8_t **images_data, drawn_bird_t **draw_birds, b
 void send_payload_data(uint8_t **payload_data);
 void get_screen_dimensions();
 void fix_weights();
+void update_speed();
 void update_birds(bird_t **birds_copy_to_read, bird_t **birds_to_write, int screen_width,
                   int screen_height, int birds_num);
 void update_direction(bird_t *bird, double next_direction);
@@ -135,39 +152,68 @@ void prod_vector(vector2d_t *vector, double scalar);
 void init_vector(vector2d_t *vector, double x, double y);
 void close_birds(bird_t **close_birds_list, bird_t *target, bird_t **birds, int num_birds,
                  int *counter);
+void restore_terminal();
 void my_atexit();
-void refresh_screen();
+void install_signal_handlers();
+void refresh_screen(char **output_buf, drawn_bird_t **draw_birds, bird_t **birds,
+                    bird_t **birds_copy);
 void handle_key(uint8_t **images_data);
 void read_input(int argc, char **argv);
+void usage(const char *prog);
 void change_birds_dimensions(bool increase, uint8_t **bird_images);
+void full_write(const char *data, size_t len);
+void copy(bird_t **original, bird_t **copy, int birds_num);
+void clear();
 
 //=======================Low level terminal handling===========================
 
+/*Writes the whole buffer, resuming on partial writes and on EINTR*/
+void full_write(const char *data, size_t len) {
+    size_t written = 0;
+    while (written < len) {
+        ssize_t n = write(STDOUT_FILENO, data + written, len - written);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return;
+        }
+        written += (size_t)n;
+    }
+}
+
 void get_screen_dimensions() {
     struct winsize w;
-    ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
+    memset(&w, 0, sizeof(w));
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) < 0) memset(&w, 0, sizeof(w));
+
+    n_col = w.ws_col > 0 ? w.ws_col : DEF_TERMINAL_COLS;
+    n_row = w.ws_row > 0 ? w.ws_row : DEF_TERMINAL_ROWS;
     screen_width = w.ws_xpixel;
     screen_heigth = w.ws_ypixel;
-    n_col = w.ws_col;
-    n_row = w.ws_row;
-    character_width_p = (double)screen_width / n_col;
-    character_height_p = (double)screen_heigth / n_row;
-    if (!screen_heigth || !screen_width) {
-        screen_heigth = DEF_TERMINAL_HEIGHT;
-        screen_width = DEF_TERMINAL_WIDTH;
+
+    /*Many terminals report no pixel size at all : derive it from the cell grid
+     * so that the per character size never ends up being zero.*/
+    if (screen_width <= 0 || screen_heigth <= 0) {
+        screen_width = n_col * DEF_CELL_WIDTH;
+        screen_heigth = n_row * DEF_CELL_HEIGHT;
     }
+
+    character_width_p = screen_width / n_col;
+    character_height_p = screen_heigth / n_row;
+    if (character_width_p < 1) character_width_p = 1;
+    if (character_height_p < 1) character_height_p = 1;
+
     fix_weights();
 }
 
 int my_atenter() {
-    /*Enable alternate buffer*/
-    system("tput smcup");
+    /*Enable alternate buffer and hide the cursor*/
+    full_write(ALT_SCREEN_ON, strlen(ALT_SCREEN_ON));
+    full_write(CURSOR_HIDE, strlen(CURSOR_HIDE));
     return enable_raw_mode();
 }
 
 /* Raw mode : 1960 magic shit */
 int enable_raw_mode() {
-    int err;
     struct termios buf;
     if (ttystate != RESET) {
         errno = EINVAL;
@@ -182,49 +228,125 @@ int enable_raw_mode() {
     buf.c_oflag &= ~(OPOST);
     /* control modes - set 8 bit chars */
     buf.c_cflag |= (CS8);
-    /* local modes - choing off, canonical off, no extended functions,
-     * no signal chars (^Z,^C) */
-    buf.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
+    /* local modes - echoing off, canonical off, no extended functions.
+     * ISIG is kept on purpose so that Ctrl+C still quits : the signal handlers
+     * put the terminal back in a sane state before exiting. */
+    buf.c_lflag &= ~(ECHO | ICANON | IEXTEN);
+    /* Ctrl+Z would suspend the process leaving the terminal in raw mode */
+    buf.c_cc[VSUSP] = _POSIX_VDISABLE;
+    /* non blocking read : return immediately with whatever is available */
     buf.c_cc[VMIN] = 0;
-    buf.c_cc[VMIN] = 0;
+    buf.c_cc[VTIME] = 0;
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &buf) < 0) return -1;
     ttystate = RAW;
     return 0;
 }
 
+/*Idempotent, async signal safe enough to be called from a signal handler*/
+void restore_terminal() {
+    if (terminal_restored) return;
+    terminal_restored = 1;
+    if (ttystate == RAW) {
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios);
+        ttystate = RESET;
+    }
+    full_write(CURSOR_SHOW, strlen(CURSOR_SHOW));
+    full_write(ALT_SCREEN_OFF, strlen(ALT_SCREEN_OFF));
+}
+
 void my_atexit() {
-    /*Disable alternate buffer*/
-    system("tput rmcup");
-    tcsetattr(STDERR_FILENO, TCSAFLUSH, &saved_termios);
+    restore_terminal();
+}
+
+static void signal_handler(int sig) {
+    restore_terminal();
+    _exit(128 + sig);
+}
+
+/*Without this a crash or a Ctrl+C would leave the terminal in raw mode,
+ * inside the alternate screen and without echo.*/
+void install_signal_handlers() {
+    struct sigaction sa;
+    const int signals[] = {SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGSEGV, SIGFPE, SIGBUS, SIGABRT};
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = signal_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESETHAND;
+
+    for (size_t i = 0; i < sizeof(signals) / sizeof(signals[0]); i++)
+        sigaction(signals[i], &sa, NULL);
 }
 
 //========================Image data manipulation==============================
 
+/*Picks the first directory that actually holds the sprites, so that the binary
+ * can be run from the project root, from a build subdirectory or from anywhere
+ * else by exporting CBIRDS_RESOURCES.*/
+void find_resources_root() {
+    static const char *candidates[] = {"resources", "../resources", NULL};
+    const char *env = getenv("CBIRDS_RESOURCES");
+    char path[PATH_DIM];
+
+    if (env != NULL && *env != '\0') {
+        resources_root = env;
+        return;
+    }
+    for (int i = 0; candidates[i] != NULL; i++) {
+        snprintf(path, sizeof(path), "%s/dim%d/bird_0.png", candidates[i], BASE_IMAGE_SIZE);
+        if (access(path, R_OK) == 0) {
+            resources_root = candidates[i];
+            return;
+        }
+    }
+    fprintf(stderr,
+            "Cannot find the sprite directory (looked for ./resources and ../resources).\n"
+            "Run cbirds from the project root or set CBIRDS_RESOURCES.\n");
+    exit(EXIT_FAILURE);
+}
+
 void init_rotation_frames(uint8_t **images_data_array) {
-    char base_path[] = "../resources/dim";
-    char *base_path_copy = (char *)malloc(strlen(base_path) + 50);
+    char path[PATH_DIM];
     int size_index;
     int bird_index;
 
     for (size_index = 0; size_index < IMAGE_SIZES; size_index++) {
         for (bird_index = 0; bird_index < ROTATION_FRAME; bird_index++) {
-            strcpy(base_path_copy, base_path);
-            get_image_path(base_path_copy, size_index + BASE_IMAGE_SIZE, bird_index);
-            FILE *file = fopen(base_path_copy, "rb");
+            get_image_path(path, sizeof(path), size_index + BASE_IMAGE_SIZE, bird_index);
+            FILE *file = fopen(path, "rb");
             if (file == NULL) {
                 perror("Error during file opening");
-                exit(-1);
+                exit(EXIT_FAILURE);
             }
-            int size = lseek(fileno(file), 0, SEEK_END);
-            lseek(fileno(file), 0, SEEK_SET);
-            uint8_t buf[size];
-            if (fread(buf, sizeof(char), size, file) != (unsigned long)size) {
-                perror("Error during file reading");
+            if (fseek(file, 0, SEEK_END) < 0) {
+                perror("Error during file seeking");
                 fclose(file);
-                exit(-1);
+                exit(EXIT_FAILURE);
+            }
+            long size = ftell(file);
+            if (size <= 0) {
+                fprintf(stderr, "Empty or unreadable image : %s\n", path);
+                fclose(file);
+                exit(EXIT_FAILURE);
+            }
+            rewind(file);
+
+            uint8_t *buf = (uint8_t *)malloc((size_t)size);
+            if (buf == NULL) {
+                perror("Out of memory while loading images");
+                fclose(file);
+                exit(EXIT_FAILURE);
+            }
+            if (fread(buf, 1, (size_t)size, file) != (size_t)size) {
+                perror("Error during file reading");
+                free(buf);
+                fclose(file);
+                exit(EXIT_FAILURE);
             }
 
-            images_data_array[size_index * ROTATION_FRAME + bird_index] = base64_encode(buf, size);
+            images_data_array[size_index * ROTATION_FRAME + bird_index] =
+                base64_encode(buf, (size_t)size);
+            free(buf);
             fclose(file);
         }
     }
@@ -241,6 +363,11 @@ uint8_t *base64_encode(const uint8_t *input, size_t input_length) {
     uint8_t *output = (uint8_t *)malloc((output_size + 1) * sizeof(uint8_t));
     int i = 0;
     int chunk_count = 0;
+
+    if (output == NULL) {
+        perror("Out of memory while encoding images");
+        exit(EXIT_FAILURE);
+    }
 
     while (input_length >= 3) {
         input_length -= 3;
@@ -290,21 +417,12 @@ uint8_t *base64_encode(const uint8_t *input, size_t input_length) {
     }
     output[output_size] = '\0';
 
-    if (max_payload_len == -1 || (int)strlen((char *)output) > max_payload_len)
-        max_payload_len = (int)strlen((char *)output) + 1;
-
     return output;
 }
 
-void get_image_path(char *base_path, int size_index, int rotation_frame_id) {
-    char buf[20];
-    sprintf(buf, "%d", size_index);
-    strcat(base_path, buf);
-    strcat(base_path, "/bird_");
-
-    sprintf(buf, "%d", rotation_frame_id);
-    strcat(base_path, buf);
-    strcat(base_path, ".png");
+void get_image_path(char *path, size_t path_size, int size_index, int rotation_frame_id) {
+    snprintf(path, path_size, "%s/dim%d/bird_%d.png", resources_root, size_index,
+             rotation_frame_id);
 }
 
 /*====================Graphical protocol escapes handling=====================
@@ -317,11 +435,11 @@ void get_image_path(char *base_path, int size_index, int rotation_frame_id) {
 void send_payload_data(uint8_t **images_data) {
     int image_size_index = BIRD_SIZE - BASE_IMAGE_SIZE;
     for (int i = 0; i < ROTATION_FRAME; i++) {
-        printf("\033_Ga=t,q=2,f=100,I=%d;%s\033\\", i + 1,
+        printf("\033_Ga=t,q=2,f=%d,I=%d;%s\033\\", PNG_FORMAT, i + 1,
                (char *)images_data[ROTATION_FRAME * image_size_index + i]);
     }
-    fflush(stdout);
     clean_screen();
+    fflush(stdout);
 }
 
 /* Sends only deltas about position and direction.
@@ -330,24 +448,27 @@ void send_payload_data(uint8_t **images_data) {
  * placement_index) assigned to the same image index.
  * */
 void print_bird(drawn_bird_t **birds_array, int bird_no, char *output_buf) {
-    char buf[150];
+    char buf[BIRD_ESCAPE_DIM];
     drawn_bird_t *bird = birds_array[bird_no];
 
     int col, row, offset_x, offset_y;
 
-    col = bird->bird_ref->x / character_width_p;
-    row = bird->bird_ref->y / character_height_p;
+    col = (int)bird->bird_ref->x / character_width_p;
+    row = (int)bird->bird_ref->y / character_height_p;
     offset_x = (int)bird->bird_ref->x % character_width_p;
     offset_y = (int)bird->bird_ref->y % character_height_p;
 
     if (col >= 0 && col < n_col && row >= 0 && row < n_row) {
         rotation_frame_id_t id = bird->curr_id;
-        sprintf(buf, "\033[%d;%dH\033_Ga=p,I=%d,q=2,p=%d,X=%d,Y=%d,z=%d\033\\", row + 1, col + 1,
-                id + 1, 0, offset_x, offset_y, bird_no);
+        int len =
+            snprintf(buf, sizeof(buf), "\033[%d;%dH\033_Ga=p,I=%d,q=2,p=%d,X=%d,Y=%d,z=%d\033\\",
+                     row + 1, col + 1, id + 1, 0, offset_x, offset_y, bird_no);
         /*Every escape sequence is concatened to the outpute buffer that is
          * flushed output once a frame*/
-        memcpy(output_buf + output_buf_off, buf, strlen(buf));
-        output_buf_off += strlen(buf);
+        if (len > 0 && output_buf_off + (size_t)len < output_buf_size) {
+            memcpy(output_buf + output_buf_off, buf, (size_t)len);
+            output_buf_off += (size_t)len;
+        }
     }
 }
 
@@ -365,13 +486,21 @@ void delete_placements() {
 
 void init(char **output_buf, uint8_t **images_data, drawn_bird_t **draw_birds, bird_t **birds,
           bird_t **birds_copy) {
-    ssize_t buffer_offset = 300;
     get_screen_dimensions();
-    *output_buf = (char *)malloc(sizeof(char) * (buffer_offset)*BIRDS_N + 1);
-    *output_buf[0] = '\0';
+    output_buf_size = (size_t)BIRD_ESCAPE_DIM * (size_t)BIRDS_N + 1;
+    *output_buf = (char *)malloc(output_buf_size);
+    if (*output_buf == NULL) {
+        perror("Out of memory");
+        exit(EXIT_FAILURE);
+    }
+    (*output_buf)[0] = '\0';
     for (int i = 0; i < BIRDS_N; i++) {
         draw_birds[i] = (drawn_bird_t *)malloc(sizeof(drawn_bird_t));
         birds_copy[i] = (bird_t *)malloc(sizeof(bird_t));
+        if (draw_birds[i] == NULL || birds_copy[i] == NULL) {
+            perror("Out of memory");
+            exit(EXIT_FAILURE);
+        }
     }
 
     init_birds(draw_birds, images_data, screen_width, screen_heigth);
@@ -397,8 +526,15 @@ void init_birds(drawn_bird_t **birds_array, uint8_t **images_data_array, int scr
 bird_t *init_bird(int id, int width, int heigth, int screen_width, int screen_heigth) {
     bird_t *bird = (bird_t *)malloc(sizeof(bird_t));
 
-    bird->x = screen_width * ((double)rand() / RAND_MAX) + X_START_OFF;
-    bird->y = screen_heigth * ((double)rand() / RAND_MAX) + Y_START_OFF;
+    if (bird == NULL) {
+        perror("Out of memory");
+        exit(EXIT_FAILURE);
+    }
+
+    /*Kept inside the screen : the start offset is applied to the usable range,
+     * not added on top of it.*/
+    bird->x = X_START_OFF + (screen_width - 2 * X_START_OFF) * ((double)rand() / RAND_MAX);
+    bird->y = Y_START_OFF + (screen_heigth - 2 * Y_START_OFF) * ((double)rand() / RAND_MAX);
     bird->direction = 2 * M_PI * ((double)rand() / RAND_MAX);
     bird->id = id;
     bird->speed = SPEED;
@@ -416,16 +552,22 @@ bird_t *init_bird(int id, int width, int heigth, int screen_width, int screen_he
 
 void update_birds(bird_t **birds_copy_to_read, bird_t **birds_to_write, int screen_width,
                   int screen_height, int birds_num) {
+    bird_t **close = (bird_t **)malloc(sizeof(bird_t *) * (size_t)birds_num);
+
+    if (close == NULL) {
+        perror("Out of memory");
+        exit(EXIT_FAILURE);
+    }
     for (int i = 0; i < birds_num; i++) {
         int counter = 0;
-        bird_t *close[birds_num];
         close_birds(close, birds_copy_to_read[i], birds_copy_to_read, birds_num, &counter);
-        if (counter > 0) {
-            double direction = calculate_rules_direction(birds_copy_to_read[i], close, counter,
-                                                         screen_width, screen_height);
-            update_direction(birds_to_write[i], direction);
-        }
+        /*Also called with no neighbour at all : a lonely bird still has to keep
+         * flying and to steer away from the borders.*/
+        double direction = calculate_rules_direction(birds_copy_to_read[i], close, counter,
+                                                     screen_width, screen_height);
+        update_direction(birds_to_write[i], direction);
     }
+    free(close);
 }
 
 /*Updates the bird frame_id according to his new direction*/
@@ -443,14 +585,6 @@ void update_rotation_frame_id(drawn_bird_t **birds_array) {
  */
 void close_birds(bird_t **close_birds_list, bird_t *target, bird_t **birds, int num_birds,
                  int *counter) {
-    *counter = 0;
-    for (int i = 0; i < num_birds; i++) {
-        if (birds[i]->id != target->id) {
-            if (squared_distance(target, birds[i]) < PERCEPTION_RADIUS_SQUARED) {
-                (*counter)++;
-            }
-        }
-    }
     int current_index = 0;
     for (int i = 0; i < num_birds; i++) {
         bird_t *boid = birds[i];
@@ -460,6 +594,7 @@ void close_birds(bird_t **close_birds_list, bird_t *target, bird_t **birds, int 
             }
         }
     }
+    *counter = current_index;
 }
 
 /**
@@ -509,12 +644,10 @@ double calculate_rules_direction(bird_t *target, bird_t **birds, int num_birds, 
         bird_t *boid = birds[i];
 
         // Before normalization: sum of vectors obtained based on criterias
-        if (boid->id != target->id) {
-            add_vector(&separation, target->x - boid->x, target->y - boid->y);
-            add_vector(&alignment, cos(boid->direction), sin(boid->direction));
-            add_vector(&cohesion, boid->x, boid->y);
-            close_count++;
-        }
+        add_vector(&separation, target->x - boid->x, target->y - boid->y);
+        add_vector(&alignment, cos(boid->direction), sin(boid->direction));
+        add_vector(&cohesion, boid->x, boid->y);
+        close_count++;
     }
 
     if (close_count > 0) {
@@ -537,15 +670,24 @@ double calculate_rules_direction(bird_t *target, bird_t **birds, int num_birds, 
         double result_x = separation.x + alignment.x + cohesion.x + boundary_av_ptr.x;
         double result_y = separation.y + alignment.y + cohesion.y + boundary_av_ptr.y;
 
+        if (result_x == 0 && result_y == 0) return target->direction;
+
         return my_atan2(result_y, result_x);
-    } else {
-        // If there are no birds nearby simply returns the older direction
-        return target->direction;
     }
+
+    /*No bird nearby : keep the current heading unless a border is close*/
+    prod_vector(&boundary_av_ptr, BOUNDARY_AV_W);
+    if (boundary_av_ptr.x != 0 || boundary_av_ptr.y != 0) {
+        double result_x = cos(target->direction) + boundary_av_ptr.x;
+        double result_y = sin(target->direction) + boundary_av_ptr.y;
+        if (result_x != 0 || result_y != 0) return my_atan2(result_y, result_x);
+    }
+    return target->direction;
 }
 
 void update_direction(bird_t *bird, double next_direction) {
     bird->direction = next_direction;
+    bird->speed = SPEED;
     bird->x += (double)bird->speed * cos(next_direction);
     bird->y += (double)bird->speed * sin(next_direction);
 }
@@ -574,7 +716,7 @@ void prod_vector(vector2d_t *vector, double scalar) {
     vector->y *= scalar;
 }
 
-int squared_distance(bird_t *b1, bird_t *b2) {
+double squared_distance(bird_t *b1, bird_t *b2) {
     return ((b1->x - b2->x) * (b1->x - b2->x) + (b1->y - b2->y) * (b1->y - b2->y));
 }
 
@@ -608,18 +750,26 @@ void fix_weights() {
     TURN_RADIUS_Y = screen_heigth / factor;
 }
 
+/*Keeps the travelled distance per second constant across frame rates*/
+void update_speed() {
+    SPEED = (int)((double)DEF_SPEED * DEF_FRAME_RATE / FRAME_RATE);
+    if (SPEED < 1) SPEED = 1;
+}
+
 /*Handles raw mode input keys*/
 void handle_key(uint8_t **images_data) {
     char input_buf[INPUT_BUF_DIM];
     ssize_t size;
 
     size = read(STDIN_FILENO, (void *)input_buf, INPUT_BUF_DIM);
-    if (size == 1) {
-        char c = input_buf[0];
+    if (size <= 0) return;
+
+    /*Every byte of the burst is handled, not only the first one*/
+    for (ssize_t i = 0; i < size; i++) {
+        char c = input_buf[i];
 
         switch (c) {
             case 'q': /*quit*/
-                my_atexit();
                 exit(0);
                 break;
             case '=': /*increase bird image size*/
@@ -633,38 +783,45 @@ void handle_key(uint8_t **images_data) {
                 BOUNDARY_AV_W += boundary_av_st;
                 break;
             case 'b': /*decrease boundary_av*/
-                if (BOUNDARY_AV_W - boundary_av_st > 0) BOUNDARY_AV_W -= boundary_av_st;
+                if (BOUNDARY_AV_W - boundary_av_st >= boundary_av_min)
+                    BOUNDARY_AV_W -= boundary_av_st;
                 break;
             case 'S': /*increase separation*/
                 SEPARATION_W += separation_st;
                 break;
             case 's': /*decrease separation*/
-                if (SEPARATION_W - separation_st > 0) SEPARATION_W -= separation_st;
+                if (SEPARATION_W - separation_st >= separation_min) SEPARATION_W -= separation_st;
                 break;
             case 'C': /*increase cohesion*/
                 COHESION_W += cohesion_st;
                 break;
             case 'c': /*decrease cohesion*/
-                if (COHESION_W - cohesion_st > 0) COHESION_W -= cohesion_st;
+                if (COHESION_W - cohesion_st >= cohesion_min) COHESION_W -= cohesion_st;
                 break;
             case 'A': /*increase alignment*/
                 ALIGNMENT_W += alignment_st;
                 break;
             case 'a': /*decrease alignment*/
-                if (ALIGNMENT_W - alignment_st > 0) ALIGNMENT_W -= alignment_st;
+                if (ALIGNMENT_W - alignment_st >= alignment_min) ALIGNMENT_W -= alignment_st;
                 break;
             case 'R': /*increase frame rate*/
-                FRAME_RATE += frame_rate_st;
+                if (FRAME_RATE + frame_rate_st <= MAX_FRAME_RATE) {
+                    FRAME_RATE += frame_rate_st;
+                    update_speed();
+                }
                 break;
             case 'r': /*decrease frame rate*/
-                if (FRAME_RATE - frame_rate_st > 0) FRAME_RATE -= frame_rate_st;
+                if (FRAME_RATE - frame_rate_st > 0) {
+                    FRAME_RATE -= frame_rate_st;
+                    update_speed();
+                }
                 break;
             case 'P': /*increase perception radius*/
                 PERCEPTION_RADIUS += perception_radius_st;
                 PERCEPTION_RADIUS_SQUARED = PERCEPTION_RADIUS * PERCEPTION_RADIUS;
                 break;
             case 'p': /*decrease perception radius*/
-                if (PERCEPTION_RADIUS - perception_radius_st > 0) {
+                if (PERCEPTION_RADIUS - perception_radius_st >= perception_radius_min) {
                     PERCEPTION_RADIUS -= perception_radius_st;
                     PERCEPTION_RADIUS_SQUARED = PERCEPTION_RADIUS * PERCEPTION_RADIUS;
                 }
@@ -683,38 +840,56 @@ void change_birds_dimensions(bool increase, uint8_t **images_data) {
     send_payload_data(images_data);
 }
 
+void usage(const char *prog) {
+    fprintf(stderr,
+            "Usage: %s [-n BIRDS] [-f FPS]\n"
+            "  -n NUMBER    number of boids (default %d, max %d)\n"
+            "  -f FPS       frame rate (default %d, max %d)\n"
+            "  -h           show this help\n",
+            prog, 800, MAX_BIRDS, DEF_FRAME_RATE, MAX_FRAME_RATE);
+}
+
 void read_input(int argc, char **argv) {
-    if (argc > 1) {
-        argv++;
-        argc--;
-        while (argc > 1) {
-            if (strcmp(*argv, "-n") == 0) { /*birds number flag*/
-                argv++;
-                argc--;
-                long arg = strtol(*argv, NULL, 10);
-                if (errno == ERANGE || arg <= 0) {
-                    perror("Invalid arguments for birds num");
-                    exit(-1);
-                }
-                BIRDS_N = (int)arg;
+    for (int i = 1; i < argc; i++) {
+        bool is_birds = strcmp(argv[i], "-n") == 0;
+        bool is_fps = strcmp(argv[i], "-f") == 0;
 
-            } else if (strcmp(*argv, "-f") == 0) {
-                argv++;
-                argc--;
-                long arg = strtol(*argv, NULL, 10);
-                if (errno == ERANGE || arg <= 0) {
-                    perror("Invalid arguments for frame rate");
-                    exit(-1);
-                }
-                FRAME_RATE = (int)arg;
-                SPEED = DEF_SPEED * (double)DEF_FRAME_RATE / FRAME_RATE;
-                if (SPEED == 0) SPEED = 1;
+        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            usage(argv[0]);
+            exit(EXIT_SUCCESS);
+        }
+        if (!is_birds && !is_fps) {
+            fprintf(stderr, "Unknown option : %s\n", argv[i]);
+            usage(argv[0]);
+            exit(EXIT_FAILURE);
+        }
+        if (i + 1 >= argc) {
+            fprintf(stderr, "Missing value for %s\n", argv[i]);
+            usage(argv[0]);
+            exit(EXIT_FAILURE);
+        }
+
+        char *end = NULL;
+        errno = 0;
+        long arg = strtol(argv[++i], &end, 10);
+        if (errno == ERANGE || end == argv[i] || *end != '\0' || arg <= 0) {
+            fprintf(stderr, "Invalid value for %s : %s\n", argv[i - 1], argv[i]);
+            exit(EXIT_FAILURE);
+        }
+
+        if (is_birds) {
+            if (arg > MAX_BIRDS) {
+                fprintf(stderr, "Birds number capped to %d\n", MAX_BIRDS);
+                arg = MAX_BIRDS;
             }
-
-            else
-                break;
-            argc--;
-            argv++;
+            BIRDS_N = (int)arg;
+        } else {
+            if (arg > MAX_FRAME_RATE) {
+                fprintf(stderr, "Frame rate capped to %d\n", MAX_FRAME_RATE);
+                arg = MAX_FRAME_RATE;
+            }
+            FRAME_RATE = (int)arg;
+            update_speed();
         }
     }
 }
@@ -727,30 +902,47 @@ void refresh_screen(char **output_buf, drawn_bird_t **draw_birds, bird_t **birds
     update_birds(birds_copy, birds, screen_width, screen_heigth, BIRDS_N);
     clean_screen();
     fflush(stdout);
-    write(STDOUT_FILENO, *output_buf, output_buf_off);
+    full_write(*output_buf, output_buf_off);
     output_buf_off = 0;
 }
 
+/*Elapsed microseconds between two monotonic timestamps*/
+static long elapsed_us(struct timespec *start, struct timespec *end) {
+    return (end->tv_sec - start->tv_sec) * 1000000L + (end->tv_nsec - start->tv_nsec) / 1000L;
+}
+
 int main(int argc, char *argv[]) {
+    struct timespec frame_start, frame_end;
+
     read_input(argc, argv); /*Reads cli input data*/
+    find_resources_root();
+    srand((unsigned int)time(NULL));
     get_screen_dimensions();
+    install_signal_handlers();
+    atexit(my_atexit);      /*Defines exit callback*/
     if (my_atenter() < 0) { /*Try to enable terminal raw mode*/
         perror("Can't enable raw mode :");
-        exit(-1);
+        exit(EXIT_FAILURE);
     }
-    atexit(my_atexit); /*Defines exit callback*/
     clear();
+
     char *output_buf;
-    int output_buf_len;
-    uint8_t *images_data[ROTATION_FRAME * IMAGE_SIZES];
-    drawn_bird_t *draw_birds[BIRDS_N];
-    bird_t *birds[BIRDS_N];
-    bird_t *birds_copy[BIRDS_N];
+    uint8_t **images_data = (uint8_t **)malloc(sizeof(uint8_t *) * ROTATION_FRAME * IMAGE_SIZES);
+    drawn_bird_t **draw_birds = (drawn_bird_t **)malloc(sizeof(drawn_bird_t *) * (size_t)BIRDS_N);
+    bird_t **birds = (bird_t **)malloc(sizeof(bird_t *) * (size_t)BIRDS_N);
+    bird_t **birds_copy = (bird_t **)malloc(sizeof(bird_t *) * (size_t)BIRDS_N);
+
+    if (images_data == NULL || draw_birds == NULL || birds == NULL || birds_copy == NULL) {
+        perror("Out of memory");
+        exit(EXIT_FAILURE);
+    }
 
     init(&output_buf, images_data, draw_birds, birds, birds_copy);
     send_payload_data(images_data); /*Sends png images data base64 encoded*/
 
     while (1) {
+        clock_gettime(CLOCK_MONOTONIC, &frame_start);
+
         /*Refresh screen*/
         get_screen_dimensions();
         refresh_screen(&output_buf, draw_birds, birds, birds_copy);
@@ -758,7 +950,15 @@ int main(int argc, char *argv[]) {
         /*Handles input*/
         handle_key(images_data);
 
-        /*Sleeps to comply frame rate*/
-        usleep(1000000 / FRAME_RATE);
+        /*Sleeps to comply frame rate, taking the frame cost into account*/
+        clock_gettime(CLOCK_MONOTONIC, &frame_end);
+        long budget_us = 1000000L / FRAME_RATE;
+        long remaining_us = budget_us - elapsed_us(&frame_start, &frame_end);
+        if (remaining_us > 0) {
+            struct timespec sleep_time;
+            sleep_time.tv_sec = remaining_us / 1000000L;
+            sleep_time.tv_nsec = (remaining_us % 1000000L) * 1000L;
+            nanosleep(&sleep_time, NULL);
+        }
     }
 }

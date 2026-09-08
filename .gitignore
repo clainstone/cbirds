@@ -39,3 +39,8 @@ ehthumbs.db
 Thumbs.db
 
 *.json
+
+# Build output #
+#################
+cbirds
+*.dSYM/

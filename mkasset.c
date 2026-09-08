@@ -4,13 +4,13 @@
  * The file is validated with our own decoder before being emitted, so a
  * broken or unsupported image is caught here instead of at runtime.
  *
- *     make asset          regenerates sprite_png.h from resources/matrix.png
+ *     make asset          regenerates sprite_png.h from matrix.png
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "../png.h"
+#include "png.h"
 
 #define BYTES_PER_LINE 16
 

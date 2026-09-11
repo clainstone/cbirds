@@ -7,8 +7,17 @@ boids_test
 *.o
 *.dSYM/
 *~
+gmon.out
+perf.data*
+core
+core.*
 
-# Editor and OS noise
+# Local tools, captures, editor and OS noise
+.claude/
+demo.txt
+.idea/
+.vscode/
 *.swp
+*.swo
 .DS_Store
 Thumbs.db

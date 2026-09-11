@@ -278,7 +278,7 @@ static vector_t boundary_vector(const bird_t *bird) {
     if (bird->y < screen.turn_y)
         boundary.y = 1;
     else if (bird->y > screen.height - 100)
-        boundary.y = -100000; /* Preserve the original strong bottom-edge turn. */
+        boundary.y = -1;
     return boundary;
 }
 

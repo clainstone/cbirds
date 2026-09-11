@@ -123,6 +123,31 @@ static void test_engine_matches_brute_force(void) {
     spatial_grid_destroy(&grid);
 }
 
+static void test_boundary_weights_are_symmetric(void) {
+    screen.width = 900;
+    screen.height = 600;
+    screen.turn_x = 300;
+    screen.turn_y = 200;
+
+    const bird_t left = {.x = 299, .y = 300};
+    const bird_t right = {.x = 601, .y = 300};
+    const bird_t top = {.x = 450, .y = 199};
+    const bird_t bottom = {.x = 450, .y = 501};
+    const bird_t center = {.x = 450, .y = 300};
+
+    vector_t left_force = boundary_vector(&left);
+    vector_t right_force = boundary_vector(&right);
+    vector_t top_force = boundary_vector(&top);
+    vector_t bottom_force = boundary_vector(&bottom);
+    vector_t center_force = boundary_vector(&center);
+
+    assert(left_force.x == 1 && left_force.y == 0);
+    assert(right_force.x == -1 && right_force.y == 0);
+    assert(top_force.x == 0 && top_force.y == 1);
+    assert(bottom_force.x == 0 && bottom_force.y == -1);
+    assert(center_force.x == 0 && center_force.y == 0);
+}
+
 static int feed_input(const char *keys) {
     int descriptors[2];
     assert(pipe(descriptors) == 0);
@@ -238,6 +263,7 @@ static void test_flicker_free_render_queue(void) {
 
 int main(void) {
     test_engine_matches_brute_force();
+    test_boundary_weights_are_symmetric();
     test_vision_controls();
     test_frame_rate_controls();
     test_flicker_free_render_queue();

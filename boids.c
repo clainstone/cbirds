@@ -34,7 +34,10 @@ enum {
     DEFAULT_ROWS = 24,
     DEFAULT_CELL_WIDTH = 8,
     DEFAULT_CELL_HEIGHT = 16,
-    START_OFFSET = 20,
+    /* Edge bands the flock turns away from, as a fraction of the viewport: a
+     * third on the sides and the top, half of that at the bottom. */
+    TURN_BAND_DIVISOR = 3,
+    BOTTOM_BAND_DIVISOR = 6,
     MIN_FRAME_RATE = 30,
     DEFAULT_FRAME_RATE = 60,
     MAX_FRAME_RATE = 120,
@@ -78,7 +81,7 @@ typedef struct {
 
 typedef struct {
     int width, height, cols, rows;
-    int cell_width, cell_height, turn_x, turn_y;
+    int cell_width, cell_height, turn_x, turn_y, turn_bottom;
 } screen_t;
 
 typedef struct {
@@ -168,6 +171,17 @@ static int enter_terminal(void) {
     return 0;
 }
 
+/* Kept proportional to the viewport: a fixed pixel distance covers a short
+ * terminal entirely and pins the whole flock against one edge. */
+static void update_turn_distances(void) {
+    screen.turn_x = screen.width / TURN_BAND_DIVISOR;
+    screen.turn_y = screen.height / TURN_BAND_DIVISOR;
+    screen.turn_bottom = screen.height / BOTTOM_BAND_DIVISOR;
+    if (screen.turn_x < 1) screen.turn_x = 1;
+    if (screen.turn_y < 1) screen.turn_y = 1;
+    if (screen.turn_bottom < 1) screen.turn_bottom = 1;
+}
+
 static void update_screen_dimensions(void) {
     struct winsize size;
     memset(&size, 0, sizeof(size));
@@ -184,8 +198,7 @@ static void update_screen_dimensions(void) {
     screen.cell_height = screen.height / screen.rows;
     if (screen.cell_width < 1) screen.cell_width = 1;
     if (screen.cell_height < 1) screen.cell_height = 1;
-    screen.turn_x = screen.width / 3;
-    screen.turn_y = screen.height / 3;
+    update_turn_distances();
 }
 
 static void build_rotation_frames(image_frame_t frames[ROTATION_FRAMES]) {
@@ -250,16 +263,19 @@ static int direction_frame(double radians) {
     return ((degrees % 360 + 360) % 360) / FRAME_ANGLE;
 }
 
+/* Spread over the region no turn band covers, so no bird starts by fleeing an
+ * edge and the flock does not begin stacked on a single point. */
 static void initialize_birds(bird_t *birds) {
+    double min_x = screen.turn_x, max_x = screen.width - screen.turn_x;
+    double min_y = screen.turn_y, max_y = screen.height - screen.turn_bottom;
+    if (max_x <= min_x) min_x = max_x = screen.width / 2.0;
+    if (max_y <= min_y) min_y = max_y = screen.height / 2.0;
+
     for (int i = 0; i < config.birds; i++) {
         bird_t *bird = &birds[i];
-        bird->x = START_OFFSET + (screen.width - 2 * START_OFFSET) * random_unit();
-        bird->y = START_OFFSET + (screen.height - 2 * START_OFFSET) * random_unit();
+        bird->x = min_x + (max_x - min_x) * random_unit();
+        bird->y = min_y + (max_y - min_y) * random_unit();
         bird->direction = 2 * M_PI * random_unit();
-        if (bird->x < screen.turn_x || bird->x > screen.width - screen.turn_x)
-            bird->x = screen.width / 2;
-        if (bird->y < screen.turn_y || bird->y > screen.height - screen.turn_y)
-            bird->y = screen.height / 2;
         bird->frame = direction_frame(bird->direction);
     }
 }
@@ -277,7 +293,7 @@ static vector_t boundary_vector(const bird_t *bird) {
         boundary.x = -1;
     if (bird->y < screen.turn_y)
         boundary.y = 1;
-    else if (bird->y > screen.height - 100)
+    else if (bird->y > screen.height - screen.turn_bottom)
         boundary.y = -1;
     return boundary;
 }

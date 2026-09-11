@@ -47,6 +47,12 @@ static double brute_force_flock_direction(const bird_t *birds, int target_index)
     return target->direction;
 }
 
+static void set_test_screen(int width, int height) {
+    screen.width = width;
+    screen.height = height;
+    update_turn_distances();
+}
+
 static double angle_difference(double a, double b) {
     return fabs(atan2(sin(a - b), cos(a - b)));
 }
@@ -76,10 +82,7 @@ static void test_engine_matches_brute_force(void) {
     bird_t snapshot[BIRD_COUNT], optimized[BIRD_COUNT], reference[BIRD_COUNT];
     spatial_grid_t grid;
 
-    screen.width = 640;
-    screen.height = 384;
-    screen.turn_x = screen.width / 3;
-    screen.turn_y = screen.height / 3;
+    set_test_screen(640, 384);
     config.birds = BIRD_COUNT;
     config.speed = 0.75;
     config.separation = 0.005;
@@ -123,29 +126,78 @@ static void test_engine_matches_brute_force(void) {
     spatial_grid_destroy(&grid);
 }
 
-static void test_boundary_weights_are_symmetric(void) {
-    screen.width = 900;
-    screen.height = 600;
-    screen.turn_x = 300;
-    screen.turn_y = 200;
+static void test_boundary_bands_follow_the_viewport(void) {
+    set_test_screen(900, 600);
+    assert(screen.turn_x == 300);
+    assert(screen.turn_y == 200);
+    assert(screen.turn_bottom == 100);
 
     const bird_t left = {.x = 299, .y = 300};
     const bird_t right = {.x = 601, .y = 300};
     const bird_t top = {.x = 450, .y = 199};
     const bird_t bottom = {.x = 450, .y = 501};
+    const bird_t below_top = {.x = 450, .y = 201};
+    const bird_t above_bottom = {.x = 450, .y = 499};
     const bird_t center = {.x = 450, .y = 300};
 
     vector_t left_force = boundary_vector(&left);
     vector_t right_force = boundary_vector(&right);
     vector_t top_force = boundary_vector(&top);
     vector_t bottom_force = boundary_vector(&bottom);
+    vector_t below_top_force = boundary_vector(&below_top);
+    vector_t above_bottom_force = boundary_vector(&above_bottom);
     vector_t center_force = boundary_vector(&center);
 
+    /* The horizontal bands mirror each other, the vertical ones are a third of
+     * the height at the top and a sixth at the bottom. */
     assert(left_force.x == 1 && left_force.y == 0);
     assert(right_force.x == -1 && right_force.y == 0);
     assert(top_force.x == 0 && top_force.y == 1);
     assert(bottom_force.x == 0 && bottom_force.y == -1);
+    /* One pixel past either edge the band must already be over. */
+    assert(below_top_force.x == 0 && below_top_force.y == 0);
+    assert(above_bottom_force.x == 0 && above_bottom_force.y == 0);
     assert(center_force.x == 0 && center_force.y == 0);
+}
+
+/* A bottom band of a fixed 100 pixels used to swallow a short viewport whole
+ * and push every bird upwards, flock pinned to the top edge. */
+static void test_bottom_band_scales_on_a_short_viewport(void) {
+    set_test_screen(640, 96); /* Six rows of sixteen pixels. */
+    assert(screen.turn_y == 32);
+    assert(screen.turn_bottom == 16);
+    assert(screen.turn_y < screen.height - screen.turn_bottom); /* Never overlapping. */
+
+    for (int y = screen.turn_y; y <= screen.height - screen.turn_bottom; y++) {
+        const bird_t bird = {.x = 320, .y = y};
+        vector_t force = boundary_vector(&bird);
+        assert(force.x == 0 && force.y == 0);
+    }
+    const bird_t low = {.x = 320, .y = 95};
+    const bird_t high = {.x = 320, .y = 1};
+    assert(boundary_vector(&low).y == -1);
+    assert(boundary_vector(&high).y == 1);
+}
+
+static void test_birds_start_spread_inside_the_free_region(void) {
+    enum { BIRD_COUNT = 512 };
+    bird_t birds[BIRD_COUNT];
+
+    set_test_screen(900, 600);
+    config.birds = BIRD_COUNT;
+    srand(20260911u);
+    initialize_birds(birds);
+
+    int distinct = 0;
+    for (int i = 0; i < BIRD_COUNT; i++) {
+        vector_t force = boundary_vector(&birds[i]);
+        /* No bird starts inside a band, so none opens the run fleeing an edge. */
+        assert(force.x == 0 && force.y == 0);
+        assert(birds[i].frame == direction_frame(birds[i].direction));
+        if (birds[i].x != birds[0].x || birds[i].y != birds[0].y) distinct++;
+    }
+    /* And they are spread over that region instead of stacked on its middle. */
+    assert(distinct > BIRD_COUNT * 3 / 4);
 }
 
 static int feed_input(const char *keys) {
@@ -263,7 +315,9 @@ static void test_flicker_free_render_queue(void) {
 
 int main(void) {
     test_engine_matches_brute_force();
-    test_boundary_weights_are_symmetric();
+    test_boundary_bands_follow_the_viewport();
+    test_bottom_band_scales_on_a_short_viewport();
+    test_birds_start_spread_inside_the_free_region();
     test_vision_controls();
     test_frame_rate_controls();
     test_flicker_free_render_queue();

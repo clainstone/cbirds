@@ -212,6 +212,10 @@ SEPARATION_W = 0.005       // Avoidance strength
 ALIGNMENT_W = 1.5          // Direction matching strength
 COHESION_W = 0.01          // Grouping strength
 BOUNDARY_AV_W = 0.2        // Edge avoidance strength
+
+// Edge bands the flock turns away from, as a fraction of the viewport
+TURN_BAND_DIVISOR = 3      // Sides and top: one third of width / height
+BOTTOM_BAND_DIVISOR = 6    // Bottom: one sixth of the height
 ```
 
 `SPEED` is derived from the requested frame rate so that the nominal distance
@@ -221,6 +225,11 @@ does not change the flock speed while the terminal sustains that rate.
 The perception radius ranges from 1 to 12 cells (12–144 pixels). Cells only
 select neighbor candidates; the final distance check remains circular and
 uses the exact radius in pixels.
+
+The turn bands are proportional to the viewport, so they follow a resize and
+stay a band on a short terminal instead of covering it whole. The bottom one is
+deliberately half the others: birds approaching the last rows get a later, and
+therefore sharper, turn. The flock starts spread over the region no band covers.
 
 ### Optimizing Performance
 

@@ -26,7 +26,7 @@ enum {
     SPRITE_WORK_MAX = 256,
     MIN_BIRD_SIZE = 4,
     MAX_BIRD_SIZE = 64,
-    MAX_BIRDS = 200000,
+    MAX_BIRDS = 4096,
     INPUT_BUFFER_SIZE = 100,
     DEFAULT_COLS = 80,
     DEFAULT_ROWS = 24,
@@ -354,8 +354,8 @@ static kitty_graphics_status_t render_frame(kitty_graphics_t *graphics, bird_t *
     if (status != KITTY_GRAPHICS_OK) return status;
 
     memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
-    for (int i = 0; i < config.birds; i++) birds[i].frame = direction_frame(birds[i].direction);
     update_birds(birds, snapshot);
+    for (int i = 0; i < config.birds; i++) birds[i].frame = direction_frame(birds[i].direction);
     return kitty_graphics_flush(graphics);
 }
 

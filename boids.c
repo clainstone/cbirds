@@ -5,6 +5,7 @@
 
 #include <errno.h>
 #include <math.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -17,6 +18,7 @@
 
 #include "kitty_graphics.h"
 #include "png.h"
+#include "spatial_grid.h"
 #include "sprite_png.h"
 
 enum {
@@ -39,10 +41,10 @@ enum {
     FRAME_RATE_STEP = 5,
     DEFAULT_SPEED = 40,
     DEFAULT_BIRD_SIZE = 15,
-    DEFAULT_PERCEPTION_RADIUS = 35,
-    MIN_PERCEPTION_RADIUS = 3,
-    MAX_PERCEPTION_RADIUS = 46340,
-    PERCEPTION_RADIUS_STEP = 3
+    SPATIAL_CELL_SIZE = 12,
+    DEFAULT_VISION_CELLS = 3,
+    MIN_VISION_CELLS = 1,
+    MAX_VISION_CELLS = 12
 };
 
 static const double BOUNDARY_STEP = 0.02;
@@ -58,6 +60,7 @@ static const double ALIGNMENT_MIN = 0.1;
 #define ALT_SCREEN_OFF "\033[?1049l"
 #define CURSOR_HIDE "\033[?25l"
 #define CURSOR_SHOW "\033[?25h"
+#define SYNC_UPDATE_END "\033[?2026l"
 
 typedef struct {
     double x, y;
@@ -81,7 +84,7 @@ typedef struct {
 typedef struct {
     int birds, frame_rate, bird_size;
     double speed;
-    int perception_radius, perception_radius_squared;
+    int vision_cells, vision_radius, vision_radius_squared;
     double separation, alignment, cohesion, boundary;
 } config_t;
 
@@ -90,8 +93,10 @@ static config_t config = {
     .frame_rate = DEFAULT_FRAME_RATE,
     .speed = DEFAULT_SPEED,
     .bird_size = DEFAULT_BIRD_SIZE,
-    .perception_radius = DEFAULT_PERCEPTION_RADIUS,
-    .perception_radius_squared = DEFAULT_PERCEPTION_RADIUS * DEFAULT_PERCEPTION_RADIUS,
+    .vision_cells = DEFAULT_VISION_CELLS,
+    .vision_radius = DEFAULT_VISION_CELLS * SPATIAL_CELL_SIZE,
+    .vision_radius_squared =
+        DEFAULT_VISION_CELLS * SPATIAL_CELL_SIZE * DEFAULT_VISION_CELLS * SPATIAL_CELL_SIZE,
     .separation = 0.005,
     .alignment = 1.5,
     .cohesion = 0.01,
@@ -123,6 +128,7 @@ static void restore_terminal(void) {
         tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios);
         terminal_is_raw = 0;
     }
+    write_all(SYNC_UPDATE_END, sizeof(SYNC_UPDATE_END) - 1);
     write_all(CURSOR_SHOW, sizeof(CURSOR_SHOW) - 1);
     write_all(ALT_SCREEN_OFF, sizeof(ALT_SCREEN_OFF) - 1);
 }
@@ -276,23 +282,46 @@ static vector_t boundary_vector(const bird_t *bird) {
     return boundary;
 }
 
-static double flock_direction(const bird_t *birds, int target_index) {
+static void read_bird_position(const void *context, int index, double *x, double *y) {
+    const bird_t *birds = context;
+    *x = birds[index].x;
+    *y = birds[index].y;
+}
+
+static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, int target_index) {
     const bird_t *target = &birds[target_index];
     vector_t separation = {0, 0}, alignment = {0, 0}, cohesion = {0, 0};
     vector_t boundary = boundary_vector(target);
     int neighbors = 0;
-    for (int i = 0; i < config.birds; i++) {
-        if (i == target_index) continue;
-        const bird_t *other = &birds[i];
-        double dx = target->x - other->x, dy = target->y - other->y;
-        if (dx * dx + dy * dy >= config.perception_radius_squared) continue;
-        separation.x += dx;
-        separation.y += dy;
-        alignment.x += cos(other->direction);
-        alignment.y += sin(other->direction);
-        cohesion.x += other->x;
-        cohesion.y += other->y;
-        neighbors++;
+    int center_x, center_y;
+    spatial_grid_cell_for_position(grid, target->x, target->y, &center_x, &center_y);
+    int min_x = center_x - config.vision_cells;
+    int max_x = center_x + config.vision_cells;
+    int min_y = center_y - config.vision_cells;
+    int max_y = center_y + config.vision_cells;
+    if (min_x < 0) min_x = 0;
+    if (min_y < 0) min_y = 0;
+    if (max_x >= grid->columns) max_x = grid->columns - 1;
+    if (max_y >= grid->rows) max_y = grid->rows - 1;
+
+    for (int cell_y = min_y; cell_y <= max_y; cell_y++) {
+        for (int cell_x = min_x; cell_x <= max_x; cell_x++) {
+            int cell = cell_y * grid->columns + cell_x;
+            for (int slot = grid->offsets[cell]; slot < grid->offsets[cell + 1]; slot++) {
+                int i = grid->indices[slot];
+                if (i == target_index) continue;
+                const bird_t *other = &birds[i];
+                double dx = target->x - other->x, dy = target->y - other->y;
+                if (dx * dx + dy * dy >= config.vision_radius_squared) continue;
+                separation.x += dx;
+                separation.y += dy;
+                alignment.x += cos(other->direction);
+                alignment.y += sin(other->direction);
+                cohesion.x += other->x;
+                cohesion.y += other->y;
+                neighbors++;
+            }
+        }
     }
     if (neighbors) {
         alignment.x /= neighbors;
@@ -315,55 +344,68 @@ static double flock_direction(const bird_t *birds, int target_index) {
     return target->direction;
 }
 
-static void update_birds(bird_t *birds, const bird_t *snapshot) {
+static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_grid_t *grid) {
     for (int i = 0; i < config.birds; i++) {
-        double direction = flock_direction(snapshot, i);
+        double direction = flock_direction(snapshot, grid, i);
         birds[i].direction = direction;
         birds[i].x += config.speed * cos(direction);
         birds[i].y += config.speed * sin(direction);
     }
 }
 
-static kitty_graphics_status_t render_bird(kitty_graphics_t *graphics, const bird_t *bird,
-                                           int index) {
-    if (bird->x < 0 || bird->y < 0) return KITTY_GRAPHICS_OK;
+static int bird_placement(const bird_t *bird, kitty_graphics_placement_t *placement) {
+    if (bird->x < 0 || bird->y < 0) return 0;
 
     int pixel_x = (int)bird->x;
     int pixel_y = (int)bird->y;
     int column = pixel_x / screen.cell_width;
     int row = pixel_y / screen.cell_height;
-    if (column >= screen.cols || row >= screen.rows) return KITTY_GRAPHICS_OK;
+    if (column >= screen.cols || row >= screen.rows) return 0;
 
-    kitty_graphics_placement_t placement = {
+    *placement = (kitty_graphics_placement_t){
         .image_id = (uint32_t)bird->frame + 1,
         .placement_id = 0,
         .row = row,
         .column = column,
         .x_offset = pixel_x % screen.cell_width,
         .y_offset = pixel_y % screen.cell_height,
-        .z_index = index,
+        .z_index = 0,
     };
-    return kitty_graphics_place(graphics, &placement);
+    return 1;
+}
+
+static kitty_graphics_status_t queue_render_frame(kitty_graphics_t *graphics, const bird_t *birds) {
+    kitty_graphics_status_t status = kitty_graphics_begin_synchronized_update(graphics);
+    if (status == KITTY_GRAPHICS_OK) status = kitty_graphics_delete_all_placements(graphics);
+    for (int i = 0; status == KITTY_GRAPHICS_OK && i < config.birds; i++) {
+        kitty_graphics_placement_t placement;
+        if (bird_placement(&birds[i], &placement))
+            status = kitty_graphics_place(graphics, &placement);
+    }
+    if (status == KITTY_GRAPHICS_OK) status = kitty_graphics_end_synchronized_update(graphics);
+    return status;
 }
 
 static kitty_graphics_status_t render_frame(kitty_graphics_t *graphics, bird_t *birds,
-                                            bird_t *snapshot) {
-    kitty_graphics_status_t status = kitty_graphics_delete_all_placements(graphics);
-    for (int i = 0; status == KITTY_GRAPHICS_OK && i < config.birds; i++)
-        status = render_bird(graphics, &birds[i], i);
+                                            const bird_t *snapshot, const spatial_grid_t *grid) {
+    kitty_graphics_status_t status = queue_render_frame(graphics, birds);
     if (status != KITTY_GRAPHICS_OK) return status;
 
-    memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
-    update_birds(birds, snapshot);
+    update_birds(birds, snapshot, grid);
     for (int i = 0; i < config.birds; i++) birds[i].frame = direction_frame(birds[i].direction);
-    return kitty_graphics_flush(graphics);
+    return KITTY_GRAPHICS_OK;
 }
 
 static void update_speed(void) {
     config.speed = (double)DEFAULT_SPEED * DEFAULT_FRAME_RATE / config.frame_rate;
 }
 
-static void handle_input(void) {
+static void update_vision_radius(void) {
+    config.vision_radius = config.vision_cells * SPATIAL_CELL_SIZE;
+    config.vision_radius_squared = config.vision_radius * config.vision_radius;
+}
+
+static int handle_input(void) {
     enum { INPUT_NORMAL, INPUT_ESCAPE, INPUT_SEQUENCE };
     static int input_state = INPUT_NORMAL;
     char input[INPUT_BUFFER_SIZE];
@@ -388,7 +430,7 @@ static void handle_input(void) {
 
         switch (key) {
             case 'q':
-                exit(EXIT_SUCCESS);
+                return 0;
             case 'B':
                 config.boundary += BOUNDARY_STEP;
                 break;
@@ -440,24 +482,29 @@ static void handle_input(void) {
                 }
                 break;
             case 'P':
-                if (config.perception_radius < MAX_PERCEPTION_RADIUS) {
-                    config.perception_radius += PERCEPTION_RADIUS_STEP;
-                    if (config.perception_radius > MAX_PERCEPTION_RADIUS)
-                        config.perception_radius = MAX_PERCEPTION_RADIUS;
-                }
+                if (config.vision_cells < MAX_VISION_CELLS) config.vision_cells++;
                 break;
             case 'p':
-                if (config.perception_radius > MIN_PERCEPTION_RADIUS) {
-                    config.perception_radius -= PERCEPTION_RADIUS_STEP;
-                    if (config.perception_radius < MIN_PERCEPTION_RADIUS)
-                        config.perception_radius = MIN_PERCEPTION_RADIUS;
-                }
+                if (config.vision_cells > MIN_VISION_CELLS) config.vision_cells--;
                 break;
             default:
                 continue;
         }
-        config.perception_radius_squared = config.perception_radius * config.perception_radius;
+        update_vision_radius();
     }
+    return 1;
+}
+
+static int wait_for_terminal_io(void) {
+    struct pollfd descriptors[] = {
+        {.fd = STDIN_FILENO, .events = POLLIN},
+        {.fd = STDOUT_FILENO, .events = POLLOUT},
+    };
+    int result;
+    do {
+        result = poll(descriptors, sizeof(descriptors) / sizeof(*descriptors), -1);
+    } while (result < 0 && errno == EINTR);
+    return result < 0 ? -1 : 0;
 }
 
 static void usage(const char *program) {
@@ -527,10 +574,23 @@ static long elapsed_microseconds(const struct timespec *start, const struct time
 int main(int argc, char **argv) {
     image_frame_t frames[ROTATION_FRAMES] = {0};
     kitty_graphics_t graphics;
+    spatial_grid_t grid;
     struct timespec frame_start, frame_end;
     read_options(argc, argv);
+    spatial_grid_status_t grid_status = spatial_grid_init(&grid, SPATIAL_CELL_SIZE);
+    if (grid_status != SPATIAL_GRID_OK) {
+        fprintf(stderr, "Cannot initialize spatial grid: %s\n",
+                spatial_grid_status_string(grid_status));
+        exit(EXIT_FAILURE);
+    }
     srand((unsigned)time(NULL));
     update_screen_dimensions();
+    grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, config.birds);
+    if (grid_status != SPATIAL_GRID_OK) {
+        fprintf(stderr, "Cannot prepare spatial grid: %s\n",
+                spatial_grid_status_string(grid_status));
+        exit(EXIT_FAILURE);
+    }
     build_rotation_frames(frames);
 
     bird_t *birds = calloc((size_t)config.birds, sizeof(*birds));
@@ -563,16 +623,49 @@ int main(int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
 
-    for (;;) {
+    int running = 1;
+    while (running) {
+        running = handle_input();
+        if (!running) break;
+
         clock_gettime(CLOCK_MONOTONIC, &frame_start);
         update_screen_dimensions();
-        graphics_status = render_frame(&graphics, birds, snapshot);
+        grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, config.birds);
+        if (grid_status != SPATIAL_GRID_OK) {
+            fprintf(stderr, "Cannot resize spatial grid: %s\n",
+                    spatial_grid_status_string(grid_status));
+            exit(EXIT_FAILURE);
+        }
+        memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
+        grid_status = spatial_grid_build(&grid, config.birds, read_bird_position, snapshot);
+        if (grid_status != SPATIAL_GRID_OK) {
+            fprintf(stderr, "Cannot build spatial grid: %s\n",
+                    spatial_grid_status_string(grid_status));
+            exit(EXIT_FAILURE);
+        }
+        graphics_status = render_frame(&graphics, birds, snapshot, &grid);
         if (graphics_status != KITTY_GRAPHICS_OK) {
             fprintf(stderr, "Cannot render Kitty graphics: %s\n",
                     kitty_graphics_status_string(graphics_status));
             exit(EXIT_FAILURE);
         }
-        handle_input();
+        while (running && graphics.length > 0) {
+            graphics_status = kitty_graphics_flush_nonblocking(&graphics);
+            if (graphics_status == KITTY_GRAPHICS_AGAIN) {
+                if (wait_for_terminal_io() < 0) {
+                    perror("Cannot wait for terminal output");
+                    exit(EXIT_FAILURE);
+                }
+                running = handle_input();
+                continue;
+            }
+            if (graphics_status != KITTY_GRAPHICS_OK) {
+                fprintf(stderr, "Cannot flush Kitty graphics: %s\n",
+                        kitty_graphics_status_string(graphics_status));
+                exit(EXIT_FAILURE);
+            }
+        }
+        if (!running) break;
         clock_gettime(CLOCK_MONOTONIC, &frame_end);
         long remaining =
             1000000L / config.frame_rate - elapsed_microseconds(&frame_start, &frame_end);
@@ -581,4 +674,9 @@ int main(int argc, char **argv) {
             nanosleep(&delay, NULL);
         }
     }
+    spatial_grid_destroy(&grid);
+    kitty_graphics_destroy(&graphics);
+    free(snapshot);
+    free(birds);
+    return EXIT_SUCCESS;
 }

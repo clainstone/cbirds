@@ -1,6 +1,8 @@
 #include "kitty_graphics.h"
 
 #include <assert.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -48,7 +50,9 @@ static void test_chunked_upload(void) {
 static void test_placement_and_deletion(void) {
     static const char expected[] =
         "\033_Ga=d,d=a\033\\"
-        "\033[3;5H\033_Ga=p,I=9,q=2,p=12,X=3,Y=6,z=-1\033\\"
+        "\033[3;5H\033_Ga=p,I=9,q=2,p=12,X=3,Y=6,z=-1,C=1\033\\"
+        "\033[3;5H\033_Ga=p,I=9,q=2,X=3,Y=6,C=1\033\\"
+        "\033_Ga=d,d=n,I=9,p=12,q=2\033\\"
         "\033_Ga=d,d=N,I=9\033\\";
     kitty_graphics_t graphics;
     kitty_graphics_placement_t placement = {
@@ -64,7 +68,23 @@ static void test_placement_and_deletion(void) {
     assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
     assert(kitty_graphics_delete_all_placements(&graphics) == KITTY_GRAPHICS_OK);
     assert(kitty_graphics_place(&graphics, &placement) == KITTY_GRAPHICS_OK);
+    placement.placement_id = 0;
+    placement.z_index = 0;
+    assert(kitty_graphics_place(&graphics, &placement) == KITTY_GRAPHICS_OK);
+    assert(kitty_graphics_delete_placement(&graphics, 9, 12) == KITTY_GRAPHICS_OK);
     assert(kitty_graphics_delete_image(&graphics, 9) == KITTY_GRAPHICS_OK);
+    assert(graphics.length == sizeof(expected) - 1);
+    assert(memcmp(graphics.buffer, expected, sizeof(expected) - 1) == 0);
+    kitty_graphics_destroy(&graphics);
+}
+
+static void test_synchronized_update(void) {
+    static const char expected[] = "\033[?2026h\033[?2026l";
+    kitty_graphics_t graphics;
+
+    assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
+    assert(kitty_graphics_begin_synchronized_update(&graphics) == KITTY_GRAPHICS_OK);
+    assert(kitty_graphics_end_synchronized_update(&graphics) == KITTY_GRAPHICS_OK);
     assert(graphics.length == sizeof(expected) - 1);
     assert(memcmp(graphics.buffer, expected, sizeof(expected) - 1) == 0);
     kitty_graphics_destroy(&graphics);
@@ -89,6 +109,39 @@ static void test_flush(void) {
     close(descriptors[1]);
 }
 
+static void test_nonblocking_flush_backpressure(void) {
+    int descriptors[2];
+    char fill[4096] = {0};
+    char drain[8192];
+    static const uint8_t png[] = {0};
+    kitty_graphics_t graphics;
+
+    assert(pipe(descriptors) == 0);
+    int flags = fcntl(descriptors[1], F_GETFL);
+    assert(flags >= 0);
+    assert(fcntl(descriptors[1], F_SETFL, flags | O_NONBLOCK) == 0);
+    while (write(descriptors[1], fill, sizeof(fill)) > 0) {
+    }
+    assert(errno == EAGAIN || errno == EWOULDBLOCK);
+    assert(fcntl(descriptors[1], F_SETFL, flags) == 0);
+
+    assert(kitty_graphics_init(&graphics, descriptors[1]) == KITTY_GRAPHICS_OK);
+    assert(kitty_graphics_upload_png(&graphics, 1, png, sizeof(png)) == KITTY_GRAPHICS_OK);
+    size_t expected_length = graphics.length;
+    assert(kitty_graphics_flush_nonblocking(&graphics) == KITTY_GRAPHICS_AGAIN);
+    assert(graphics.length == expected_length);
+    assert(fcntl(descriptors[1], F_GETFL) == flags);
+
+    assert(read(descriptors[0], drain, sizeof(drain)) > 0);
+    assert(kitty_graphics_flush_nonblocking(&graphics) == KITTY_GRAPHICS_OK);
+    assert(graphics.length == 0);
+    assert(fcntl(descriptors[1], F_GETFL) == flags);
+
+    kitty_graphics_destroy(&graphics);
+    close(descriptors[0]);
+    close(descriptors[1]);
+}
+
 static void test_invalid_arguments(void) {
     kitty_graphics_t graphics;
     kitty_graphics_placement_t placement = {0};
@@ -97,6 +150,7 @@ static void test_invalid_arguments(void) {
     assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
     assert(kitty_graphics_upload_png(&graphics, 0, NULL, 0) == KITTY_GRAPHICS_ERR_ARGUMENT);
     assert(kitty_graphics_place(&graphics, &placement) == KITTY_GRAPHICS_ERR_ARGUMENT);
+    assert(kitty_graphics_delete_placement(&graphics, 0, 0) == KITTY_GRAPHICS_ERR_ARGUMENT);
     kitty_graphics_destroy(&graphics);
 }
 
@@ -104,7 +158,9 @@ int main(void) {
     test_small_upload();
     test_chunked_upload();
     test_placement_and_deletion();
+    test_synchronized_update();
     test_flush();
+    test_nonblocking_flush_backpressure();
     test_invalid_arguments();
     return 0;
 }

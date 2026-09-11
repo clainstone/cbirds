@@ -1,6 +1,7 @@
 #include "kitty_graphics.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -151,10 +152,32 @@ kitty_graphics_status_t kitty_graphics_place(kitty_graphics_t *graphics,
         placement->x_offset < 0 || placement->y_offset < 0)
         return KITTY_GRAPHICS_ERR_ARGUMENT;
 
+    if (placement->placement_id == 0 && placement->z_index == 0)
+        return append_format(graphics, "\033[%d;%dH\033_Ga=p,I=%" PRIu32 ",q=2,X=%d,Y=%d,C=1\033\\",
+                             placement->row + 1, placement->column + 1, placement->image_id,
+                             placement->x_offset, placement->y_offset);
+    if (placement->placement_id == 0)
+        return append_format(graphics,
+                             "\033[%d;%dH\033_Ga=p,I=%" PRIu32 ",q=2,X=%d,Y=%d,z=%d,C=1\033\\",
+                             placement->row + 1, placement->column + 1, placement->image_id,
+                             placement->x_offset, placement->y_offset, placement->z_index);
+    if (placement->z_index == 0)
+        return append_format(
+            graphics, "\033[%d;%dH\033_Ga=p,I=%" PRIu32 ",q=2,p=%" PRIu32 ",X=%d,Y=%d,C=1\033\\",
+            placement->row + 1, placement->column + 1, placement->image_id, placement->placement_id,
+            placement->x_offset, placement->y_offset);
     return append_format(
-        graphics, "\033[%d;%dH\033_Ga=p,I=%" PRIu32 ",q=2,p=%" PRIu32 ",X=%d,Y=%d,z=%d\033\\",
+        graphics, "\033[%d;%dH\033_Ga=p,I=%" PRIu32 ",q=2,p=%" PRIu32 ",X=%d,Y=%d,z=%d,C=1\033\\",
         placement->row + 1, placement->column + 1, placement->image_id, placement->placement_id,
         placement->x_offset, placement->y_offset, placement->z_index);
+}
+
+kitty_graphics_status_t kitty_graphics_delete_placement(kitty_graphics_t *graphics,
+                                                        uint32_t image_id, uint32_t placement_id) {
+    if (graphics == NULL || graphics->output_fd < 0 || image_id == 0 || placement_id == 0)
+        return KITTY_GRAPHICS_ERR_ARGUMENT;
+    return append_format(graphics, "\033_Ga=d,d=n,I=%" PRIu32 ",p=%" PRIu32 ",q=2\033\\", image_id,
+                         placement_id);
 }
 
 kitty_graphics_status_t kitty_graphics_delete_all_placements(kitty_graphics_t *graphics) {
@@ -169,7 +192,24 @@ kitty_graphics_status_t kitty_graphics_delete_image(kitty_graphics_t *graphics, 
     return append_format(graphics, "\033_Ga=d,d=N,I=%" PRIu32 "\033\\", image_id);
 }
 
-kitty_graphics_status_t kitty_graphics_flush(kitty_graphics_t *graphics) {
+kitty_graphics_status_t kitty_graphics_begin_synchronized_update(kitty_graphics_t *graphics) {
+    if (graphics == NULL || graphics->output_fd < 0) return KITTY_GRAPHICS_ERR_ARGUMENT;
+    return append_bytes(graphics, "\033[?2026h", sizeof("\033[?2026h") - 1);
+}
+
+kitty_graphics_status_t kitty_graphics_end_synchronized_update(kitty_graphics_t *graphics) {
+    if (graphics == NULL || graphics->output_fd < 0) return KITTY_GRAPHICS_ERR_ARGUMENT;
+    return append_bytes(graphics, "\033[?2026l", sizeof("\033[?2026l") - 1);
+}
+
+static void discard_written_prefix(kitty_graphics_t *graphics, size_t written) {
+    if (written == 0) return;
+    graphics->length -= written;
+    memmove(graphics->buffer, graphics->buffer + written, graphics->length);
+    graphics->buffer[graphics->length] = '\0';
+}
+
+static kitty_graphics_status_t flush_buffer(kitty_graphics_t *graphics, int nonblocking) {
     if (graphics == NULL || graphics->output_fd < 0) return KITTY_GRAPHICS_ERR_ARGUMENT;
 
     size_t written = 0;
@@ -178,20 +218,14 @@ kitty_graphics_status_t kitty_graphics_flush(kitty_graphics_t *graphics) {
             write(graphics->output_fd, graphics->buffer + written, graphics->length - written);
         if (result < 0) {
             if (errno == EINTR) continue;
-            if (written > 0) {
-                graphics->length -= written;
-                memmove(graphics->buffer, graphics->buffer + written, graphics->length);
-                graphics->buffer[graphics->length] = '\0';
-            }
+            discard_written_prefix(graphics, written);
+            if (nonblocking && (errno == EAGAIN || errno == EWOULDBLOCK))
+                return KITTY_GRAPHICS_AGAIN;
             return KITTY_GRAPHICS_ERR_IO;
         }
         if (result == 0) {
             errno = EIO;
-            if (written > 0) {
-                graphics->length -= written;
-                memmove(graphics->buffer, graphics->buffer + written, graphics->length);
-                graphics->buffer[graphics->length] = '\0';
-            }
+            discard_written_prefix(graphics, written);
             return KITTY_GRAPHICS_ERR_IO;
         }
         written += (size_t)result;
@@ -199,6 +233,27 @@ kitty_graphics_status_t kitty_graphics_flush(kitty_graphics_t *graphics) {
     graphics->length = 0;
     if (graphics->buffer != NULL) graphics->buffer[0] = '\0';
     return KITTY_GRAPHICS_OK;
+}
+
+kitty_graphics_status_t kitty_graphics_flush(kitty_graphics_t *graphics) {
+    return flush_buffer(graphics, 0);
+}
+
+kitty_graphics_status_t kitty_graphics_flush_nonblocking(kitty_graphics_t *graphics) {
+    if (graphics == NULL || graphics->output_fd < 0) return KITTY_GRAPHICS_ERR_ARGUMENT;
+
+    int flags = fcntl(graphics->output_fd, F_GETFL);
+    if (flags < 0) return KITTY_GRAPHICS_ERR_IO;
+    int changed_flags = !(flags & O_NONBLOCK);
+    if (changed_flags && fcntl(graphics->output_fd, F_SETFL, flags | O_NONBLOCK) < 0)
+        return KITTY_GRAPHICS_ERR_IO;
+
+    kitty_graphics_status_t status = flush_buffer(graphics, 1);
+    int write_errno = errno;
+    if (changed_flags && fcntl(graphics->output_fd, F_SETFL, flags) < 0)
+        return KITTY_GRAPHICS_ERR_IO;
+    errno = write_errno;
+    return status;
 }
 
 const char *kitty_graphics_status_string(kitty_graphics_status_t status) {
@@ -211,6 +266,8 @@ const char *kitty_graphics_status_string(kitty_graphics_status_t status) {
             return "out of memory";
         case KITTY_GRAPHICS_ERR_IO:
             return "output error";
+        case KITTY_GRAPHICS_AGAIN:
+            return "output would block";
     }
     return "unknown error";
 }

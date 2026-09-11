@@ -10,7 +10,8 @@ typedef enum {
     KITTY_GRAPHICS_OK = 0,
     KITTY_GRAPHICS_ERR_ARGUMENT,
     KITTY_GRAPHICS_ERR_MEMORY,
-    KITTY_GRAPHICS_ERR_IO
+    KITTY_GRAPHICS_ERR_IO,
+    KITTY_GRAPHICS_AGAIN
 } kitty_graphics_status_t;
 
 typedef struct {
@@ -40,11 +41,20 @@ kitty_graphics_status_t kitty_graphics_upload_png(kitty_graphics_t *graphics, ui
 
 kitty_graphics_status_t kitty_graphics_place(kitty_graphics_t *graphics,
                                              const kitty_graphics_placement_t *placement);
+kitty_graphics_status_t kitty_graphics_delete_placement(kitty_graphics_t *graphics,
+                                                        uint32_t image_id, uint32_t placement_id);
 kitty_graphics_status_t kitty_graphics_delete_all_placements(kitty_graphics_t *graphics);
 kitty_graphics_status_t kitty_graphics_delete_image(kitty_graphics_t *graphics, uint32_t image_id);
 
+/* Brackets a frame with DEC synchronized-update mode. */
+kitty_graphics_status_t kitty_graphics_begin_synchronized_update(kitty_graphics_t *graphics);
+kitty_graphics_status_t kitty_graphics_end_synchronized_update(kitty_graphics_t *graphics);
+
 /* Writes all queued commands. Successfully written commands are removed. */
 kitty_graphics_status_t kitty_graphics_flush(kitty_graphics_t *graphics);
+
+/* Writes without waiting for output capacity and preserves any unsent suffix. */
+kitty_graphics_status_t kitty_graphics_flush_nonblocking(kitty_graphics_t *graphics);
 
 const char *kitty_graphics_status_string(kitty_graphics_status_t status);
 

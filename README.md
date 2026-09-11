@@ -66,8 +66,9 @@ Cbirds combines several technologies to achieve high-performance terminal graphi
 1. **Sprite Generation**: the embedded PNG is decoded once, then rotated and scaled into 90 frames, each re-encoded as a PNG in memory
 2. **Kitty Graphics Protocol**: Binary image data is Base64-encoded and transmitted to the terminal using escape sequences
 3. **Double Buffering**: State updates are computed on a separate copy to ensure consistency
-4. **Rotation Precomputation**: the 90 frames are built at startup so the main loop only sends positions
-5. **Raw Terminal Mode**: Direct terminal control for responsive keyboard input
+4. **Spatial Grid**: boids are grouped into fixed 12×12 pixel cells so neighbor searches stay local
+5. **Rotation Precomputation**: the 90 frames are built at startup so the main loop only sends positions
+6. **Raw Terminal Mode**: Direct terminal control for responsive keyboard input
 
 ## Requirements
 
@@ -101,8 +102,11 @@ Everything lives in the repository root, there are no subdirectories:
 | File | |
 |---|---|
 | `boids.c` | simulation and terminal handling |
+| `boids_test.c` | grid-versus-brute-force simulation and input tests |
 | `kitty_graphics.c` / `kitty_graphics.h` | buffered Kitty graphics protocol API |
 | `kitty_graphics_test.c` | protocol formatting and chunking tests |
+| `spatial_grid.c` / `spatial_grid.h` | fixed-size spatial grid and contiguous cell buckets |
+| `spatial_grid_test.c` | spatial lookup and brute-force equivalence tests |
 | `png.c` / `png.h` | the PNG library (decode, encode, rotate, resize, tint) |
 | `sprite_png.h` | the bird PNG, generated, compiled into the binary |
 | `mkasset.c` | regenerates that header from `matrix.png` |
@@ -126,7 +130,7 @@ make
 The compiled binary `cbirds` is created in the repository root. It needs
 nothing else at runtime: copy it anywhere and run it.
 
-Run the Kitty protocol tests with:
+Run the protocol, spatial grid and simulation tests with:
 
 ```bash
 make test
@@ -184,7 +188,7 @@ While the simulation is running, use these keyboard commands:
 - `S` / `s` - Increase/decrease **separation** weight
 - `C` / `c` - Increase/decrease **cohesion** weight
 - `A` / `a` - Increase/decrease **alignment** weight
-- `P` / `p` - Increase/decrease **perception radius** 
+- `P` / `p` - Increase/decrease **perception radius** by one 12-pixel cell (1–12 cells)
 
 #### Performance
 - `R` / `r` - Increase/decrease frame rate by 5 FPS (limited to 30–120)
@@ -200,7 +204,8 @@ BIRDS_N = 800              // Number of boids
 FRAME_RATE = 60            // Frames per second
 SPEED = 40                 // Movement speed (pixels/frame at 60 FPS)
 BIRD_SIZE = 15             // Sprite size (pixels), see -s
-PERCEPTION_RADIUS = 35     // Neighbor detection radius
+SPATIAL_CELL_SIZE = 12     // Fixed grid cell size in pixels
+VISION_CELLS = 3           // Default radius: 3 cells = 36 pixels
 
 // Behavioral weights
 SEPARATION_W = 0.005       // Avoidance strength
@@ -209,9 +214,13 @@ COHESION_W = 0.01          // Grouping strength
 BOUNDARY_AV_W = 0.2        // Edge avoidance strength
 ```
 
-`SPEED` is derived from the frame rate so that the distance covered per second
-stays constant: changing FPS (`-f`, or `R`/`r` at runtime) does not make the
-flock faster or slower.
+`SPEED` is derived from the requested frame rate so that the nominal distance
+covered per second stays constant: changing FPS (`-f`, or `R`/`r` at runtime)
+does not change the flock speed while the terminal sustains that rate.
+
+The perception radius ranges from 1 to 12 cells (12–144 pixels). Cells only
+select neighbor candidates; the final distance check remains circular and
+uses the exact radius in pixels.
 
 ### Optimizing Performance
 
@@ -237,12 +246,14 @@ The simulation follows this execution flow:
 1. **Initialization**: Decode the embedded PNG, build the 90 rotation frames, Base64-encode them
 2. **State Setup**: Initialize boid positions and velocities randomly
 3. **Main Loop**:
+   - Process keyboard input and drain any pending terminal output
    - Copy current state for consistent calculations
-   - Calculate neighbor influences for each boid
+   - Rebuild the spatial grid from that immutable snapshot
+   - Queue the current positions for rendering
+   - Calculate neighbor influences from nearby cells
    - Apply flocking rules and update positions
    - Update rotation frame IDs based on new directions
-   - Render sprites using Kitty graphics commands
-   - Process keyboard input
+   - Flush the Kitty commands without blocking
    - Sleep for the remainder of the frame budget, measured with a monotonic clock
 
 ### The PNG Library
@@ -266,6 +277,13 @@ alpha, otherwise the color of the transparent pixels bleeds into the wings.
 
 ### Key Algorithms
 
+**Spatial Grid**: the screen is divided into fixed 12×12 pixel cells. Each
+frame uses counting and prefix sums to group boid indices into contiguous cell
+ranges. A boid visits only the cells covered by its current vision radius, then
+applies the exact circular distance test. Building the grid is `O(n + cells)`;
+neighbor lookup is proportional to the local candidates, with `O(n²)` retained
+only as the worst case when the whole flock is densely clustered.
+
 **Direction Calculation**: Weighted vector sum of all behavioral components:
 ```c
 result = separation×W₁ + alignment×W₂ + cohesion×W₃ + boundary×W₄
@@ -276,11 +294,26 @@ result = separation×W₁ + alignment×W₂ + cohesion×W₃ + boundary×W₄
 Cbirds uses Kitty's graphics protocol with these commands:
 
 - `\033_Ga=t,f=100,I=<id>;<base64_data>\033\\` - Upload image
-- `\033_Ga=p,I=<id>,p=<placement>,X=<x>,Y=<y>\033\\` - Display image
-- `\033_Ga=d,d=a\033\\` - Delete all visible placements
+- `\033_Ga=p,I=<id>,X=<x>,Y=<y>\033\\` - Display image
+- `\033_Ga=d,d=a\033\\` - Delete all visible placements inside the synchronized frame
 
 Image uploads are Base64 encoded and automatically split into protocol chunks
 of at most 4096 bytes by `kitty_graphics.c`.
+
+As in the original fast renderer, each frame uses one global placement clear
+followed by all current placements. The whole operation is wrapped in DEC
+synchronized-update mode (`CSI ? 2026 h` / `CSI ? 2026 l`), so the terminal
+presents it atomically instead of displaying the empty intermediate state.
+Default placement and z-index IDs are omitted to keep every command compact;
+`C=1` prevents cursor movement and accidental scrolling.
+
+Runtime output is flow-controlled. If the terminal cannot consume a frame
+immediately, Cbirds preserves only that frame's unsent suffix, keeps polling
+both terminal input and output, and resumes as soon as either becomes ready. It
+does not generate another frame until the pending output has drained. The
+selected FPS is therefore an upper target: output saturation can lower the
+effective rate, but cannot create an unbounded queue or starve the `R`, `r`,
+and `q` input handling.
 
 ### Performance Characteristics
 
@@ -298,7 +331,7 @@ Startup, sprite generation included, is about 50 ms at the default size and
 
 Contributions are welcome! Areas for improvement:
 
-- **Optimization**: spatial hashing for neighbor queries (currently O(n²)), a real DEFLATE compressor for the encoder
+- **Optimization**: multithreading or SIMD for dense flocks, a real DEFLATE compressor for the encoder
 - **Features**: Predator-prey dynamics, obstacle avoidance, 3D visualization
 - **Portability**: Windows support, additional terminal protocols
 

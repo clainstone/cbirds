@@ -188,7 +188,7 @@ While the simulation is running, use these keyboard commands:
 - `S` / `s` - Increase/decrease **separation** weight
 - `C` / `c` - Increase/decrease **cohesion** weight
 - `A` / `a` - Increase/decrease **alignment** weight
-- `P` / `p` - Increase/decrease **perception radius** by one 12-pixel cell (1–12 cells)
+- `P` / `p` - Increase/decrease **perception radius** by one 12-pixel cell (1–5 cells)
 
 #### Performance
 - `R` / `r` - Increase/decrease frame rate by 5 FPS (limited to 30–120)
@@ -222,7 +222,7 @@ BOTTOM_BAND_DIVISOR = 6    // Bottom: one sixth of the height
 covered per second stays constant: changing FPS (`-f`, or `R`/`r` at runtime)
 does not change the flock speed while the terminal sustains that rate.
 
-The perception radius ranges from 1 to 12 cells (12–144 pixels). Cells only
+The perception radius ranges from 1 to 5 cells (12–60 pixels). Cells only
 select neighbor candidates; the final distance check remains circular and
 uses the exact radius in pixels.
 

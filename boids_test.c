@@ -231,13 +231,13 @@ static void test_vision_controls(void) {
     update_vision_radius();
     assert(feed_input("PP") == 1);
     assert(config.vision_cells == MAX_VISION_CELLS);
-    assert(config.vision_radius == 144);
+    assert(config.vision_radius == MAX_VISION_CELLS * SPATIAL_CELL_SIZE);
 
     config.vision_cells = MIN_VISION_CELLS;
     update_vision_radius();
     assert(feed_input("pp") == 1);
     assert(config.vision_cells == MIN_VISION_CELLS);
-    assert(config.vision_radius == 12);
+    assert(config.vision_radius == MIN_VISION_CELLS * SPATIAL_CELL_SIZE);
     assert(feed_input("q") == 0);
 }
 

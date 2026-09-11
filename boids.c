@@ -47,7 +47,7 @@ enum {
     SPATIAL_CELL_SIZE = 12,
     DEFAULT_VISION_CELLS = 3,
     MIN_VISION_CELLS = 1,
-    MAX_VISION_CELLS = 12
+    MAX_VISION_CELLS = 5
 };
 
 static const double BOUNDARY_STEP = 0.02;

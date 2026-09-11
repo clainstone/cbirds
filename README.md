@@ -55,7 +55,7 @@ These simple rules create surprisingly realistic emergent behavior resembling na
 
 ### Customization
 - 🎛️ **Adjustable Population**: Scale from tens to thousands of boids
-- ⏱️ **Variable Frame Rate**: Configure FPS from 1 to 200+
+- ⏱️ **Variable Frame Rate**: Configure FPS from 30 to 120
 - 📏 **Sprite Size**: chosen at startup with `-s`, the frames are rendered for that size
 - 🎚️ **Behavioral Tuning**: Fine-tune separation, alignment, cohesion, and boundary weights
 
@@ -100,7 +100,9 @@ Everything lives in the repository root, there are no subdirectories:
 
 | File | |
 |---|---|
-| `main.c` | simulation, terminal handling, Kitty protocol |
+| `boids.c` | simulation and terminal handling |
+| `kitty_graphics.c` / `kitty_graphics.h` | buffered Kitty graphics protocol API |
+| `kitty_graphics_test.c` | protocol formatting and chunking tests |
 | `png.c` / `png.h` | the PNG library (decode, encode, rotate, resize, tint) |
 | `sprite_png.h` | the bird PNG, generated, compiled into the binary |
 | `mkasset.c` | regenerates that header from `matrix.png` |
@@ -123,6 +125,12 @@ make
 
 The compiled binary `cbirds` is created in the repository root. It needs
 nothing else at runtime: copy it anywhere and run it.
+
+Run the Kitty protocol tests with:
+
+```bash
+make test
+```
 
 ### Changing the Artwork
 
@@ -154,7 +162,7 @@ Run with default settings (800 boids at 60 FPS):
 
 Options:
   -n NUMBER    Set number of boids (default: 800, max: 200000)
-  -f FPS       Set frame rate (default: 60, max: 1000)
+  -f FPS       Set frame rate (default: 60, from 30 to 120)
   -s SIZE      Set bird size in pixels (default: 15, from 4 to 64)
   -h           Show usage and exit
 
@@ -179,7 +187,7 @@ While the simulation is running, use these keyboard commands:
 - `P` / `p` - Increase/decrease **perception radius** 
 
 #### Performance
-- `R` / `r` - Increase/decrease frame rate
+- `R` / `r` - Increase/decrease frame rate by 5 FPS (limited to 30–120)
 
 ## Configuration
 
@@ -270,6 +278,9 @@ Cbirds uses Kitty's graphics protocol with these commands:
 - `\033_Ga=t,f=100,I=<id>;<base64_data>\033\\` - Upload image
 - `\033_Ga=p,I=<id>,p=<placement>,X=<x>,Y=<y>\033\\` - Display image
 - `\033_Ga=d,d=a\033\\` - Delete all visible placements
+
+Image uploads are Base64 encoded and automatically split into protocol chunks
+of at most 4096 bytes by `kitty_graphics.c`.
 
 ### Performance Characteristics
 

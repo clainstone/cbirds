@@ -1,0 +1,584 @@
+/* Feature test macros must precede every include. */
+#define _XOPEN_SOURCE 700
+#define _DEFAULT_SOURCE
+#define _DARWIN_C_SOURCE
+
+#include <errno.h>
+#include <math.h>
+#include <signal.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <termios.h>
+#include <time.h>
+#include <unistd.h>
+
+#include "kitty_graphics.h"
+#include "png.h"
+#include "sprite_png.h"
+
+enum {
+    ROTATION_FRAMES = 90,
+    FRAME_ANGLE = 360 / ROTATION_FRAMES,
+    SPRITE_SUPERSAMPLE = 8,
+    SPRITE_WORK_MAX = 256,
+    MIN_BIRD_SIZE = 4,
+    MAX_BIRD_SIZE = 64,
+    MAX_BIRDS = 200000,
+    INPUT_BUFFER_SIZE = 100,
+    DEFAULT_COLS = 80,
+    DEFAULT_ROWS = 24,
+    DEFAULT_CELL_WIDTH = 8,
+    DEFAULT_CELL_HEIGHT = 16,
+    START_OFFSET = 20,
+    MIN_FRAME_RATE = 30,
+    DEFAULT_FRAME_RATE = 60,
+    MAX_FRAME_RATE = 120,
+    FRAME_RATE_STEP = 5,
+    DEFAULT_SPEED = 40,
+    DEFAULT_BIRD_SIZE = 15,
+    DEFAULT_PERCEPTION_RADIUS = 35,
+    MIN_PERCEPTION_RADIUS = 3,
+    MAX_PERCEPTION_RADIUS = 46340,
+    PERCEPTION_RADIUS_STEP = 3
+};
+
+static const double BOUNDARY_STEP = 0.02;
+static const double BOUNDARY_MIN = 0.01;
+static const double SEPARATION_STEP = 0.001;
+static const double SEPARATION_MIN = 0.001;
+static const double COHESION_STEP = 0.002;
+static const double COHESION_MIN = 0.002;
+static const double ALIGNMENT_STEP = 0.1;
+static const double ALIGNMENT_MIN = 0.1;
+
+#define ALT_SCREEN_ON "\033[?1049h"
+#define ALT_SCREEN_OFF "\033[?1049l"
+#define CURSOR_HIDE "\033[?25l"
+#define CURSOR_SHOW "\033[?25h"
+
+typedef struct {
+    double x, y;
+} vector_t;
+
+typedef struct {
+    double x, y, direction;
+    int frame;
+} bird_t;
+
+typedef struct {
+    uint8_t *data;
+    size_t length;
+} image_frame_t;
+
+typedef struct {
+    int width, height, cols, rows;
+    int cell_width, cell_height, turn_x, turn_y;
+} screen_t;
+
+typedef struct {
+    int birds, frame_rate, bird_size;
+    double speed;
+    int perception_radius, perception_radius_squared;
+    double separation, alignment, cohesion, boundary;
+} config_t;
+
+static config_t config = {
+    .birds = 800,
+    .frame_rate = DEFAULT_FRAME_RATE,
+    .speed = DEFAULT_SPEED,
+    .bird_size = DEFAULT_BIRD_SIZE,
+    .perception_radius = DEFAULT_PERCEPTION_RADIUS,
+    .perception_radius_squared = DEFAULT_PERCEPTION_RADIUS * DEFAULT_PERCEPTION_RADIUS,
+    .separation = 0.005,
+    .alignment = 1.5,
+    .cohesion = 0.01,
+    .boundary = 0.2,
+};
+static screen_t screen;
+static struct termios saved_termios;
+static volatile sig_atomic_t terminal_is_raw;
+static volatile sig_atomic_t terminal_restored;
+
+static void write_all(const void *data, size_t length) {
+    const char *bytes = data;
+    while (length > 0) {
+        ssize_t written = write(STDOUT_FILENO, bytes, length);
+        if (written < 0) {
+            if (errno == EINTR) continue;
+            return;
+        }
+        if (written == 0) return;
+        bytes += written;
+        length -= (size_t)written;
+    }
+}
+
+static void restore_terminal(void) {
+    if (terminal_restored) return;
+    terminal_restored = 1;
+    if (terminal_is_raw) {
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios);
+        terminal_is_raw = 0;
+    }
+    write_all(CURSOR_SHOW, sizeof(CURSOR_SHOW) - 1);
+    write_all(ALT_SCREEN_OFF, sizeof(ALT_SCREEN_OFF) - 1);
+}
+
+static void signal_handler(int signal_number) {
+    restore_terminal();
+    _exit(128 + signal_number);
+}
+
+static void install_signal_handlers(void) {
+    static const int signals[] = {SIGINT,  SIGTERM, SIGHUP, SIGQUIT,
+                                  SIGSEGV, SIGFPE,  SIGBUS, SIGABRT};
+    struct sigaction action;
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = signal_handler;
+    action.sa_flags = (int)SA_RESETHAND;
+    sigemptyset(&action.sa_mask);
+    for (size_t i = 0; i < sizeof(signals) / sizeof(*signals); i++)
+        sigaction(signals[i], &action, NULL);
+}
+
+static int enter_terminal(void) {
+    struct termios raw;
+    write_all(ALT_SCREEN_ON, sizeof(ALT_SCREEN_ON) - 1);
+    write_all(CURSOR_HIDE, sizeof(CURSOR_HIDE) - 1);
+    if (tcgetattr(STDIN_FILENO, &raw) < 0) return -1;
+    saved_termios = raw;
+    raw.c_iflag &= (tcflag_t) ~(tcflag_t)(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+    raw.c_oflag &= (tcflag_t) ~(tcflag_t)OPOST;
+    raw.c_cflag |= CS8;
+    raw.c_lflag &= (tcflag_t) ~(tcflag_t)(ECHO | ICANON | IEXTEN);
+    raw.c_cc[VSUSP] = _POSIX_VDISABLE;
+    raw.c_cc[VMIN] = 0;
+    raw.c_cc[VTIME] = 0;
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) < 0) return -1;
+    terminal_is_raw = 1;
+    return 0;
+}
+
+static void update_screen_dimensions(void) {
+    struct winsize size;
+    memset(&size, 0, sizeof(size));
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0) memset(&size, 0, sizeof(size));
+    screen.cols = size.ws_col ? size.ws_col : DEFAULT_COLS;
+    screen.rows = size.ws_row ? size.ws_row : DEFAULT_ROWS;
+    screen.width = size.ws_xpixel;
+    screen.height = size.ws_ypixel;
+    if (screen.width <= 0 || screen.height <= 0) {
+        screen.width = screen.cols * DEFAULT_CELL_WIDTH;
+        screen.height = screen.rows * DEFAULT_CELL_HEIGHT;
+    }
+    screen.cell_width = screen.width / screen.cols;
+    screen.cell_height = screen.height / screen.rows;
+    if (screen.cell_width < 1) screen.cell_width = 1;
+    if (screen.cell_height < 1) screen.cell_height = 1;
+    screen.turn_x = screen.width / 3;
+    screen.turn_y = screen.height / 3;
+}
+
+static void build_rotation_frames(image_frame_t frames[ROTATION_FRAMES]) {
+    png_image_t source = {0, 0, NULL}, canvas = {0, 0, NULL};
+    png_status_t status = png_decode(sprite_png, sprite_png_len, &source);
+    if (status != PNG_OK) {
+        fprintf(stderr, "Cannot decode the embedded sprite: %s\n", png_status_string(status));
+        exit(EXIT_FAILURE);
+    }
+    int canvas_size = config.bird_size * SPRITE_SUPERSAMPLE;
+    if (canvas_size > SPRITE_WORK_MAX) canvas_size = SPRITE_WORK_MAX;
+    if (canvas_size > source.width) canvas_size = source.width;
+    status = png_resize(&source, canvas_size, canvas_size, &canvas);
+    png_image_free(&source);
+    if (status != PNG_OK) {
+        fprintf(stderr, "Cannot scale the embedded sprite: %s\n", png_status_string(status));
+        exit(EXIT_FAILURE);
+    }
+    for (int i = 0; i < ROTATION_FRAMES; i++) {
+        png_image_t frame = {0, 0, NULL};
+        uint8_t *encoded = NULL;
+        size_t encoded_length = 0;
+        double radians = i * FRAME_ANGLE * M_PI / 180.0;
+        status = png_rotate_resize(&canvas, radians, config.bird_size, config.bird_size, &frame);
+        if (status == PNG_OK) status = png_encode(&frame, &encoded, &encoded_length);
+        png_image_free(&frame);
+        if (status != PNG_OK) {
+            fprintf(stderr, "Cannot build the rotation frames: %s\n", png_status_string(status));
+            exit(EXIT_FAILURE);
+        }
+        frames[i].data = encoded;
+        frames[i].length = encoded_length;
+    }
+    png_image_free(&canvas);
+}
+
+static kitty_graphics_status_t upload_rotation_frames(kitty_graphics_t *graphics,
+                                                      const image_frame_t frames[ROTATION_FRAMES]) {
+    for (int i = 0; i < ROTATION_FRAMES; i++) {
+        kitty_graphics_status_t status =
+            kitty_graphics_upload_png(graphics, (uint32_t)i + 1, frames[i].data, frames[i].length);
+        if (status != KITTY_GRAPHICS_OK) return status;
+    }
+    kitty_graphics_status_t status = kitty_graphics_delete_all_placements(graphics);
+    return status == KITTY_GRAPHICS_OK ? kitty_graphics_flush(graphics) : status;
+}
+
+static void free_rotation_frames(image_frame_t frames[ROTATION_FRAMES]) {
+    for (int i = 0; i < ROTATION_FRAMES; i++) {
+        free(frames[i].data);
+        frames[i].data = NULL;
+        frames[i].length = 0;
+    }
+}
+
+static double random_unit(void) {
+    return (double)rand() / RAND_MAX;
+}
+
+static int direction_frame(double radians) {
+    int degrees = (int)(radians * 180.0 / M_PI);
+    return ((degrees % 360 + 360) % 360) / FRAME_ANGLE;
+}
+
+static void initialize_birds(bird_t *birds) {
+    for (int i = 0; i < config.birds; i++) {
+        bird_t *bird = &birds[i];
+        bird->x = START_OFFSET + (screen.width - 2 * START_OFFSET) * random_unit();
+        bird->y = START_OFFSET + (screen.height - 2 * START_OFFSET) * random_unit();
+        bird->direction = 2 * M_PI * random_unit();
+        if (bird->x < screen.turn_x || bird->x > screen.width - screen.turn_x)
+            bird->x = screen.width / 2;
+        if (bird->y < screen.turn_y || bird->y > screen.height - screen.turn_y)
+            bird->y = screen.height / 2;
+        bird->frame = direction_frame(bird->direction);
+    }
+}
+
+static double normalized_angle(double y, double x) {
+    double angle = atan2(y, x);
+    return angle < 0 ? angle + 2 * M_PI : angle;
+}
+
+static vector_t boundary_vector(const bird_t *bird) {
+    vector_t boundary = {0, 0};
+    if (bird->x < screen.turn_x)
+        boundary.x = 1;
+    else if (bird->x > screen.width - screen.turn_x)
+        boundary.x = -1;
+    if (bird->y < screen.turn_y)
+        boundary.y = 1;
+    else if (bird->y > screen.height - 100)
+        boundary.y = -100000; /* Preserve the original strong bottom-edge turn. */
+    return boundary;
+}
+
+static double flock_direction(const bird_t *birds, int target_index) {
+    const bird_t *target = &birds[target_index];
+    vector_t separation = {0, 0}, alignment = {0, 0}, cohesion = {0, 0};
+    vector_t boundary = boundary_vector(target);
+    int neighbors = 0;
+    for (int i = 0; i < config.birds; i++) {
+        if (i == target_index) continue;
+        const bird_t *other = &birds[i];
+        double dx = target->x - other->x, dy = target->y - other->y;
+        if (dx * dx + dy * dy >= config.perception_radius_squared) continue;
+        separation.x += dx;
+        separation.y += dy;
+        alignment.x += cos(other->direction);
+        alignment.y += sin(other->direction);
+        cohesion.x += other->x;
+        cohesion.y += other->y;
+        neighbors++;
+    }
+    if (neighbors) {
+        alignment.x /= neighbors;
+        alignment.y /= neighbors;
+        cohesion.x = cohesion.x / neighbors - target->x;
+        cohesion.y = cohesion.y / neighbors - target->y;
+        double x = separation.x * config.separation + alignment.x * config.alignment +
+                   cohesion.x * config.cohesion + boundary.x * config.boundary;
+        double y = separation.y * config.separation + alignment.y * config.alignment +
+                   cohesion.y * config.cohesion + boundary.y * config.boundary;
+        return x == 0 && y == 0 ? target->direction : normalized_angle(y, x);
+    }
+    boundary.x *= config.boundary;
+    boundary.y *= config.boundary;
+    if (boundary.x != 0 || boundary.y != 0) {
+        double x = cos(target->direction) + boundary.x;
+        double y = sin(target->direction) + boundary.y;
+        if (x != 0 || y != 0) return normalized_angle(y, x);
+    }
+    return target->direction;
+}
+
+static void update_birds(bird_t *birds, const bird_t *snapshot) {
+    for (int i = 0; i < config.birds; i++) {
+        double direction = flock_direction(snapshot, i);
+        birds[i].direction = direction;
+        birds[i].x += config.speed * cos(direction);
+        birds[i].y += config.speed * sin(direction);
+    }
+}
+
+static kitty_graphics_status_t render_bird(kitty_graphics_t *graphics, const bird_t *bird,
+                                           int index) {
+    if (bird->x < 0 || bird->y < 0) return KITTY_GRAPHICS_OK;
+
+    int pixel_x = (int)bird->x;
+    int pixel_y = (int)bird->y;
+    int column = pixel_x / screen.cell_width;
+    int row = pixel_y / screen.cell_height;
+    if (column >= screen.cols || row >= screen.rows) return KITTY_GRAPHICS_OK;
+
+    kitty_graphics_placement_t placement = {
+        .image_id = (uint32_t)bird->frame + 1,
+        .placement_id = 0,
+        .row = row,
+        .column = column,
+        .x_offset = pixel_x % screen.cell_width,
+        .y_offset = pixel_y % screen.cell_height,
+        .z_index = index,
+    };
+    return kitty_graphics_place(graphics, &placement);
+}
+
+static kitty_graphics_status_t render_frame(kitty_graphics_t *graphics, bird_t *birds,
+                                            bird_t *snapshot) {
+    kitty_graphics_status_t status = kitty_graphics_delete_all_placements(graphics);
+    for (int i = 0; status == KITTY_GRAPHICS_OK && i < config.birds; i++)
+        status = render_bird(graphics, &birds[i], i);
+    if (status != KITTY_GRAPHICS_OK) return status;
+
+    memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
+    for (int i = 0; i < config.birds; i++) birds[i].frame = direction_frame(birds[i].direction);
+    update_birds(birds, snapshot);
+    return kitty_graphics_flush(graphics);
+}
+
+static void update_speed(void) {
+    config.speed = (double)DEFAULT_SPEED * DEFAULT_FRAME_RATE / config.frame_rate;
+}
+
+static void handle_input(void) {
+    enum { INPUT_NORMAL, INPUT_ESCAPE, INPUT_SEQUENCE };
+    static int input_state = INPUT_NORMAL;
+    char input[INPUT_BUFFER_SIZE];
+    ssize_t length = read(STDIN_FILENO, input, sizeof(input));
+    for (ssize_t i = 0; i < length; i++) {
+        unsigned char key = (unsigned char)input[i];
+        if (input_state == INPUT_ESCAPE) {
+            if (key == '[' || key == 'O')
+                input_state = INPUT_SEQUENCE;
+            else if (key != '\033')
+                input_state = INPUT_NORMAL;
+            continue;
+        }
+        if (input_state == INPUT_SEQUENCE) {
+            if (key >= 0x40 && key <= 0x7e) input_state = INPUT_NORMAL;
+            continue;
+        }
+        if (key == '\033') {
+            input_state = INPUT_ESCAPE;
+            continue;
+        }
+
+        switch (key) {
+            case 'q':
+                exit(EXIT_SUCCESS);
+            case 'B':
+                config.boundary += BOUNDARY_STEP;
+                break;
+            case 'b':
+                if (config.boundary > BOUNDARY_MIN) {
+                    config.boundary -= BOUNDARY_STEP;
+                    if (config.boundary < BOUNDARY_MIN) config.boundary = BOUNDARY_MIN;
+                }
+                break;
+            case 'S':
+                config.separation += SEPARATION_STEP;
+                break;
+            case 's':
+                if (config.separation > SEPARATION_MIN) {
+                    config.separation -= SEPARATION_STEP;
+                    if (config.separation < SEPARATION_MIN) config.separation = SEPARATION_MIN;
+                }
+                break;
+            case 'C':
+                config.cohesion += COHESION_STEP;
+                break;
+            case 'c':
+                if (config.cohesion > COHESION_MIN) {
+                    config.cohesion -= COHESION_STEP;
+                    if (config.cohesion < COHESION_MIN) config.cohesion = COHESION_MIN;
+                }
+                break;
+            case 'A':
+                config.alignment += ALIGNMENT_STEP;
+                break;
+            case 'a':
+                if (config.alignment > ALIGNMENT_MIN) {
+                    config.alignment -= ALIGNMENT_STEP;
+                    if (config.alignment < ALIGNMENT_MIN) config.alignment = ALIGNMENT_MIN;
+                }
+                break;
+            case 'R':
+                if (config.frame_rate < MAX_FRAME_RATE) {
+                    config.frame_rate += FRAME_RATE_STEP;
+                    if (config.frame_rate > MAX_FRAME_RATE) config.frame_rate = MAX_FRAME_RATE;
+                    update_speed();
+                }
+                break;
+            case 'r':
+                if (config.frame_rate > MIN_FRAME_RATE) {
+                    config.frame_rate -= FRAME_RATE_STEP;
+                    if (config.frame_rate < MIN_FRAME_RATE) config.frame_rate = MIN_FRAME_RATE;
+                    update_speed();
+                }
+                break;
+            case 'P':
+                if (config.perception_radius < MAX_PERCEPTION_RADIUS) {
+                    config.perception_radius += PERCEPTION_RADIUS_STEP;
+                    if (config.perception_radius > MAX_PERCEPTION_RADIUS)
+                        config.perception_radius = MAX_PERCEPTION_RADIUS;
+                }
+                break;
+            case 'p':
+                if (config.perception_radius > MIN_PERCEPTION_RADIUS) {
+                    config.perception_radius -= PERCEPTION_RADIUS_STEP;
+                    if (config.perception_radius < MIN_PERCEPTION_RADIUS)
+                        config.perception_radius = MIN_PERCEPTION_RADIUS;
+                }
+                break;
+            default:
+                continue;
+        }
+        config.perception_radius_squared = config.perception_radius * config.perception_radius;
+    }
+}
+
+static void usage(const char *program) {
+    fprintf(stderr,
+            "Usage: %s [-n BIRDS] [-f FPS] [-s SIZE]\n"
+            "  -n NUMBER    number of boids (default 800, max %d)\n"
+            "  -f FPS       frame rate (default %d, from %d to %d)\n"
+            "  -s SIZE      bird size in pixels (default %d, from %d to %d)\n"
+            "  -h           show this help\n",
+            program, MAX_BIRDS, DEFAULT_FRAME_RATE, MIN_FRAME_RATE, MAX_FRAME_RATE,
+            DEFAULT_BIRD_SIZE, MIN_BIRD_SIZE, MAX_BIRD_SIZE);
+}
+
+static void read_options(int argc, char **argv) {
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
+            usage(argv[0]);
+            exit(EXIT_SUCCESS);
+        }
+        if (strlen(argv[i]) != 2 || argv[i][0] != '-' || !strchr("nfs", argv[i][1])) {
+            fprintf(stderr, "Unknown option: %s\n", argv[i]);
+            usage(argv[0]);
+            exit(EXIT_FAILURE);
+        }
+        char option = argv[i][1];
+        if (++i >= argc) {
+            fprintf(stderr, "Missing value for -%c\n", option);
+            usage(argv[0]);
+            exit(EXIT_FAILURE);
+        }
+        char *end;
+        errno = 0;
+        long value = strtol(argv[i], &end, 10);
+        if (errno == ERANGE || end == argv[i] || *end || value <= 0) {
+            fprintf(stderr, "Invalid value for -%c: %s\n", option, argv[i]);
+            exit(EXIT_FAILURE);
+        }
+        if (option == 'n') {
+            if (value > MAX_BIRDS) {
+                fprintf(stderr, "Birds number capped to %d\n", MAX_BIRDS);
+                value = MAX_BIRDS;
+            }
+            config.birds = (int)value;
+        } else if (option == 'f') {
+            if (value < MIN_FRAME_RATE || value > MAX_FRAME_RATE) {
+                fprintf(stderr, "Frame rate must be between %d and %d\n", MIN_FRAME_RATE,
+                        MAX_FRAME_RATE);
+                exit(EXIT_FAILURE);
+            }
+            config.frame_rate = (int)value;
+            update_speed();
+        } else {
+            if (value < MIN_BIRD_SIZE || value > MAX_BIRD_SIZE) {
+                fprintf(stderr, "Bird size must be between %d and %d\n", MIN_BIRD_SIZE,
+                        MAX_BIRD_SIZE);
+                exit(EXIT_FAILURE);
+            }
+            config.bird_size = (int)value;
+        }
+    }
+}
+
+static long elapsed_microseconds(const struct timespec *start, const struct timespec *end) {
+    return (end->tv_sec - start->tv_sec) * 1000000L + (end->tv_nsec - start->tv_nsec) / 1000L;
+}
+
+int main(int argc, char **argv) {
+    image_frame_t frames[ROTATION_FRAMES] = {0};
+    kitty_graphics_t graphics;
+    struct timespec frame_start, frame_end;
+    read_options(argc, argv);
+    srand((unsigned)time(NULL));
+    update_screen_dimensions();
+    build_rotation_frames(frames);
+
+    bird_t *birds = calloc((size_t)config.birds, sizeof(*birds));
+    bird_t *snapshot = malloc(sizeof(*snapshot) * (size_t)config.birds);
+    if (!birds || !snapshot) {
+        perror("Out of memory");
+        exit(EXIT_FAILURE);
+    }
+    kitty_graphics_status_t graphics_status = kitty_graphics_init(&graphics, STDOUT_FILENO);
+    if (graphics_status != KITTY_GRAPHICS_OK) {
+        fprintf(stderr, "Cannot initialize Kitty graphics: %s\n",
+                kitty_graphics_status_string(graphics_status));
+        exit(EXIT_FAILURE);
+    }
+
+    install_signal_handlers();
+    atexit(restore_terminal);
+    if (enter_terminal() < 0) {
+        perror("Can't enable raw mode");
+        exit(EXIT_FAILURE);
+    }
+    write_all("\x1b[J", sizeof("\x1b[J") - 1);
+    update_screen_dimensions();
+    initialize_birds(birds);
+    graphics_status = upload_rotation_frames(&graphics, frames);
+    free_rotation_frames(frames);
+    if (graphics_status != KITTY_GRAPHICS_OK) {
+        fprintf(stderr, "Cannot upload Kitty graphics: %s\n",
+                kitty_graphics_status_string(graphics_status));
+        exit(EXIT_FAILURE);
+    }
+
+    for (;;) {
+        clock_gettime(CLOCK_MONOTONIC, &frame_start);
+        update_screen_dimensions();
+        graphics_status = render_frame(&graphics, birds, snapshot);
+        if (graphics_status != KITTY_GRAPHICS_OK) {
+            fprintf(stderr, "Cannot render Kitty graphics: %s\n",
+                    kitty_graphics_status_string(graphics_status));
+            exit(EXIT_FAILURE);
+        }
+        handle_input();
+        clock_gettime(CLOCK_MONOTONIC, &frame_end);
+        long remaining =
+            1000000L / config.frame_rate - elapsed_microseconds(&frame_start, &frame_end);
+        if (remaining > 0) {
+            struct timespec delay = {remaining / 1000000L, (remaining % 1000000L) * 1000L};
+            nanosleep(&delay, NULL);
+        }
+    }
+}

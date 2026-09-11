@@ -1,6 +1,7 @@
 # Build output
 cbirds
 mkasset
+kitty_graphics_test
 *.o
 *.dSYM/
 *~

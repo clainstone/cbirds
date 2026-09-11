@@ -161,7 +161,7 @@ Run with default settings (800 boids at 60 FPS):
 ./cbirds [OPTIONS]
 
 Options:
-  -n NUMBER    Set number of boids (default: 800, max: 200000)
+  -n NUMBER    Set number of boids (default: 800, max: 4096)
   -f FPS       Set frame rate (default: 60, from 30 to 120)
   -s SIZE      Set bird size in pixels (default: 15, from 4 to 64)
   -h           Show usage and exit

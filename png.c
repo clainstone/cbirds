@@ -37,7 +37,7 @@ const char *png_status_string(png_status_t status) {
 static uint32_t crc_table[256];
 static int crc_table_ready = 0;
 
-static void crc_table_init() {
+static void crc_table_init(void) {
     for (uint32_t n = 0; n < 256; n++) {
         uint32_t c = n;
         for (int k = 0; k < 8; k++) c = (c & 1) ? 0xedb88320u ^ (c >> 1) : c >> 1;

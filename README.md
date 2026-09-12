@@ -53,6 +53,7 @@ cbirds --color ember      # or pick a ramp
 
 ```bash
 cbirds --preset murmuration --trails    # the starling look, with tails
+cbirds --turning 2                      # long, lazy banking turns
 cbirds --hawks 2                        # give the clip a story
 cbirds --flocks 3 --color ice           # three flocks that will not merge
 cbirds --clock                          # the flock is the time
@@ -162,6 +163,13 @@ and prefix sums. The cell size is exactly the perception quantum, so the
 compares the grid against a brute-force scan to 1e-11, across every radius and
 every flock count.
 
+**The banking.** A bird may turn only so far in one frame, which is what gives
+the flock curved fronts and a leading edge instead of a blob that changes shape
+instantly. Two things are exempt: a bird writing a letter, which has to land on
+it rather than circle it, and a bird inside the panel's turn zone, whose push is
+a constraint rather than a force — the proof that the panel is unreachable
+assumes a bird can turn away at once.
+
 **The flocking.** Separation, alignment and cohesion, from the same immutable
 snapshot for every bird, so the order they are updated in cannot matter. Flocks
 are social, not physical: separation applies to every bird in reach, alignment
@@ -180,13 +188,13 @@ check them rather than take them on trust. Ryzen-class laptop, 1600×800 viewpor
 
 | birds | CPU per frame | ceiling | bytes per frame |
 |---|---|---|---|
-| 400 | 0.170 ms | 5900 fps | 11.4 KB |
-| 800 | 0.353 ms | 2832 fps | 22.3 KB |
-| 2000 | 1.003 ms | 997 fps | 45.4 KB |
-| 4096 | 2.734 ms | 366 fps | 108.3 KB |
+| 400 | 0.187 ms | 5335 fps | 11.9 KB |
+| 800 | 0.384 ms | 2607 fps | 21.0 KB |
+| 2000 | 1.084 ms | 923 fps | 50.5 KB |
+| 4096 | 2.756 ms | 363 fps | 93.7 KB |
 
 The simulation is not the bottleneck and has not been since the spatial grid
-landed. The limit is terminal bandwidth: 1.3 MB/s at the default, 6.5 MB/s at
+landed. The limit is terminal bandwidth: 1.3 MB/s at the default, 5.6 MB/s at
 four thousand birds.
 
 ## Requirements

@@ -35,6 +35,12 @@ enum {
     MOUSE_CAT,
     MOUSE_OFF,
     DEFAULT_MOUSE_REACH = 120,
+    DEFAULT_VISION_NOTCH = 6,
+    /* Only every sixteenth bird leaves one, because a tail behind all of them is
+     * three times the bandwidth for a picture that reads as mud. Fifty comets in
+     * a flock of eight hundred is what says "moving" in a still frame. */
+    TRAIL_EVERY = 16,
+    TRAIL_LENGTH = 4,
     FRAME_ANGLE = 360 / ROTATION_FRAMES,
     SPRITE_SUPERSAMPLE = 8,
     SPRITE_WORK_MAX = 256,
@@ -134,6 +140,8 @@ typedef struct {
     int frame;
     int shade; /* Index into the palette, and half of the image id. */
     int flock; /* Which flock it reads: separation ignores this, the rest does not. */
+    double trail_x[TRAIL_LENGTH], trail_y[TRAIL_LENGTH];
+    int trail_at, trail_held;
 } bird_t;
 
 typedef struct {
@@ -150,6 +158,7 @@ typedef struct {
 typedef struct {
     int birds, frame_rate, bird_size, palette, flocks, colour_by;
     int mouse_mode, mouse_reach;
+    int wrap, trails;
     double speed;
     int vision_cells, vision_radius, vision_radius_squared;
     double separation, alignment, cohesion, boundary;
@@ -182,7 +191,7 @@ static config_t config = {
     .cohesion_notch = DEFAULT_NOTCH,
     .alignment_notch = DEFAULT_NOTCH,
     /* Twelve to sixty pixels in steps of four: thirty six is the sixth notch. */
-    .vision_notch = 6,
+    .vision_notch = DEFAULT_VISION_NOTCH,
     .rate_notch = DEFAULT_NOTCH,
 };
 static screen_t screen;
@@ -205,6 +214,13 @@ static struct {
     long frame;
     double seconds;
 } clock_state;
+
+/* Paused holds the simulation still but keeps drawing and reading keys, so the
+ * panel still answers and a single step is possible. Stepping is one frame of
+ * motion granted while paused. */
+static int paused;
+static int step_once;
+static int population_changed;
 /* Whether the panel is currently on screen. The panel is anchored at the origin
  * and constant in cells, so it never leaves text behind by moving: the only row
  * ever needing an erase is one it occupied before being switched off. Clearing
@@ -655,38 +671,39 @@ static int legend_repels(const bird_t *bird, vector_t *boundary) {
 
 /* Spread over the region no turn band covers, so no bird starts by fleeing an
  * edge and the flock does not begin stacked on a single point. */
-static void initialize_birds(bird_t *birds) {
+/* One bird, so that growing the flock at runtime places only the new ones. */
+static void place_one_bird(bird_t *bird, int index) {
     double min_x = screen.turn_x, max_x = screen.width - screen.turn_x;
     double min_y = screen.turn_y, max_y = screen.height - screen.turn_bottom;
     if (max_x <= min_x) min_x = max_x = screen.width / 2.0;
     if (max_y <= min_y) min_y = max_y = screen.height / 2.0;
 
-    for (int i = 0; i < config.birds; i++) {
-        bird_t *bird = &birds[i];
-        /* Rejected rather than clamped, so the whole free region stays in play
-         * instead of the flock piling up along one edge of the panel. Bounded,
-         * with a deterministic fallback below the panel, because on a small
-         * viewport the free region can be almost entirely covered. */
-        for (int attempt = 0;; attempt++) {
-            bird->x = min_x + (max_x - min_x) * random_unit();
-            bird->y = min_y + (max_y - min_y) * random_unit();
-            if (!legend_turn_zone(bird->x, bird->y)) break;
-            if (attempt + 1 >= SPAWN_ATTEMPTS) {
-                bird->y = screen.legend_height + config.speed + 1;
-                if (bird->y > max_y) bird->x = screen.legend_width + config.speed + 1;
-                break;
-            }
+    /* Rejected rather than clamped, so the whole free region stays in play
+     * instead of the flock piling up along one edge of the panel. Bounded, with a
+     * deterministic fallback below the panel, because on a small viewport the
+     * free region can be almost entirely covered. */
+    for (int attempt = 0;; attempt++) {
+        bird->x = min_x + (max_x - min_x) * random_unit();
+        bird->y = min_y + (max_y - min_y) * random_unit();
+        if (!legend_turn_zone(bird->x, bird->y)) break;
+        if (attempt + 1 >= SPAWN_ATTEMPTS) {
+            bird->y = screen.legend_height + config.speed + 1;
+            if (bird->y > max_y) bird->x = screen.legend_width + config.speed + 1;
+            break;
         }
-        bird->direction = 2 * M_PI * random_unit();
-        bird->frame = direction_frame(bird->direction);
-        /* Flocks are handed out round robin so they come out even, and when there
-         * is more than one the palette follows them: a colour per flock is what
-         * makes two of them legible as two. */
-        bird->flock = i % config.flocks;
-        bird->shade = config.flocks > 1
-                          ? bird->flock % palette_shades()
-                          : (int)(random_unit() * palette_shades()) % palette_shades();
     }
+    bird->direction = 2 * M_PI * random_unit();
+    bird->frame = direction_frame(bird->direction);
+    /* Flocks are handed out round robin so they come out even, and when there is
+     * more than one the palette follows them: a colour per flock is what makes
+     * two of them legible as two. */
+    bird->flock = index % config.flocks;
+    bird->shade = config.flocks > 1 ? bird->flock % palette_shades()
+                                    : (int)(random_unit() * palette_shades()) % palette_shades();
+}
+
+static void initialize_birds(bird_t *birds) {
+    for (int i = 0; i < config.birds; i++) place_one_bird(&birds[i], i);
 }
 
 static double normalized_angle(double y, double x) {
@@ -736,6 +753,7 @@ static vector_t pointer_vector(const bird_t *bird) {
 static vector_t boundary_vector(const bird_t *bird) {
     vector_t boundary = {0, 0};
     if (legend_repels(bird, &boundary)) return boundary;
+    if (config.wrap) return boundary; /* A door, so no wall. */
     if (bird->x < screen.turn_x)
         boundary.x = 1;
     else if (bird->x > screen.width - screen.turn_x)
@@ -849,6 +867,16 @@ static int shade_for(const bird_t *bird, int crowd) {
     }
 }
 
+/* Off one edge and back on the other. The edges stop pushing back when this is
+ * on, because a wall and a door in the same place is neither. */
+static void wrap_position(bird_t *bird) {
+    double width = screen.width, height = screen.height;
+    if (bird->x < 0) bird->x += width;
+    if (bird->x >= width) bird->x -= width;
+    if (bird->y < 0) bird->y += height;
+    if (bird->y >= height) bird->y -= height;
+}
+
 static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_grid_t *grid) {
     for (int i = 0; i < config.birds; i++) {
         int crowd = 0;
@@ -856,7 +884,15 @@ static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_gr
         birds[i].direction = direction;
         birds[i].x += config.speed * cos(direction);
         birds[i].y += config.speed * sin(direction);
+        if (config.wrap) wrap_position(&birds[i]);
         birds[i].shade = shade_for(&birds[i], crowd);
+        if (config.trails && i % TRAIL_EVERY == 0) {
+            /* Where it was, not where it is: a tail behind, never under. */
+            birds[i].trail_x[birds[i].trail_at] = snapshot[i].x;
+            birds[i].trail_y[birds[i].trail_at] = snapshot[i].y;
+            birds[i].trail_at = (birds[i].trail_at + 1) % TRAIL_LENGTH;
+            if (birds[i].trail_held < TRAIL_LENGTH) birds[i].trail_held++;
+        }
     }
 }
 
@@ -974,6 +1010,22 @@ static kitty_graphics_status_t queue_legend(kitty_graphics_t *graphics) {
 static kitty_graphics_status_t queue_render_frame(kitty_graphics_t *graphics, const bird_t *birds) {
     kitty_graphics_status_t status = kitty_graphics_begin_synchronized_update(graphics);
     if (status == KITTY_GRAPHICS_OK) status = kitty_graphics_delete_all_placements(graphics);
+    if (config.trails && palette_shades() > 1) {
+        int faint = palette_shades() - 1; /* The far end of the ramp. */
+        for (int i = 0; status == KITTY_GRAPHICS_OK; i += TRAIL_EVERY) {
+            if (i >= config.birds) break;
+            for (int step = 0; step < birds[i].trail_held; step++) {
+                bird_t ghost = birds[i];
+                ghost.x = birds[i].trail_x[step];
+                ghost.y = birds[i].trail_y[step];
+                ghost.shade = faint;
+                kitty_graphics_placement_t placement;
+                if (bird_placement(&ghost, &placement))
+                    status = kitty_graphics_place(graphics, &placement);
+                if (status != KITTY_GRAPHICS_OK) break;
+            }
+        }
+    }
     for (int i = 0; status == KITTY_GRAPHICS_OK && i < config.birds; i++) {
         kitty_graphics_placement_t placement;
         if (bird_placement(&birds[i], &placement))
@@ -989,6 +1041,11 @@ static kitty_graphics_status_t render_frame(kitty_graphics_t *graphics, bird_t *
     kitty_graphics_status_t status = queue_render_frame(graphics, birds);
     if (status != KITTY_GRAPHICS_OK) return status;
 
+    /* Paused still draws and still reads keys, so the panel answers and the
+     * sliders can be explored on a still frame. A step grants one frame of
+     * motion and then stands still again. */
+    if (paused && !step_once) return KITTY_GRAPHICS_OK;
+    step_once = 0;
     update_birds(birds, snapshot, grid);
     for (int i = 0; i < config.birds; i++) birds[i].frame = direction_frame(birds[i].direction);
     return KITTY_GRAPHICS_OK;
@@ -1028,6 +1085,114 @@ static void apply_notches(void) {
 
     config.frame_rate = notch_integer(config.rate_notch, MIN_FRAME_RATE, MAX_FRAME_RATE);
     update_speed();
+}
+
+static int requested_frame_rate = DEFAULT_FRAME_RATE;
+static int requested_perception = DEFAULT_VISION_RADIUS;
+static int requested_seed = -1;
+static int requested_preset = -1;
+
+/*
+ * A preset is the six notches together, because the interesting settings are
+ * combinations rather than single values, and naming one is how a look gets
+ * shared. The order is boundary, separation, cohesion, alignment, perception,
+ * rate, which is the order the panel shows them in.
+ */
+typedef struct {
+    const char *name;
+    const char *help;
+    int notch[6];
+} preset_t;
+
+static const preset_t PRESETS[] = {
+    {"murmuration", "one great restless body, the starling look", {4, 3, 7, 9, 8, 4}},
+    {"swarm", "tight, fast and nervous, like insects", {5, 8, 9, 3, 3, 8}},
+    {"school", "wide and slow, fish over a reef", {3, 5, 6, 7, 11, 2}},
+    {"storm", "loose and violent, thrown about", {9, 10, 2, 2, 6, 9}},
+    {"calm", "a gentle drift, almost still", {2, 4, 4, 5, 6, 1}},
+};
+enum { PRESET_COUNT = sizeof(PRESETS) / sizeof(*PRESETS) };
+static const char *PRESET_NAMES[PRESET_COUNT + 1];
+
+static void name_the_presets(void) {
+    for (int i = 0; i < PRESET_COUNT; i++) PRESET_NAMES[i] = PRESETS[i].name;
+    PRESET_NAMES[PRESET_COUNT] = NULL;
+}
+
+static void apply_preset(int which) {
+    const preset_t *preset = &PRESETS[which];
+    config.boundary_notch = preset->notch[0];
+    config.separation_notch = preset->notch[1];
+    config.cohesion_notch = preset->notch[2];
+    config.alignment_notch = preset->notch[3];
+    config.vision_notch = preset->notch[4];
+    config.rate_notch = preset->notch[5];
+    apply_notches();
+}
+
+/* The option table: the parser and the help text both come off this, so adding a
+ * switch is one row and never a second place to keep in step. */
+static const option_t OPTIONS[] = {
+    {'n', "birds", OPTION_INT, &config.birds, 1, MAX_BIRDS, NULL, "COUNT",
+     "how many boids to fly (default 800)", "Flock"},
+    {'s', "size", OPTION_INT, &config.bird_size, MIN_BIRD_SIZE, MAX_BIRD_SIZE, NULL, "PIXELS",
+     "sprite size in pixels (default 15)", "Flock"},
+    {'k', "flocks", OPTION_INT, &config.flocks, 1, MAX_FLOCKS, NULL, "COUNT",
+     "split into this many flocks that will not merge (default 1)", "Flock"},
+    {'c', "color", OPTION_ENUM, &config.palette, 0, 0, PALETTE_NAMES, "RAMP",
+     "theme, original, ember, ice, acid, paper (default theme)", "Colour"},
+    {0, "color-by", OPTION_ENUM, &config.colour_by, 0, 0, COLOUR_BY_NAMES, "MODE",
+     "what picks a bird's shade: heading, density, flock, fixed", "Colour"},
+    {0, "preset", OPTION_ENUM, &requested_preset, 0, 0, PRESET_NAMES, "NAME",
+     "murmuration, swarm, school, storm, calm", "Flock"},
+    {0, "seed", OPTION_INT, &requested_seed, 0, 2147483647, NULL, "N",
+     "the same seed gives the same flock", "Flock"},
+    {0, "boundary", OPTION_INT, &config.boundary_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
+     "how hard the edges push back, 0 to 12 (default 4)", "Sliders"},
+    {0, "separation", OPTION_INT, &config.separation_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
+     "how much a bird keeps its distance (default 4)", "Sliders"},
+    {0, "cohesion", OPTION_INT, &config.cohesion_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
+     "how much it seeks the crowd (default 4)", "Sliders"},
+    {0, "alignment", OPTION_INT, &config.alignment_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
+     "how much it matches its neighbours (default 4)", "Sliders"},
+    {0, "perception", OPTION_INT, &requested_perception, MIN_VISION_RADIUS, MAX_VISION_RADIUS, NULL,
+     "PIXELS", "how far it sees, 12 to 60 (default 36)", "Sliders"},
+    {'f', "fps", OPTION_INT, &requested_frame_rate, MIN_FRAME_RATE, MAX_FRAME_RATE, NULL, "RATE",
+     "frames a second, snapped to a notch (default 60)", "Sliders"},
+    {'l', "legend", OPTION_FLAG, &legend_enabled, 0, 0, NULL, NULL,
+     "show the parameter panel, on by default", "Display"},
+    {'w', "wrap", OPTION_FLAG, &config.wrap, 0, 0, NULL, NULL,
+     "leave one edge, arrive from the other", "World"},
+    {'e', "trails", OPTION_FLAG, &config.trails, 0, 0, NULL, NULL, "faint tails behind the flock",
+     "World"},
+    {'m', "mouse", OPTION_ENUM, &config.mouse_mode, 0, 0, MOUSE_NAMES, "MODE",
+     "the pointer is: flee, follow, cat, off (default flee)", "Interaction"},
+    {0, "mouse-reach", OPTION_INT, &config.mouse_reach, 8, 600, NULL, "PIXELS",
+     "how far the pointer reaches (default 120)", "Interaction"},
+    {0, "mouse-reporting", OPTION_FLAG, &mouse_enabled, 0, 0, NULL, NULL,
+     "ask the terminal for pointer positions, on by default", "Interaction"},
+    {0, "force", OPTION_FLAG, &force_graphics, 0, 0, NULL, NULL,
+     "draw without asking the terminal whether it can", "General"},
+};
+enum { OPTION_COUNT = sizeof(OPTIONS) / sizeof(*OPTIONS) };
+
+static const char *const EXAMPLES[] = {
+    "cbirds                      a flock, and nothing to read",
+    "cbirds -n 2000 -f 120       more of them, faster",
+    "cbirds --no-legend          hide the panel, the flock keeps the corner",
+    NULL,
+};
+
+/* Back to the shipped look, which is what someone reaches for after pressing
+ * every key to see what it does. */
+static void apply_preset_defaults(void) {
+    config.boundary_notch = DEFAULT_NOTCH;
+    config.separation_notch = DEFAULT_NOTCH;
+    config.cohesion_notch = DEFAULT_NOTCH;
+    config.alignment_notch = DEFAULT_NOTCH;
+    config.vision_notch = DEFAULT_VISION_NOTCH;
+    config.rate_notch = DEFAULT_NOTCH;
+    apply_notches();
 }
 
 /* CSI < button ; column ; row M or m, one based, as mode 1006 sends it. */
@@ -1080,6 +1245,51 @@ static int handle_input(void) {
         switch (key) {
             case 'q':
                 return 0;
+            case ' ':
+                paused = !paused;
+                continue;
+            case '.':
+                step_once = 1; /* One frame of motion, then still again. */
+                continue;
+            case '0':
+                apply_preset_defaults();
+                continue;
+            case '+':
+            case '=':
+                if (config.birds < MAX_BIRDS) {
+                    config.birds += config.birds / 4 + 1;
+                    if (config.birds > MAX_BIRDS) config.birds = MAX_BIRDS;
+                    population_changed = 1;
+                }
+                continue;
+            case '-':
+                if (config.birds > 1) {
+                    config.birds -= config.birds / 5 + 1;
+                    if (config.birds < 1) config.birds = 1;
+                    population_changed = 1;
+                }
+                continue;
+            case 'h':
+                legend_enabled = !legend_enabled;
+                measure_legend();
+                update_turn_distances();
+                continue;
+            case 'w':
+                config.wrap = !config.wrap;
+                continue;
+            case 'e':
+                config.trails = !config.trails;
+                continue;
+            case 'M':
+                config.mouse_mode = (config.mouse_mode + 1) % 4;
+                continue;
+            case 'L':
+                config.colour_by = (config.colour_by + 1) % 4;
+                continue;
+            case '\t':
+                requested_preset = (requested_preset + 1) % PRESET_COUNT;
+                apply_preset(requested_preset);
+                continue;
             case 'B':
                 notch = &config.boundary_notch;
                 step = 1;
@@ -1152,98 +1362,6 @@ static int wait_for_terminal_io(void) {
 }
 
 #define CBIRDS_VERSION "1.0.0"
-
-/* The option table: the parser and the help text both come off this, so adding a
- * switch is one row and never a second place to keep in step. */
-static int requested_frame_rate = DEFAULT_FRAME_RATE;
-static int requested_perception = DEFAULT_VISION_RADIUS;
-static int requested_seed = -1;
-static int requested_preset = -1;
-
-/*
- * A preset is the six notches together, because the interesting settings are
- * combinations rather than single values, and naming one is how a look gets
- * shared. The order is boundary, separation, cohesion, alignment, perception,
- * rate, which is the order the panel shows them in.
- */
-typedef struct {
-    const char *name;
-    const char *help;
-    int notch[6];
-} preset_t;
-
-static const preset_t PRESETS[] = {
-    {"murmuration", "one great restless body, the starling look", {4, 3, 7, 9, 8, 4}},
-    {"swarm", "tight, fast and nervous, like insects", {5, 8, 9, 3, 3, 8}},
-    {"school", "wide and slow, fish over a reef", {3, 5, 6, 7, 11, 2}},
-    {"storm", "loose and violent, thrown about", {9, 10, 2, 2, 6, 9}},
-    {"calm", "a gentle drift, almost still", {2, 4, 4, 5, 6, 1}},
-};
-enum { PRESET_COUNT = sizeof(PRESETS) / sizeof(*PRESETS) };
-static const char *PRESET_NAMES[PRESET_COUNT + 1];
-
-static void name_the_presets(void) {
-    for (int i = 0; i < PRESET_COUNT; i++) PRESET_NAMES[i] = PRESETS[i].name;
-    PRESET_NAMES[PRESET_COUNT] = NULL;
-}
-
-static void apply_preset(int which) {
-    const preset_t *preset = &PRESETS[which];
-    config.boundary_notch = preset->notch[0];
-    config.separation_notch = preset->notch[1];
-    config.cohesion_notch = preset->notch[2];
-    config.alignment_notch = preset->notch[3];
-    config.vision_notch = preset->notch[4];
-    config.rate_notch = preset->notch[5];
-    apply_notches();
-}
-
-static const option_t OPTIONS[] = {
-    {'n', "birds", OPTION_INT, &config.birds, 1, MAX_BIRDS, NULL, "COUNT",
-     "how many boids to fly (default 800)", "Flock"},
-    {'s', "size", OPTION_INT, &config.bird_size, MIN_BIRD_SIZE, MAX_BIRD_SIZE, NULL, "PIXELS",
-     "sprite size in pixels (default 15)", "Flock"},
-    {'k', "flocks", OPTION_INT, &config.flocks, 1, MAX_FLOCKS, NULL, "COUNT",
-     "split into this many flocks that will not merge (default 1)", "Flock"},
-    {'c', "color", OPTION_ENUM, &config.palette, 0, 0, PALETTE_NAMES, "RAMP",
-     "theme, original, ember, ice, acid, paper (default theme)", "Colour"},
-    {0, "color-by", OPTION_ENUM, &config.colour_by, 0, 0, COLOUR_BY_NAMES, "MODE",
-     "what picks a bird's shade: heading, density, flock, fixed", "Colour"},
-    {0, "preset", OPTION_ENUM, &requested_preset, 0, 0, PRESET_NAMES, "NAME",
-     "murmuration, swarm, school, storm, calm", "Flock"},
-    {0, "seed", OPTION_INT, &requested_seed, 0, 2147483647, NULL, "N",
-     "the same seed gives the same flock", "Flock"},
-    {0, "boundary", OPTION_INT, &config.boundary_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
-     "how hard the edges push back, 0 to 12 (default 4)", "Sliders"},
-    {0, "separation", OPTION_INT, &config.separation_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
-     "how much a bird keeps its distance (default 4)", "Sliders"},
-    {0, "cohesion", OPTION_INT, &config.cohesion_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
-     "how much it seeks the crowd (default 4)", "Sliders"},
-    {0, "alignment", OPTION_INT, &config.alignment_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
-     "how much it matches its neighbours (default 4)", "Sliders"},
-    {0, "perception", OPTION_INT, &requested_perception, MIN_VISION_RADIUS, MAX_VISION_RADIUS, NULL,
-     "PIXELS", "how far it sees, 12 to 60 (default 36)", "Sliders"},
-    {'f', "fps", OPTION_INT, &requested_frame_rate, MIN_FRAME_RATE, MAX_FRAME_RATE, NULL, "RATE",
-     "frames a second, snapped to a notch (default 60)", "Sliders"},
-    {'l', "legend", OPTION_FLAG, &legend_enabled, 0, 0, NULL, NULL,
-     "show the parameter panel, on by default", "Display"},
-    {'m', "mouse", OPTION_ENUM, &config.mouse_mode, 0, 0, MOUSE_NAMES, "MODE",
-     "the pointer is: flee, follow, cat, off (default flee)", "Interaction"},
-    {0, "mouse-reach", OPTION_INT, &config.mouse_reach, 8, 600, NULL, "PIXELS",
-     "how far the pointer reaches (default 120)", "Interaction"},
-    {0, "mouse-reporting", OPTION_FLAG, &mouse_enabled, 0, 0, NULL, NULL,
-     "ask the terminal for pointer positions, on by default", "Interaction"},
-    {0, "force", OPTION_FLAG, &force_graphics, 0, 0, NULL, NULL,
-     "draw without asking the terminal whether it can", "General"},
-};
-enum { OPTION_COUNT = sizeof(OPTIONS) / sizeof(*OPTIONS) };
-
-static const char *const EXAMPLES[] = {
-    "cbirds                      a flock, and nothing to read",
-    "cbirds -n 2000 -f 120       more of them, faster",
-    "cbirds --no-legend          hide the panel, the flock keeps the corner",
-    NULL,
-};
 
 static void usage(FILE *out, const char *program) {
     options_usage(out, program, "cbirds \u2014 a flock of birds in your terminal.", EXAMPLES,
@@ -1372,6 +1490,7 @@ int main(int argc, char **argv) {
 
     struct timespec started;
     clock_gettime(CLOCK_MONOTONIC, &started);
+    int live_birds = config.birds;
     int running = 1;
     while (running) {
         running = handle_input();
@@ -1387,6 +1506,27 @@ int main(int argc, char **argv) {
             fprintf(stderr, "Cannot resize spatial grid: %s\n",
                     spatial_grid_status_string(grid_status));
             exit(EXIT_FAILURE);
+        }
+        if (population_changed) {
+            /* Grown or shrunk by a keypress. The birds already flying carry on;
+             * only the new ones need placing, and the grid needs room for them. */
+            population_changed = 0;
+            bird_t *grown = realloc(birds, sizeof(*birds) * (size_t)config.birds);
+            bird_t *grown_snapshot = realloc(snapshot, sizeof(*snapshot) * (size_t)config.birds);
+            if (grown != NULL) birds = grown;
+            if (grown_snapshot != NULL) snapshot = grown_snapshot;
+            if (grown == NULL || grown_snapshot == NULL) {
+                config.birds = live_birds; /* Keep what we have rather than lose it. */
+            } else {
+                for (int i = live_birds; i < config.birds; i++) place_one_bird(&birds[i], i);
+                live_birds = config.birds;
+            }
+            grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, config.birds);
+            if (grid_status != SPATIAL_GRID_OK) {
+                fprintf(stderr, "Cannot resize spatial grid: %s\n",
+                        spatial_grid_status_string(grid_status));
+                exit(EXIT_FAILURE);
+            }
         }
         memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
         grid_status = spatial_grid_build(&grid, config.birds, read_bird_position, snapshot);

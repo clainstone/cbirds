@@ -12,12 +12,14 @@ static const char *label;
 static const char *const PALETTES[] = {"mono", "flame", "ice", NULL};
 
 static const option_t TABLE[] = {
-    {'n', "birds", OPTION_INT, &birds, 1, 4096, NULL, "COUNT", "how many boids", "Flock"},
-    {'w', "weight", OPTION_DOUBLE, &weight, 0.0, 1.0, NULL, "VALUE", "a weight", "Flock"},
-    {'q', "quiet", OPTION_FLAG, &quiet, 0, 0, NULL, NULL, "say less", "Output"},
-    {'m', "mono", OPTION_FLAG, &mono, 0, 0, NULL, NULL, "one colour", "Output"},
-    {'P', "palette", OPTION_ENUM, &palette, 0, 0, PALETTES, "NAME", "colour scheme", "Output"},
-    {0, "label", OPTION_STRING, &label, 0, 0, NULL, "TEXT", "a caption", "Output"},
+    {'n', "birds", "boids", OPTION_INT, &birds, 1, 4096, NULL, "COUNT", "how many boids", "Flock",
+     1},
+    {'w', "weight", NULL, OPTION_DOUBLE, &weight, 0.0, 1.0, NULL, "VALUE", "a weight", "Flock", 0},
+    {'q', "quiet", NULL, OPTION_FLAG, &quiet, 0, 0, NULL, NULL, "say less", "Output", 1},
+    {'m', "mono", NULL, OPTION_FLAG, &mono, 0, 0, NULL, NULL, "one colour", "Output", 0},
+    {'P', "palette", NULL, OPTION_ENUM, &palette, 0, 0, PALETTES, "NAME", "colour scheme", "Output",
+     0},
+    {0, "label", NULL, OPTION_STRING, &label, 0, 0, NULL, "TEXT", "a caption", "Output", 0},
 };
 enum { COUNT = sizeof(TABLE) / sizeof(*TABLE) };
 
@@ -113,7 +115,16 @@ static void test_refusals(void) {
     assert(strstr(error, "takes no value") != NULL);
     reset();
     assert(parse(error, sizeof(error), "--birdz", "10", NULL) == OPTIONS_ERROR);
+    /* A near miss is answered with the name they probably meant. */
     assert(strstr(error, "unknown option '--birdz'") != NULL);
+    assert(strstr(error, "did you mean '--birds'") != NULL);
+    reset();
+    assert(parse(error, sizeof(error), "--quiett", NULL) == OPTIONS_ERROR);
+    assert(strstr(error, "did you mean '--quiet'") != NULL);
+    reset();
+    /* And something that is not a near miss gets no guess. */
+    assert(parse(error, sizeof(error), "--xyzzy", NULL) == OPTIONS_ERROR);
+    assert(strstr(error, "did you mean") == NULL);
     reset();
     assert(parse(error, sizeof(error), "-z", NULL) == OPTIONS_ERROR);
     assert(strstr(error, "unknown option '-z'") != NULL);
@@ -131,12 +142,18 @@ static void test_refusals(void) {
 static void test_help_and_version(void) {
     char error[128];
     reset();
+    /* -h is the one screen version, --help everything: two answers, not one. */
     assert(parse(error, sizeof(error), "-h", NULL) == OPTIONS_HELP);
-    assert(parse(error, sizeof(error), "--help", NULL) == OPTIONS_HELP);
+    assert(parse(error, sizeof(error), "--help", NULL) == OPTIONS_HELP_FULL);
     assert(parse(error, sizeof(error), "-V", NULL) == OPTIONS_VERSION);
     assert(parse(error, sizeof(error), "--version", NULL) == OPTIONS_VERSION);
     /* Asked for anywhere, it wins over whatever else is on the line. */
-    assert(parse(error, sizeof(error), "-n", "10", "--help", NULL) == OPTIONS_HELP);
+    assert(parse(error, sizeof(error), "-n", "10", "--help", NULL) == OPTIONS_HELP_FULL);
+
+    /* --completion leaves the shell in the buffer for the caller to act on. */
+    assert(parse(error, sizeof(error), "--completion", "fish", NULL) == OPTIONS_COMPLETION);
+    assert(strcmp(error, "fish") == 0);
+    assert(parse(error, sizeof(error), "--completion", NULL) == OPTIONS_ERROR);
 }
 
 static void test_usage_is_aligned(void) {
@@ -144,7 +161,7 @@ static void test_usage_is_aligned(void) {
     char buffer[4096] = {0};
     FILE *out = fmemopen(buffer, sizeof(buffer), "w");
     assert(out != NULL);
-    options_usage(out, "cbirds", "A flock in your terminal.", EXAMPLES, TABLE, COUNT);
+    options_usage(out, "cbirds", "A flock in your terminal.", EXAMPLES, TABLE, COUNT, 1);
     fclose(out);
 
     assert(strstr(buffer, "A flock in your terminal.") == buffer);
@@ -174,8 +191,52 @@ static void test_usage_is_aligned(void) {
     assert(column > 0);
 }
 
+static void test_aliases_and_the_short_help(void) {
+    char error[128];
+
+    /* An old name keeps working without being advertised, which is how a rename
+     * costs nobody anything. */
+    reset();
+    assert(parse(error, sizeof(error), "--boids", "1200", NULL) == OPTIONS_OK && birds == 1200);
+    reset();
+    assert(parse(error, sizeof(error), "--boids=1200", NULL) == OPTIONS_OK && birds == 1200);
+
+    /* -h shows only the essential rows, --help shows them all. */
+    char brief[2048] = {0}, full[4096] = {0};
+    FILE *out = fmemopen(brief, sizeof(brief), "w");
+    options_usage(out, "cbirds", NULL, NULL, TABLE, COUNT, 0);
+    fclose(out);
+    out = fmemopen(full, sizeof(full), "w");
+    options_usage(out, "cbirds", NULL, NULL, TABLE, COUNT, 1);
+    fclose(out);
+    assert(strstr(brief, "--birds") != NULL);  /* Essential. */
+    assert(strstr(brief, "--weight") == NULL); /* Not. */
+    assert(strstr(full, "--weight") != NULL);
+    assert(strlen(brief) < strlen(full));
+    /* The old name is advertised in neither: accepted, never shown. */
+    assert(strstr(brief, "--boids") == NULL && strstr(full, "--boids") == NULL);
+}
+
+static void test_completions(void) {
+    char buffer[4096];
+    for (const char *const *shell = (const char *const[]){"bash", "zsh", "fish", NULL};
+         *shell != NULL; shell++) {
+        memset(buffer, 0, sizeof(buffer));
+        FILE *out = fmemopen(buffer, sizeof(buffer), "w");
+        assert(options_completion(out, *shell, "cbirds", TABLE, COUNT));
+        fclose(out);
+        /* Every long name reaches the shell, or the completion is a lie. */
+        for (size_t i = 0; i < COUNT; i++) assert(strstr(buffer, TABLE[i].name) != NULL);
+    }
+    FILE *out = fmemopen(buffer, sizeof(buffer), "w");
+    assert(!options_completion(out, "tcsh", "cbirds", TABLE, COUNT));
+    fclose(out);
+}
+
 int main(void) {
     test_forms();
+    test_aliases_and_the_short_help();
+    test_completions();
     test_flags_cluster();
     test_enumerations();
     test_refusals();

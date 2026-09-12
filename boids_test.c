@@ -393,7 +393,7 @@ static void test_flicker_free_render_queue(void) {
     screen.cell_width = 8;
     screen.cell_height = 16;
     screen.legend_row = -1; /* The legend has its own test below. */
-    screen_changed = 0;
+    drawn_legend_row = -1;
     assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
 
     assert(queue_render_frame(&graphics, &bird) == KITTY_GRAPHICS_OK);
@@ -425,41 +425,77 @@ static void test_flicker_free_render_queue(void) {
     kitty_graphics_destroy(&graphics);
 }
 
-static void test_frame_carries_the_legend_and_erases_on_resize(void) {
+static void test_frame_carries_the_legend(void) {
     kitty_graphics_t graphics;
     bird_t bird = {.x = 9, .y = 17, .direction = 0, .frame = 3};
 
     reset_test_config();
     config.birds = 1;
+    drawn_legend_row = -1;
     apply_screen_size(80, 24, 80 * 8, 24 * 16);
     assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
 
-    /* First frame after a size change erases, because deleting placements
-     * leaves text behind. */
     assert(queue_render_frame(&graphics, &bird) == KITTY_GRAPHICS_OK);
-    const char *erase = strstr(graphics.buffer, "\033[2J");
     const char *placement = strstr(graphics.buffer, "a=p");
     const char *bar = strstr(graphics.buffer, "\033[7m\033[K");
     const char *sync_end = strstr(graphics.buffer, "\033[?2026l");
-    assert(erase != NULL && placement != NULL && bar != NULL && sync_end != NULL);
-    assert(erase < placement); /* Before the flock is drawn again. */
-    assert(bar > placement);   /* And the bar goes on top. */
-    assert(bar < sync_end);    /* Inside the update, so it cannot tear. */
+    assert(placement != NULL && bar != NULL && sync_end != NULL);
+    assert(bar > placement); /* The bar goes on top of the flock. */
+    assert(bar < sync_end);  /* Inside the update, so it cannot tear. */
     /* Addressed at the reserved row, one based on the wire. */
     assert(strstr(graphics.buffer, "\033[24;1H\033[7m") != NULL);
+    assert(drawn_legend_row == screen.legend_row);
 
-    /* A frame at an unchanged size keeps the bar and drops the erase. */
+    /* A frame at an unchanged size repaints the bar and erases nothing: the
+     * reverse video erase inside the bar already covers the whole row. */
     clear_graphics_buffer(&graphics);
+    assert(queue_render_frame(&graphics, &bird) == KITTY_GRAPHICS_OK);
+    assert(strstr(graphics.buffer, "\033[7m\033[K") != NULL);
+    assert(strstr(graphics.buffer, "\033[24;1H\033[K") == NULL);
+
+    kitty_graphics_destroy(&graphics);
+}
+
+/* Clearing the whole screen takes the uploaded sprites with it in Kitty, which
+ * leaves every later placement pointing at an image that no longer exists: the
+ * flock simply stops being drawn. Only the row the bar has left is erased. */
+static void test_frame_never_erases_the_whole_screen(void) {
+    kitty_graphics_t graphics;
+    bird_t bird = {.x = 9, .y = 17, .direction = 0, .frame = 3};
+
+    reset_test_config();
+    config.birds = 1;
+    drawn_legend_row = -1;
+    assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
+
+    apply_screen_size(80, 24, 80 * 8, 24 * 16);
+    assert(queue_render_frame(&graphics, &bird) == KITTY_GRAPHICS_OK);
+    assert(drawn_legend_row == 23);
+    assert(strstr(graphics.buffer, "\033[2J") == NULL);
+    assert(strstr(graphics.buffer, "\033[3J") == NULL);
+
+    /* Grown: the old bar is now stranded mid screen, that one row is erased. */
+    clear_graphics_buffer(&graphics);
+    apply_screen_size(80, 40, 80 * 8, 40 * 16);
     assert(queue_render_frame(&graphics, &bird) == KITTY_GRAPHICS_OK);
     assert(strstr(graphics.buffer, "\033[2J") == NULL);
-    assert(strstr(graphics.buffer, "\033[7m\033[K") != NULL);
+    assert(strstr(graphics.buffer, "\033[24;1H\033[K") != NULL);  /* The old row. */
+    assert(strstr(graphics.buffer, "\033[40;1H\033[7m") != NULL); /* The new one. */
+    assert(drawn_legend_row == 39);
 
-    /* No bar at all once the viewport is too small for one. */
+    /* Narrowed past the threshold: the bar goes away and its row is erased. */
     clear_graphics_buffer(&graphics);
-    apply_screen_size(30, 24, 30 * 8, 24 * 16);
+    apply_screen_size(30, 40, 30 * 8, 40 * 16);
     assert(queue_render_frame(&graphics, &bird) == KITTY_GRAPHICS_OK);
-    assert(strstr(graphics.buffer, "\033[2J") != NULL);
-    assert(strstr(graphics.buffer, "\033[7m\033[K") == NULL);
+    assert(strstr(graphics.buffer, "\033[2J") == NULL);
+    assert(strstr(graphics.buffer, "\033[40;1H\033[K") != NULL);
+    assert(strstr(graphics.buffer, "\033[7m") == NULL);
+    assert(drawn_legend_row == -1);
+
+    /* And once erased it is not erased again every frame. */
+    clear_graphics_buffer(&graphics);
+    assert(queue_render_frame(&graphics, &bird) == KITTY_GRAPHICS_OK);
+    assert(strstr(graphics.buffer, "\033[K") == NULL);
 
     kitty_graphics_destroy(&graphics);
 }
@@ -476,6 +512,7 @@ int main(void) {
     test_legend_sigil_tracks_the_weights();
     test_legend_row_is_reserved();
     test_legend_absent_on_a_tiny_viewport();
-    test_frame_carries_the_legend_and_erases_on_resize();
+    test_frame_carries_the_legend();
+    test_frame_never_erases_the_whole_screen();
     return 0;
 }

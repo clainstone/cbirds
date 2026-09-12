@@ -121,8 +121,9 @@ static config_t config = {
     .boundary = DEFAULT_BOUNDARY_W,
 };
 static screen_t screen;
-/* Placements are cleared every frame, text is not: a resize has to erase. */
-static int screen_changed;
+/* Where the legend was last drawn, so a resize can erase that row and nothing
+ * else. Clearing the whole screen would take the uploaded sprites with it. */
+static int drawn_legend_row = -1;
 static struct termios saved_termios;
 static volatile sig_atomic_t terminal_is_raw;
 static volatile sig_atomic_t terminal_restored;
@@ -216,7 +217,6 @@ static void reserve_legend_row(void) {
 
 /* Split out of the ioctl query so the tests drive the real derivation. */
 static void apply_screen_size(int cols, int rows, int pixel_width, int pixel_height) {
-    int previous_cols = screen.cols, previous_rows = screen.rows;
     screen.cols = cols > 0 ? cols : DEFAULT_COLS;
     screen.rows = rows > 0 ? rows : DEFAULT_ROWS;
     screen.width = pixel_width;
@@ -231,7 +231,6 @@ static void apply_screen_size(int cols, int rows, int pixel_width, int pixel_hei
     if (screen.cell_height < 1) screen.cell_height = 1;
     reserve_legend_row();
     update_turn_distances();
-    if (screen.cols != previous_cols || screen.rows != previous_rows) screen_changed = 1;
 }
 
 static void update_screen_dimensions(void) {
@@ -467,19 +466,29 @@ static void build_legend(char *line, size_t size) {
 
 static kitty_graphics_status_t queue_legend(kitty_graphics_t *graphics) {
     char line[LEGEND_LINE_MAX];
+
+    /* A resize moves the bar, and text is not swept away by the per frame
+     * placement clear: the row it used to sit on has to be erased by hand.
+     * Only that row, an erase of the whole screen would delete the uploaded
+     * sprites along with it and leave every later placement pointing at
+     * nothing. */
+    if (drawn_legend_row >= 0 && drawn_legend_row != screen.legend_row) {
+        kitty_graphics_status_t status =
+            kitty_graphics_write_text(graphics, drawn_legend_row, 0, "\033[K");
+        if (status != KITTY_GRAPHICS_OK) return status;
+        drawn_legend_row = -1;
+    }
     if (screen.legend_row < 0) return KITTY_GRAPHICS_OK;
+
     build_legend(line, sizeof(line));
-    return kitty_graphics_write_text(graphics, screen.legend_row, 0, line);
+    kitty_graphics_status_t status =
+        kitty_graphics_write_text(graphics, screen.legend_row, 0, line);
+    if (status == KITTY_GRAPHICS_OK) drawn_legend_row = screen.legend_row;
+    return status;
 }
 
 static kitty_graphics_status_t queue_render_frame(kitty_graphics_t *graphics, const bird_t *birds) {
     kitty_graphics_status_t status = kitty_graphics_begin_synchronized_update(graphics);
-    /* A shrunk viewport leaves the old legend stranded mid screen, and only an
-     * erase removes text: deleting placements does not. */
-    if (status == KITTY_GRAPHICS_OK && screen_changed) {
-        status = kitty_graphics_clear_screen(graphics);
-        if (status == KITTY_GRAPHICS_OK) screen_changed = 0;
-    }
     if (status == KITTY_GRAPHICS_OK) status = kitty_graphics_delete_all_placements(graphics);
     for (int i = 0; status == KITTY_GRAPHICS_OK && i < config.birds; i++) {
         kitty_graphics_placement_t placement;

@@ -53,9 +53,6 @@ kitty_graphics_status_t kitty_graphics_delete_image(kitty_graphics_t *graphics, 
 kitty_graphics_status_t kitty_graphics_write_text(kitty_graphics_t *graphics, int row, int column,
                                                   const char *text);
 
-/* Erases the whole screen, text included, unlike a placement deletion. */
-kitty_graphics_status_t kitty_graphics_clear_screen(kitty_graphics_t *graphics);
-
 /* Brackets a frame with DEC synchronized-update mode. */
 kitty_graphics_status_t kitty_graphics_begin_synchronized_update(kitty_graphics_t *graphics);
 kitty_graphics_status_t kitty_graphics_end_synchronized_update(kitty_graphics_t *graphics);

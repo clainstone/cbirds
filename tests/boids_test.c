@@ -598,6 +598,49 @@ static void test_birds_start_clear_of_the_panel(void) {
 }
 
 /* Two flocks share the space without sharing a heading. */
+static void test_presets_set_every_notch(void) {
+    reset_test_config();
+    /* Each preset names a whole look, so every one of them has to move at least
+     * one notch off the default, or it is not a look. */
+    for (int i = 0; i < PRESET_COUNT; i++) {
+        apply_preset(i);
+        int notches[] = {config.boundary_notch,  config.separation_notch, config.cohesion_notch,
+                         config.alignment_notch, config.vision_notch,     config.rate_notch};
+        int moved = 0;
+        for (size_t k = 0; k < sizeof(notches) / sizeof(*notches); k++) {
+            assert(notches[k] >= 0 && notches[k] <= LEGEND_BAR_CELLS);
+            if (notches[k] != DEFAULT_NOTCH) moved = 1;
+        }
+        assert(moved);
+        /* And the derived values follow, as they do for a keypress. */
+        assert(config.boundary >= BOUNDARY_MIN && config.boundary <= BOUNDARY_MAX);
+        assert(config.frame_rate >= MIN_FRAME_RATE && config.frame_rate <= MAX_FRAME_RATE);
+        assert(config.vision_radius >= MIN_VISION_RADIUS &&
+               config.vision_radius <= MAX_VISION_RADIUS);
+    }
+    /* Every preset is a different look from every other. */
+    for (int i = 0; i < PRESET_COUNT; i++)
+        for (int j = i + 1; j < PRESET_COUNT; j++)
+            assert(memcmp(PRESETS[i].notch, PRESETS[j].notch, sizeof(PRESETS[i].notch)) != 0);
+    reset_test_config();
+}
+
+static void test_a_notch_survives_the_round_trip(void) {
+    /* --perception and --fps take real units and snap. A value that is already on
+     * the grid has to come back as itself, or a dotfile could not express one. */
+    for (int notch = 0; notch <= LEGEND_BAR_CELLS; notch++) {
+        int pixels = notch_integer(notch, MIN_VISION_RADIUS, MAX_VISION_RADIUS);
+        assert(notch_for_integer(pixels, MIN_VISION_RADIUS, MAX_VISION_RADIUS) == notch);
+        int rate = notch_integer(notch, MIN_FRAME_RATE, MAX_FRAME_RATE);
+        assert(notch_for_integer(rate, MIN_FRAME_RATE, MAX_FRAME_RATE) == notch);
+    }
+    /* And anything between snaps to the nearer of the two. */
+    assert(notch_for_integer(MIN_VISION_RADIUS, MIN_VISION_RADIUS, MAX_VISION_RADIUS) == 0);
+    assert(notch_for_integer(MAX_VISION_RADIUS, MIN_VISION_RADIUS, MAX_VISION_RADIUS) ==
+           LEGEND_BAR_CELLS);
+    assert(notch_for_integer(100, MIN_FRAME_RATE, MAX_FRAME_RATE) == 9); /* 98 is notch nine. */
+}
+
 static void test_the_pointer_moves_the_flock(void) {
     reset_test_config();
     legend_enabled = 0;
@@ -1045,6 +1088,8 @@ int main(void) {
     test_boundary_bands_follow_the_viewport();
     test_bottom_band_scales_on_a_short_viewport();
     test_birds_start_spread_inside_the_free_region();
+    test_presets_set_every_notch();
+    test_a_notch_survives_the_round_trip();
     test_the_pointer_moves_the_flock();
     test_shade_follows_the_chosen_mode();
     test_theme_colours_are_parsed();

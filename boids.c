@@ -1002,6 +1002,11 @@ static double notch_value(int notch, double minimum, double maximum) {
     return minimum + (maximum - minimum) * notch / LEGEND_BAR_CELLS;
 }
 
+/* The inverse: which notch a real value belongs to. */
+static int notch_for_integer(int value, int minimum, int maximum) {
+    return ((value - minimum) * LEGEND_BAR_CELLS + (maximum - minimum) / 2) / (maximum - minimum);
+}
+
 static int notch_integer(int notch, int minimum, int maximum) {
     return minimum + ((maximum - minimum) * notch + LEGEND_BAR_CELLS / 2) / LEGEND_BAR_CELLS;
 }
@@ -1151,6 +1156,47 @@ static int wait_for_terminal_io(void) {
 /* The option table: the parser and the help text both come off this, so adding a
  * switch is one row and never a second place to keep in step. */
 static int requested_frame_rate = DEFAULT_FRAME_RATE;
+static int requested_perception = DEFAULT_VISION_RADIUS;
+static int requested_seed = -1;
+static int requested_preset = -1;
+
+/*
+ * A preset is the six notches together, because the interesting settings are
+ * combinations rather than single values, and naming one is how a look gets
+ * shared. The order is boundary, separation, cohesion, alignment, perception,
+ * rate, which is the order the panel shows them in.
+ */
+typedef struct {
+    const char *name;
+    const char *help;
+    int notch[6];
+} preset_t;
+
+static const preset_t PRESETS[] = {
+    {"murmuration", "one great restless body, the starling look", {4, 3, 7, 9, 8, 4}},
+    {"swarm", "tight, fast and nervous, like insects", {5, 8, 9, 3, 3, 8}},
+    {"school", "wide and slow, fish over a reef", {3, 5, 6, 7, 11, 2}},
+    {"storm", "loose and violent, thrown about", {9, 10, 2, 2, 6, 9}},
+    {"calm", "a gentle drift, almost still", {2, 4, 4, 5, 6, 1}},
+};
+enum { PRESET_COUNT = sizeof(PRESETS) / sizeof(*PRESETS) };
+static const char *PRESET_NAMES[PRESET_COUNT + 1];
+
+static void name_the_presets(void) {
+    for (int i = 0; i < PRESET_COUNT; i++) PRESET_NAMES[i] = PRESETS[i].name;
+    PRESET_NAMES[PRESET_COUNT] = NULL;
+}
+
+static void apply_preset(int which) {
+    const preset_t *preset = &PRESETS[which];
+    config.boundary_notch = preset->notch[0];
+    config.separation_notch = preset->notch[1];
+    config.cohesion_notch = preset->notch[2];
+    config.alignment_notch = preset->notch[3];
+    config.vision_notch = preset->notch[4];
+    config.rate_notch = preset->notch[5];
+    apply_notches();
+}
 
 static const option_t OPTIONS[] = {
     {'n', "birds", OPTION_INT, &config.birds, 1, MAX_BIRDS, NULL, "COUNT",
@@ -1163,8 +1209,22 @@ static const option_t OPTIONS[] = {
      "theme, original, ember, ice, acid, paper (default theme)", "Colour"},
     {0, "color-by", OPTION_ENUM, &config.colour_by, 0, 0, COLOUR_BY_NAMES, "MODE",
      "what picks a bird's shade: heading, density, flock, fixed", "Colour"},
+    {0, "preset", OPTION_ENUM, &requested_preset, 0, 0, PRESET_NAMES, "NAME",
+     "murmuration, swarm, school, storm, calm", "Flock"},
+    {0, "seed", OPTION_INT, &requested_seed, 0, 2147483647, NULL, "N",
+     "the same seed gives the same flock", "Flock"},
+    {0, "boundary", OPTION_INT, &config.boundary_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
+     "how hard the edges push back, 0 to 12 (default 4)", "Sliders"},
+    {0, "separation", OPTION_INT, &config.separation_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
+     "how much a bird keeps its distance (default 4)", "Sliders"},
+    {0, "cohesion", OPTION_INT, &config.cohesion_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
+     "how much it seeks the crowd (default 4)", "Sliders"},
+    {0, "alignment", OPTION_INT, &config.alignment_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
+     "how much it matches its neighbours (default 4)", "Sliders"},
+    {0, "perception", OPTION_INT, &requested_perception, MIN_VISION_RADIUS, MAX_VISION_RADIUS, NULL,
+     "PIXELS", "how far it sees, 12 to 60 (default 36)", "Sliders"},
     {'f', "fps", OPTION_INT, &requested_frame_rate, MIN_FRAME_RATE, MAX_FRAME_RATE, NULL, "RATE",
-     "frames a second, snapped to a notch (default 60)", "Display"},
+     "frames a second, snapped to a notch (default 60)", "Sliders"},
     {'l', "legend", OPTION_FLAG, &legend_enabled, 0, 0, NULL, NULL,
      "show the parameter panel, on by default", "Display"},
     {'m', "mouse", OPTION_ENUM, &config.mouse_mode, 0, 0, MOUSE_NAMES, "MODE",
@@ -1193,6 +1253,7 @@ static void usage(FILE *out, const char *program) {
 static void read_options(int argc, char **argv) {
     char error[160];
     name_the_palettes();
+    name_the_presets();
     options_status_t status =
         options_parse(OPTIONS, OPTION_COUNT, argc, argv, error, sizeof(error));
 
@@ -1209,11 +1270,30 @@ static void read_options(int argc, char **argv) {
         fprintf(stderr, "Try '%s --help'.\n", argv[0]);
         exit(EXIT_FAILURE);
     }
-    /* The notch is the state the keys move, so a rate off that grid could not be
-     * one: snap what was asked for to the nearest. */
-    config.rate_notch = ((requested_frame_rate - MIN_FRAME_RATE) * LEGEND_BAR_CELLS +
-                         (MAX_FRAME_RATE - MIN_FRAME_RATE) / 2) /
-                        (MAX_FRAME_RATE - MIN_FRAME_RATE);
+    /* A preset is expanded first so that a slider given after it still wins: the
+     * table cannot express that order, so the parser's left to right reading is
+     * honoured by putting the broad stroke before the fine ones. */
+    if (requested_preset >= 0) {
+        int boundary = config.boundary_notch, separation = config.separation_notch;
+        int cohesion = config.cohesion_notch, alignment = config.alignment_notch;
+        apply_preset(requested_preset);
+        if (boundary != DEFAULT_NOTCH) config.boundary_notch = boundary;
+        if (separation != DEFAULT_NOTCH) config.separation_notch = separation;
+        if (cohesion != DEFAULT_NOTCH) config.cohesion_notch = cohesion;
+        if (alignment != DEFAULT_NOTCH) config.alignment_notch = alignment;
+        if (requested_perception != DEFAULT_VISION_RADIUS)
+            config.vision_notch =
+                notch_for_integer(requested_perception, MIN_VISION_RADIUS, MAX_VISION_RADIUS);
+        if (requested_frame_rate != DEFAULT_FRAME_RATE)
+            config.rate_notch =
+                notch_for_integer(requested_frame_rate, MIN_FRAME_RATE, MAX_FRAME_RATE);
+    } else {
+        /* The notch is the state the keys move, so a value off that grid could
+         * not be one: snap what was asked for to the nearest. */
+        config.rate_notch = notch_for_integer(requested_frame_rate, MIN_FRAME_RATE, MAX_FRAME_RATE);
+        config.vision_notch =
+            notch_for_integer(requested_perception, MIN_VISION_RADIUS, MAX_VISION_RADIUS);
+    }
     apply_notches();
 }
 
@@ -1253,7 +1333,9 @@ int main(int argc, char **argv) {
                 spatial_grid_status_string(grid_status));
         exit(EXIT_FAILURE);
     }
-    srand((unsigned)time(NULL));
+    /* A named seed makes a run repeatable, which is what lets a look be shared
+     * and a bug report be reproduced. */
+    srand(requested_seed >= 0 ? (unsigned)requested_seed : (unsigned)time(NULL));
     update_screen_dimensions();
     grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, config.birds);
     if (grid_status != SPATIAL_GRID_OK) {

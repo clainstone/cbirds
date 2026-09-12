@@ -317,7 +317,60 @@ static void test_a_shared_cell_wears_the_bigger_bird(void) {
     cells_destroy(&cells);
 }
 
+/* Sextants: two by three solid blocks a cell, laid out by Unicode 13 in order of
+ * their pattern with the four that already existed left out. */
+static void test_sextant_code_points(void) {
+    assert(cells_sextant(0) == ' ');
+    assert(cells_sextant(0x01) == 0x1FB00); /* Top left alone: SEXTANT-1. */
+    assert(cells_sextant(0x02) == 0x1FB01); /* SEXTANT-2. */
+    assert(cells_sextant(0x03) == 0x1FB02); /* SEXTANT-12. */
+    assert(cells_sextant(0x14) == 0x1FB13); /* SEXTANT-35, the last before the left half. */
+    assert(cells_sextant(0x15) == 0x258C);  /* SEXTANT-135 is the left half block. */
+    assert(cells_sextant(0x16) == 0x1FB14); /* And the count skips it. */
+    assert(cells_sextant(0x2A) == 0x2590);  /* SEXTANT-246 is the right half block. */
+    assert(cells_sextant(0x2B) == 0x1FB28); /* Skipping both. */
+    assert(cells_sextant(0x3E) == 0x1FB3B); /* SEXTANT-23456, the last in the block. */
+    assert(cells_sextant(0x3F) == 0x2588);  /* Everything is the full block. */
+    /* Every pattern gets its own character, and the block is exactly filled. */
+    int seen[0x40] = {0};
+    for (unsigned p = 1; p < 0x3F; p++) {
+        uint32_t code = cells_sextant(p);
+        if (code >= 0x1FB00 && code <= 0x1FB3B) seen[code - 0x1FB00]++;
+    }
+    for (int i = 0; i <= 0x3B; i++) assert(seen[i] == 1);
+}
+
+static void test_ink_becomes_sextants_too(void) {
+    cells_t cells;
+    assert(cells_init(&cells, 1) == CELLS_OK);
+    assert(cells_resize(&cells, 2, 1) == CELLS_OK);
+    png_image_t canvas = blank(2, 1);
+    /* The top third of cell 1, both columns: rows of 16 split 5/5/6. */
+    paint(&canvas, 8, 0, 8, 5, 0, 200, 0);
+    cells_read(&cells, CELLS_SEXTANTS, &canvas, 8, 16);
+    assert(cells_emit(&cells) == CELLS_OK);
+    assert(cells.before[1].glyph == 0x1FB02); /* SEXTANT-12. */
+    assert(cells.before[1].fg[1] == 200);
+    assert(cells.before[0].glyph == 0);
+    /* The whole cell is the full block, which is not in the sextant block. */
+    paint(&canvas, 8, 0, 8, 16, 0, 200, 0);
+    cells_read(&cells, CELLS_SEXTANTS, &canvas, 8, 16);
+    assert(cells_emit(&cells) == CELLS_OK);
+    assert(cells.before[1].glyph == 0x2588);
+    /* And a painting of it fills the cell. */
+    static const uint8_t ground[3] = {1, 2, 3};
+    png_image_t picture = {0, 0, NULL};
+    assert(cells_paint(&cells, CELLS_SEXTANTS, &picture, 8, 16, ground) == CELLS_OK);
+    assert(picture.pixels[(15 * 16 + 15) * 4 + 1] == 200);
+    assert(picture.pixels[(15 * 16 + 2) * 4 + 1] == 2);
+    png_image_free(&picture);
+    png_image_free(&canvas);
+    cells_destroy(&cells);
+}
+
 int main(void) {
+    test_sextant_code_points();
+    test_ink_becomes_sextants_too();
     test_painting_shows_what_the_terminal_showed();
     test_a_shared_cell_wears_the_bigger_bird();
     test_braille_dot_numbering();

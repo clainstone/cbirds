@@ -310,7 +310,10 @@ before taking the screen, and picks the best of it:
 | **iTerm2** | a picture a frame, as an inline PNG |
 | everything else — Alacritty, GNOME Terminal, Terminal.app, tmux, ssh | the same flock in braille, eight dots a cell |
 
-`--render kitty|sixel|iterm|braille|blocks` overrules the choice.
+`--render kitty|sixel|iterm|braille|sextants|blocks` overrules the choice.
+`sextants` are two by three solid blocks a cell — bolder than braille's dots,
+nearly as fine — and need a font from 2020 or later (Cascadia, Iosevka,
+JetBrains Mono, Fira Code, Noto Sans Symbols 2).
 
 Build needs GCC 7+ or Clang 10+ and `make`. `make test` runs eight suites.
 

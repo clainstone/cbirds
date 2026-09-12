@@ -24,8 +24,9 @@
 typedef enum { CELLS_OK = 0, CELLS_ERR_ARGUMENT, CELLS_ERR_MEMORY } cells_status_t;
 
 typedef enum {
-    CELLS_BRAILLE, /* Two by four dots a cell: the finest thing text can do. */
-    CELLS_BLOCKS   /* Two half blocks a cell: coarser, and colour on every pixel. */
+    CELLS_BRAILLE,  /* Two by four dots a cell: the finest thing text can do. */
+    CELLS_SEXTANTS, /* Two by three solid blocks a cell: bolder, nearly as fine. */
+    CELLS_BLOCKS    /* Two half blocks a cell: coarser, and colour on every pixel. */
 } cells_style_t;
 
 typedef struct {
@@ -75,6 +76,11 @@ cells_status_t cells_paint(const cells_t *cells, cells_style_t style, png_image_
 /* The braille code point for a two by four dot pattern: bit (column + row * 2)
  * for each lit dot, column 0..1, row 0..3. Exposed for the tests. */
 uint32_t cells_braille(unsigned dots);
+
+/* The sextant code point for a two by three block pattern, bit (column + row * 2)
+ * for each filled block, row 0..2: U+1FB00 onwards in order of the pattern's
+ * value, except the four patterns that already had characters of their own. */
+uint32_t cells_sextant(unsigned blocks);
 
 const char *cells_status_string(cells_status_t status);
 

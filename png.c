@@ -398,7 +398,7 @@ static void sample_bilinear(const uint8_t *pixels, int width, int height, double
             int sx = x0 + dx, sy = y0 + dy;
             if (sx < 0 || sy < 0 || sx >= width || sy >= height) continue;
             double weight = (dx ? wx : 1.0 - wx) * (dy ? wy : 1.0 - wy);
-            const uint8_t *p = pixels + ((size_t)sy * width + sx) * 4;
+            const uint8_t *p = pixels + ((size_t)sy * (size_t)width + (size_t)sx) * 4;
             for (int c = 0; c < 4; c++) acc[c] += weight * p[c];
         }
     }
@@ -435,7 +435,7 @@ png_status_t png_rotate(const png_image_t *src, double radians, png_image_t *out
             double sx = cx + dx * cs + dy * sn;
             double sy = cy - dx * sn + dy * cs;
             sample_bilinear(work, src->width, src->height, sx, sy,
-                            out->pixels + ((size_t)y * out->width + x) * 4);
+                            out->pixels + ((size_t)y * (size_t)out->width + (size_t)x) * 4);
         }
     }
     unpremultiply(out->pixels, count);
@@ -465,7 +465,7 @@ png_status_t png_resize(const png_image_t *src, int width, int height, png_image
 
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
-            uint8_t *dst = out->pixels + ((size_t)y * width + x) * 4;
+            uint8_t *dst = out->pixels + ((size_t)y * (size_t)width + (size_t)x) * 4;
 
             if (shrinking) {
                 /*box filter : average of every source pixel falling in the cell*/
@@ -480,7 +480,8 @@ png_status_t png_resize(const png_image_t *src, int width, int height, png_image
                 uint32_t samples = 0;
                 for (int sy = y0; sy < y1; sy++) {
                     for (int sx = x0; sx < x1; sx++) {
-                        const uint8_t *p = work + ((size_t)sy * src->width + sx) * 4;
+                        const uint8_t *p =
+                            work + ((size_t)sy * (size_t)src->width + (size_t)sx) * 4;
                         for (int c = 0; c < 4; c++) acc[c] += p[c];
                         samples++;
                     }
@@ -548,7 +549,7 @@ static int paeth_predictor(int a, int b, int c) {
 
 /*Undoes the per scanline filters, in place, on the raw (still packed) raster*/
 static int png_unfilter(uint8_t *raster, int width, int height, int channels) {
-    size_t stride = (size_t)width * channels;
+    size_t stride = (size_t)width * (size_t)channels;
     uint8_t *previous = NULL;
     uint8_t *row = raster;
 
@@ -557,9 +558,9 @@ static int png_unfilter(uint8_t *raster, int width, int height, int channels) {
         uint8_t *current = row + 1;
 
         for (size_t i = 0; i < stride; i++) {
-            int a = i >= (size_t)channels ? current[i - channels] : 0;
+            int a = i >= (size_t)channels ? current[i - (size_t)channels] : 0;
             int b = previous ? previous[i] : 0;
-            int c = (previous && i >= (size_t)channels) ? previous[i - channels] : 0;
+            int c = (previous && i >= (size_t)channels) ? previous[i - (size_t)channels] : 0;
             int value = current[i];
 
             switch (filter) {
@@ -591,14 +592,14 @@ static int png_unfilter(uint8_t *raster, int width, int height, int channels) {
 /*Expands the unfiltered raster into straight RGBA*/
 static void png_expand(const uint8_t *raster, int width, int height, int color_type, int channels,
                        uint8_t *rgba) {
-    size_t stride = (size_t)width * channels;
+    size_t stride = (size_t)width * (size_t)channels;
 
     for (int y = 0; y < height; y++) {
-        const uint8_t *src = raster + (stride + 1) * y + 1;
-        uint8_t *dst = rgba + (size_t)y * width * 4;
+        const uint8_t *src = raster + (stride + 1) * (size_t)y + 1;
+        uint8_t *dst = rgba + (size_t)y * (size_t)width * 4;
 
         for (int x = 0; x < width; x++) {
-            const uint8_t *p = src + (size_t)x * channels;
+            const uint8_t *p = src + (size_t)x * (size_t)channels;
             uint8_t *q = dst + (size_t)x * 4;
 
             switch (color_type) {
@@ -720,7 +721,7 @@ png_status_t png_decode(const uint8_t *data, size_t length, png_image_t *out) {
     idat = NULL;
     if (status != PNG_OK) return status;
 
-    size_t expected = ((size_t)width * channels + 1) * height;
+    size_t expected = ((size_t)width * (size_t)channels + 1) * (size_t)height;
     if (raster_len < expected) {
         free(raster);
         return PNG_ERR_TRUNCATED;
@@ -954,8 +955,8 @@ png_status_t png_encode(const png_image_t *image, uint8_t **out_data, size_t *ou
     uint8_t *raw = (uint8_t *)malloc(raw_len);
     if (raw == NULL) return PNG_ERR_MEMORY;
     for (int y = 0; y < image->height; y++) {
-        raw[stride * y] = 0; /*filter : none*/
-        memcpy(raw + stride * y + 1, image->pixels + (size_t)y * image->width * 4,
+        raw[stride * (size_t)y] = 0; /*filter : none*/
+        memcpy(raw + stride * (size_t)y + 1, image->pixels + (size_t)y * (size_t)image->width * 4,
                (size_t)image->width * 4);
     }
 

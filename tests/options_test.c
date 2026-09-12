@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L /* fmemopen. */
+
 #include "../options.h"
 
 #include <assert.h>

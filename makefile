@@ -1,5 +1,5 @@
 CC        = gcc
-CFLAGS    = -Wall -Wextra -O3 -g
+CFLAGS    = -std=c99 -Wall -Wextra -O3 -g
 LDLIBS    = -lm
 TARGET    = cbirds
 SRC       = boids.c font.c kitty_graphics.c options.c png.c spatial_grid.c

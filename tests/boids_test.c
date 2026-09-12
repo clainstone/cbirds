@@ -41,11 +41,9 @@ static double brute_force_flock_direction(const bird_t *birds, int target_index)
             cohesion.y = cohesion.y / kin - target->y;
         }
         double x = separation.x * config.separation + alignment.x * config.alignment +
-                   cohesion.x * config.cohesion + boundary.x * config.boundary +
-                   leash.x * LEASH_WEIGHT;
+                   cohesion.x * COHESION_W + boundary.x * config.boundary + leash.x * LEASH_WEIGHT;
         double y = separation.y * config.separation + alignment.y * config.alignment +
-                   cohesion.y * config.cohesion + boundary.y * config.boundary +
-                   leash.y * LEASH_WEIGHT;
+                   cohesion.y * COHESION_W + boundary.y * config.boundary + leash.y * LEASH_WEIGHT;
         return x == 0 && y == 0 ? target->direction : normalized_angle(y, x);
     }
 
@@ -74,18 +72,14 @@ static void reset_test_config(void) {
     config.bird_size = DEFAULT_BIRD_SIZE;
     config.boundary_notch = DEFAULT_NOTCH;
     config.separation_notch = DEFAULT_NOTCH;
-    config.cohesion_notch = DEFAULT_NOTCH;
     config.alignment_notch = DEFAULT_NOTCH;
     config.vision_notch = 6;
     config.rate_notch = DEFAULT_NOTCH;
     config.palette = 0;
-    config.colour_by = COLOUR_BY_HEADING;
     config.mouse_mode = MOUSE_FLEE;
     config.mouse_reach = DEFAULT_MOUSE_REACH;
     config.turning_notch = DEFAULT_TURNING_NOTCH;
-    config.wind_notch = 0;
     config.flocks = 1;
-    config.wrap = 0;
     config.trails = 0;
     config.hawks = 0;
     matrix_mode = 0;
@@ -143,7 +137,6 @@ static void test_engine_matches_brute_force(void) {
     config.speed = 0.75;
     config.separation = 0.005;
     config.alignment = 1.5;
-    config.cohesion = 0.01;
     config.boundary = 0.2;
     initialize_test_birds(snapshot, BIRD_COUNT);
 
@@ -155,7 +148,7 @@ static void test_engine_matches_brute_force(void) {
      * not modelling the same thing. */
     assert(config.hawks == 0);
     assert(!mouse.present || config.mouse_mode == MOUSE_OFF);
-    assert(config.wind_notch == 0);
+    assert(!the_rain_is_falling);
 
     /* Swept over the flock count too: the reference models the same social rule,
      * so a divergence would mean one of the two forgot it. */
@@ -168,7 +161,7 @@ static void test_engine_matches_brute_force(void) {
             apply_notches();
             for (int i = 0; i < BIRD_COUNT; i++) {
                 double expected = brute_force_flock_direction(snapshot, i);
-                double actual = flock_direction(snapshot, &grid, i, NULL);
+                double actual = flock_direction(snapshot, &grid, i);
                 assert(angle_difference(expected, actual) < 1e-11);
             }
         }
@@ -403,20 +396,18 @@ static void test_legend_panel_layout(void) {
     /* A rectangle, every row exactly as wide as the panel claims to be. */
     for (int row = 0; row < LEGEND_ROWS; row++) assert(legend_cells(lines[row]) == LEGEND_COLUMNS);
 
-    /* With --stats too: that row used to come out four cells short and put a
-     * notch in the panel's right hand side, and this test never set the flag. */
-    show_stats = 1;
+    /* Including the row that says what the frame costs. It used to come out four
+     * cells short, putting a notch in the panel's right hand side, and it was
+     * behind a flag that this test never set. */
     stats.frame_ms = 2.125;
     stats.bytes = 31000;
     stats.rate = 60;
     build_legend(lines);
     for (int row = 0; row < LEGEND_ROWS; row++) assert(legend_cells(lines[row]) == LEGEND_COLUMNS);
-    assert(strstr(lines[7], "frame") != NULL);
-    assert(strstr(lines[7], "ms") != NULL); /* Numbers with their units on. */
-    assert(strstr(lines[7], "KB") != NULL);
-    assert(strstr(lines[7], "fps") != NULL);
-    show_stats = 0;
-    build_legend(lines);
+    assert(strstr(lines[LEGEND_ROWS - 3], "frame") != NULL);
+    assert(strstr(lines[LEGEND_ROWS - 3], "ms") != NULL); /* With their units on. */
+    assert(strstr(lines[LEGEND_ROWS - 3], "KB") != NULL);
+    assert(strstr(lines[LEGEND_ROWS - 3], "fps") != NULL);
     assert(strstr(lines[0], "\u256d") == lines[0]);
     assert(strstr(lines[0], "\u256e") != NULL);
     assert(strstr(lines[LEGEND_ROWS - 1], "\u2570") == lines[LEGEND_ROWS - 1]);
@@ -427,46 +418,44 @@ static void test_legend_panel_layout(void) {
      * see what they did, so the one key that says "back to the defaults" has to
      * actually mean it. */
     config.turning_notch = 0;
-    config.wind_notch = LEGEND_BAR_CELLS;
     config.boundary_notch = 0;
     apply_preset_defaults();
     assert(config.turning_notch == DEFAULT_TURNING_NOTCH);
-    assert(config.wind_notch == 0);
     assert(config.boundary_notch == DEFAULT_NOTCH);
 
     /* One slider a parameter, named, with a bar and its pair of keys. */
-    static const char *names[] = {"boundary",  "separation", "cohesion",
-                                  "alignment", "perception", "rate"};
-    static const char *pairs[] = {"b/B", "s/S", "c/C", "a/A", "p/P", "r/R"};
+    static const char *names[] = {"boundary", "separation", "alignment",
+                                  "turning",  "perception", "rate"};
+    static const char *pairs[] = {"b/B", "s/S", "a/A", "t/T", "p/P", "r/R"};
     for (int i = 0; i < 6; i++) {
         assert(strstr(lines[1 + i], names[i]) != NULL);
         /* Lowercase first: the key that lowers, then the one that raises. */
         assert(strstr(lines[1 + i], pairs[i]) != NULL);
         assert(strstr(lines[1 + i], "\u2591") != NULL); /* Some empty track shows. */
     }
-    assert(strstr(lines[8], "quit") != NULL);
+    assert(strstr(lines[LEGEND_ROWS - 2], "quit") != NULL);
 
     /* The inverted pair is the whole point, so the old order must be absent. */
-    static const char *reversed[] = {"B/b", "S/s", "C/c", "A/a", "P/p", "R/r"};
+    static const char *reversed[] = {"B/b", "S/s", "A/a", "T/t", "P/p", "R/r"};
     for (int row = 0; row < LEGEND_ROWS; row++)
         for (int i = 0; i < 6; i++) assert(strstr(lines[row], reversed[i]) == NULL);
 
     /* Each slider states its value beside its bar, right aligned in a column of
      * its own so the numbers stack. */
-    static const char *values[] = {"0.20", "0.005", "0.010", "1.50", "36px", "60"};
+    static const char *values[] = {"0.20", "0.005", "1.50", "70\u00b0", "36px", "60"};
     for (int i = 0; i < 6; i++) assert(strstr(lines[1 + i], values[i]) != NULL);
 }
 
 static void test_legend_values_follow_their_notch(void) {
     char lines[LEGEND_ROWS][LEGEND_LINE_MAX];
-    static const char *floors[] = {"0.01", "0.001", "0.002", "0.10", "12px", "30"};
-    static const char *ceilings[] = {"0.58", "0.013", "0.026", "4.30", "60px", "120"};
+    static const char *floors[] = {"0.01", "0.001", "0.10", "30\u00b0", "12px", "30"};
+    static const char *ceilings[] = {"0.58", "0.013", "4.30", "360\u00b0", "60px", "120"};
 
     reset_test_config();
     apply_screen_size(80, 24, 80 * 8, 24 * 16);
 
-    config.boundary_notch = config.separation_notch = config.cohesion_notch =
-        config.alignment_notch = config.vision_notch = config.rate_notch = 0;
+    config.boundary_notch = config.separation_notch = config.alignment_notch =
+        config.turning_notch = config.vision_notch = config.rate_notch = 0;
     apply_notches();
     build_legend(lines);
     for (int i = 0; i < 6; i++) {
@@ -474,8 +463,8 @@ static void test_legend_values_follow_their_notch(void) {
         assert(filled_cells(lines[1 + i]) == 0);
     }
 
-    config.boundary_notch = config.separation_notch = config.cohesion_notch =
-        config.alignment_notch = config.vision_notch = config.rate_notch = LEGEND_BAR_CELLS;
+    config.boundary_notch = config.separation_notch = config.alignment_notch =
+        config.turning_notch = config.vision_notch = config.rate_notch = LEGEND_BAR_CELLS;
     apply_notches();
     build_legend(lines);
     for (int i = 0; i < 6; i++) {
@@ -500,8 +489,8 @@ static void test_one_keypress_is_one_cell(void) {
     static const struct {
         int row;
         char raise, lower;
-    } sliders[] = {{1, 'B', 'b'}, {2, 'S', 's'}, {3, 'C', 'c'},
-                   {4, 'A', 'a'}, {5, 'P', 'p'}, {6, 'R', 'r'}};
+    } sliders[] = {{1, 'B', 'b'}, {2, 'S', 's'}, {3, 'A', 'a'},
+                   {4, 'T', 't'}, {5, 'P', 'p'}, {6, 'R', 'r'}};
 
     apply_screen_size(80, 24, 80 * 8, 24 * 16);
     for (size_t i = 0; i < sizeof(sliders) / sizeof(*sliders); i++) {
@@ -546,13 +535,12 @@ static void test_bar_spans_the_whole_travel(void) {
     assert(LEGEND_BAR_CELLS == 12);
 
     for (int n = 0; n <= LEGEND_BAR_CELLS; n++) {
-        config.boundary_notch = config.separation_notch = config.cohesion_notch =
-            config.alignment_notch = config.vision_notch = config.rate_notch = n;
+        config.boundary_notch = config.separation_notch = config.alignment_notch =
+            config.vision_notch = config.rate_notch = n;
         apply_notches();
         if (n == 0) {
             assert(config.boundary == BOUNDARY_MIN);
             assert(config.separation == SEPARATION_MIN);
-            assert(config.cohesion == COHESION_MIN);
             assert(config.alignment == ALIGNMENT_MIN);
             assert(config.vision_radius == MIN_VISION_RADIUS);
             assert(config.frame_rate == MIN_FRAME_RATE);
@@ -576,7 +564,6 @@ static void test_bar_spans_the_whole_travel(void) {
     reset_test_config();
     assert(fabs(config.boundary - DEFAULT_BOUNDARY_W) < 1e-12);
     assert(fabs(config.separation - DEFAULT_SEPARATION_W) < 1e-12);
-    assert(fabs(config.cohesion - DEFAULT_COHESION_W) < 1e-12);
     assert(fabs(config.alignment - DEFAULT_ALIGNMENT_W) < 1e-12);
     assert(config.boundary_notch == DEFAULT_NOTCH);
     assert(config.alignment_notch == DEFAULT_NOTCH);
@@ -593,7 +580,6 @@ static void test_weights_stop_at_their_bounds(void) {
         const double *value;
     } weights[] = {{'B', 'b', &BOUNDARY_MAX, &BOUNDARY_MIN, &config.boundary},
                    {'S', 's', &SEPARATION_MAX, &SEPARATION_MIN, &config.separation},
-                   {'C', 'c', &COHESION_MAX, &COHESION_MIN, &config.cohesion},
                    {'A', 'a', &ALIGNMENT_MAX, &ALIGNMENT_MIN, &config.alignment}};
 
     keys[INPUT_BUFFER_SIZE] = '\0';
@@ -680,13 +666,13 @@ static void test_legend_push_overrules_the_flock(void) {
     assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRD_COUNT) == SPATIAL_GRID_OK);
     assert(spatial_grid_build(&grid, BIRD_COUNT, read_bird_position, birds) == SPATIAL_GRID_OK);
 
-    double with_panel = flock_direction(birds, &grid, 0, NULL);
+    double with_panel = flock_direction(birds, &grid, 0);
     assert(cos(with_panel) > 0.999); /* Straight out to the right. */
 
     /* The same flock without the panel turns it the other way, which is what
      * makes this a statement about the push and not about the neighbours. */
     screen.legend_width = screen.legend_height = 0;
-    double without_panel = flock_direction(birds, &grid, 0, NULL);
+    double without_panel = flock_direction(birds, &grid, 0);
     assert(cos(without_panel) < 0);
     spatial_grid_destroy(&grid);
 }
@@ -897,75 +883,47 @@ static void test_the_konami_code(void) {
     reset_test_config();
 }
 
-static void test_wind_leans_the_flock(void) {
+/* The only wind left is the one that makes the rain fall, and it falls down. */
+static void test_only_the_rain_has_a_wind(void) {
     reset_test_config();
-    config.wind_notch = 0;
+    assert(!the_rain_is_falling);
     assert(wind_vector().x == 0 && wind_vector().y == 0);
 
-    /* Stronger with the notch, and pointing where the wind points. */
-    wind_is_fixed = 1;
-    wind_direction = 0;
-    config.wind_notch = LEGEND_BAR_CELLS;
-    vector_t full = wind_vector();
-    config.wind_notch = LEGEND_BAR_CELLS / 2;
-    vector_t half = wind_vector();
-    assert(full.x > half.x && half.x > 0);
-    assert(fabs(full.y) < 1e-12);
-
-    wind_direction = M_PI / 2;
-    vector_t down = wind_vector();
-    assert(down.y > 0 && fabs(down.x) < 1e-12);
-
-    /* Fixed means fixed; otherwise it drifts, and stays on the circle. */
-    double held = wind_direction;
-    drift_the_wind();
-    assert(wind_direction == held);
-    wind_is_fixed = 0;
-    srand(3);
-    for (int i = 0; i < 1000; i++) {
-        drift_the_wind();
-        assert(wind_direction >= 0 && wind_direction < 2 * M_PI);
-    }
-    assert(wind_direction != held); /* It went somewhere. */
-
-    config.wind_notch = 0;
-    wind_is_fixed = 0;
-    wind_direction = 0;
+    the_rain_is_falling = 1;
+    vector_t falling = wind_vector();
+    assert(falling.y > 0); /* Down the screen. */
+    assert(falling.x == 0);
+    the_rain_is_falling = 0;
     reset_test_config();
 }
 
 static void test_autopilot_wanders_and_yields(void) {
     reset_test_config();
-    autopilot = 0;
     screensaver = 0;
-    idle_seconds = 60;
     last_key_at = 0;
     clock_state.seconds = 0;
 
     /* Left alone it does nothing, because nothing has idled yet. */
     assert(!flying_itself());
     /* And after the idle time it takes over. */
-    clock_state.seconds = 61;
+    clock_state.seconds = IDLE_SECONDS + 1;
     assert(flying_itself());
-    /* Asked for, it takes over at once; switched off, never. */
+    /* A screensaver takes over at once, with nothing to wait for. */
     clock_state.seconds = 0;
-    autopilot = 1;
+    screensaver = 1;
     assert(flying_itself());
-    autopilot = 0;
-    idle_seconds = 0;
-    clock_state.seconds = 10000;
+    screensaver = 0;
     assert(!flying_itself());
 
     /* A drift moves exactly one notch, and stays inside the bar. */
-    idle_seconds = 60;
-    autopilot = 1;
+    screensaver = 1;
     srand(7);
     for (int step = 0; step < 400; step++) {
-        int before[] = {config.boundary_notch, config.separation_notch, config.cohesion_notch,
-                        config.alignment_notch, config.vision_notch};
+        int before[] = {config.boundary_notch, config.separation_notch, config.alignment_notch,
+                        config.vision_notch};
         drift_a_slider();
-        int after[] = {config.boundary_notch, config.separation_notch, config.cohesion_notch,
-                       config.alignment_notch, config.vision_notch};
+        int after[] = {config.boundary_notch, config.separation_notch, config.alignment_notch,
+                       config.vision_notch};
         int moved = 0;
         for (size_t i = 0; i < sizeof(before) / sizeof(*before); i++) {
             assert(after[i] >= 0 && after[i] <= LEGEND_BAR_CELLS);
@@ -989,8 +947,7 @@ static void test_autopilot_wanders_and_yields(void) {
     maybe_drift();
     assert(last_drift_at == clock_state.seconds); /* And then it does move one. */
 
-    autopilot = 0;
-    idle_seconds = 60;
+    screensaver = 0;
     clock_state.seconds = 0;
     last_key_at = 0;
     last_drift_at = 0;
@@ -1290,7 +1247,7 @@ static void test_hawks_hunt_and_the_flock_flees(void) {
     assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
     assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRD_COUNT) == SPATIAL_GRID_OK);
     assert(spatial_grid_build(&grid, BIRD_COUNT, read_bird_position, birds) == SPATIAL_GRID_OK);
-    assert(cos(flock_direction(birds, &grid, 0, NULL)) > 0);
+    assert(cos(flock_direction(birds, &grid, 0)) > 0);
     spatial_grid_destroy(&grid);
 
     /* However long the chase runs, every hawk stays wholly on the screen: not
@@ -1393,43 +1350,40 @@ static void test_the_turn_limits_follow_the_frame_rate(void) {
     reset_test_config();
 }
 
-/* Splitting the flock has to show the split, or the flag does nothing anyone can
- * see. */
-static void test_more_flocks_colour_by_flock(void) {
+/* One flock is coloured by heading, more than one by flock. There is no flag: the
+ * two answers anybody wanted are the only two there are. */
+static void test_more_flocks_are_more_colours(void) {
     reset_test_config();
     config.palette = palette_named("ember");
     assert(palette_shades() == 5);
 
-    /* One flock: coloured by heading, which is the default and the striking one. */
+    /* One flock, and the colour follows the heading: two birds flying different
+     * ways are different colours. */
     config.flocks = 1;
-    config.colour_by = COLOUR_BY_HEADING;
-    bird_t bird = {.direction = 1.0, .flock = 0};
-    int by_heading = shade_for(&bird, 0);
+    bird_t east = {.direction = 0, .flock = 0};
+    bird_t west = {.direction = M_PI, .flock = 0};
+    assert(shade_for(&east) != shade_for(&west));
 
-    /* Three flocks with nothing asked for: coloured by flock, so the three are
-     * three colours. */
+    /* Three flocks, and the colour follows the flock instead: every bird of one
+     * is one colour whatever it is doing, and the three are three colours. */
     config.flocks = 3;
-    config.colour_by = COLOUR_BY_FLOCK;
-    int seen[MAX_FLOCKS] = {0};
+    int seen[MAX_PALETTE_SHADES] = {0};
     for (int flock = 0; flock < 3; flock++) {
         bird_t member = {.direction = 1.0, .flock = flock};
-        int shade = shade_for(&member, 0);
+        bird_t other_way = {.direction = 4.0, .flock = flock};
+        int shade = shade_for(&member);
+        assert(shade == shade_for(&other_way));
         assert(shade >= 0 && shade < palette_shades());
         seen[shade] = 1;
     }
     int distinct = 0;
-    for (int i = 0; i < MAX_FLOCKS; i++) distinct += seen[i];
+    for (int i = 0; i < palette_shades(); i++) distinct += seen[i];
     assert(distinct == 3); /* Three flocks, three shades. */
     /* And they are spread: the two outer flocks get the ends of the ramp, so the
      * difference between them is the widest the palette has to offer. */
     bird_t lowest = {.flock = 0}, highest = {.flock = 2};
-    assert(shade_for(&lowest, 0) == 0);
-    assert(shade_for(&highest, 0) == palette_shades() - 1);
-
-    /* Asking for heading explicitly still wins, whatever the flock count. */
-    config.colour_by = COLOUR_BY_HEADING;
-    bird_t again = {.direction = 1.0, .flock = 2};
-    assert(shade_for(&again, 0) == by_heading);
+    assert(shade_for(&lowest) == 0);
+    assert(shade_for(&highest) == palette_shades() - 1);
     reset_test_config();
 }
 
@@ -1466,7 +1420,7 @@ static void test_the_flock_can_be_laid_out_as_text(void) {
     assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
     assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRD_COUNT) == SPATIAL_GRID_OK);
     assert(spatial_grid_build(&grid, BIRD_COUNT, read_bird_position, birds) == SPATIAL_GRID_OK);
-    assert(angle_difference(flock_direction(birds, &grid, 0, NULL), 0.0) < 1e-12);
+    assert(angle_difference(flock_direction(birds, &grid, 0), 0.0) < 1e-12);
 
     /* And it lands exactly rather than orbiting: one update from a whole speed
      * away puts it on the target, not past it. */
@@ -1499,8 +1453,8 @@ static void test_presets_set_every_notch(void) {
      * one notch off the default, or it is not a look. */
     for (int i = 0; i < PRESET_COUNT; i++) {
         apply_preset(i);
-        int notches[] = {config.boundary_notch,  config.separation_notch, config.cohesion_notch,
-                         config.alignment_notch, config.vision_notch,     config.rate_notch};
+        int notches[] = {config.boundary_notch, config.separation_notch, config.alignment_notch,
+                         config.vision_notch, config.rate_notch};
         int moved = 0;
         for (size_t k = 0; k < sizeof(notches) / sizeof(*notches); k++) {
             assert(notches[k] >= 0 && notches[k] <= LEGEND_BAR_CELLS);
@@ -1572,15 +1526,6 @@ static void test_the_pointer_moves_the_flock(void) {
     assert(pointer_vector(&east).x == 0);
     mouse.present = 1;
 
-    /* cat holds still for most of its cycle and then pounces harder than flee. */
-    config.mouse_mode = MOUSE_CAT;
-    clock_state.seconds = 1.0;
-    assert(pointer_vector(&east).x == 0); /* Stalking. */
-    clock_state.seconds = CAT_STALK + 0.1;
-    double pounce = pointer_vector(&east).x;
-    config.mouse_mode = MOUSE_FLEE;
-    assert(pounce > pointer_vector(&east).x * 2);
-
     /* And it overrules a flock that wants to go the other way. */
     enum { BIRD_COUNT = 30 };
     bird_t birds[BIRD_COUNT];
@@ -1591,9 +1536,9 @@ static void test_the_pointer_moves_the_flock(void) {
     assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
     assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRD_COUNT) == SPATIAL_GRID_OK);
     assert(spatial_grid_build(&grid, BIRD_COUNT, read_bird_position, birds) == SPATIAL_GRID_OK);
-    assert(cos(flock_direction(birds, &grid, 0, NULL)) > 0); /* Away, not with them. */
+    assert(cos(flock_direction(birds, &grid, 0)) > 0); /* Away, not with them. */
     config.mouse_mode = MOUSE_OFF;
-    assert(cos(flock_direction(birds, &grid, 0, NULL)) < 0); /* With them again. */
+    assert(cos(flock_direction(birds, &grid, 0)) < 0); /* With them again. */
     spatial_grid_destroy(&grid);
 
     mouse.present = 0;
@@ -1602,23 +1547,22 @@ static void test_the_pointer_moves_the_flock(void) {
     reset_test_config();
 }
 
-static void test_shade_follows_the_chosen_mode(void) {
+static void test_the_shade_follows_the_heading(void) {
     reset_test_config();
     config.palette = palette_named("ember");
     int shades = palette_shades();
     assert(shades == 5);
 
-    /* Heading: every shade of the ramp is reachable, and the colour runs smoothly
-     * with the angle — up to the half turn and back down again, because a heading
-     * is a circle and a ramp is a line. Laid straight on to it there was a seam at
-     * due east where one degree of turn crossed the whole palette, and the flock
-     * came out salted with speckle that no turn of it explained. */
-    config.colour_by = COLOUR_BY_HEADING;
+    /* Every shade of the ramp is reachable, and the colour runs smoothly with the
+     * angle — up to the half turn and back down again, because a heading is a
+     * circle and a ramp is a line. Laid straight on to it there was a seam at due
+     * east where one degree of turn crossed the whole palette, and the flock came
+     * out salted with speckle that no turn of it explained. */
     int seen[8] = {0};
-    int previous = shade_for(&(bird_t){.direction = 0}, 0);
+    int previous = shade_for(&(bird_t){.direction = 0});
     for (int step = 0; step < 360; step++) {
         bird_t bird = {.direction = step * M_PI / 180.0};
-        int shade = shade_for(&bird, 0);
+        int shade = shade_for(&bird);
         assert(shade >= 0 && shade < shades);
         assert(abs(shade - previous) <= 1); /* No jump anywhere, seam included. */
         previous = shade;
@@ -1626,46 +1570,18 @@ static void test_shade_follows_the_chosen_mode(void) {
     }
     for (int i = 0; i < shades; i++) assert(seen[i]);
     /* And it climbs to the half turn and comes back, rather than wrapping. */
-    assert(shade_for(&(bird_t){.direction = 0}, 0) == 0);
-    assert(shade_for(&(bird_t){.direction = M_PI}, 0) == shades - 1);
-    assert(shade_for(&(bird_t){.direction = 2 * M_PI - 0.001}, 0) == 0);
+    assert(shade_for(&(bird_t){.direction = 0}) == 0);
+    assert(shade_for(&(bird_t){.direction = M_PI}) == shades - 1);
+    assert(shade_for(&(bird_t){.direction = 2 * M_PI - 0.001}) == 0);
 
-    /* Density: an empty sky is the near end, a crowd the far end. */
-    config.colour_by = COLOUR_BY_DENSITY;
-    bird_t alone = {0};
-    assert(shade_for(&alone, 0) == 0);
-    assert(shade_for(&alone, 100) == shades - 1);
-    assert(shade_for(&alone, 4) > 0 && shade_for(&alone, 4) < shades - 1);
-
-    /* Flock: a colour per flock, spread across the whole ramp rather than taken
-     * from one end of it, because two flocks given shades zero and one are two
-     * flocks nobody can tell apart. */
-    config.colour_by = COLOUR_BY_FLOCK;
-    config.flocks = 2;
-    bird_t first_flock = {.flock = 0}, second_flock = {.flock = 1};
-    assert(shade_for(&first_flock, 0) == 0);
-    assert(shade_for(&second_flock, 0) == shades - 1);
-    for (config.flocks = 1; config.flocks <= MAX_FLOCKS; config.flocks++) {
-        int previous = -1;
-        for (int f = 0; f < config.flocks; f++) {
-            bird_t bird = {.flock = f};
-            int shade = shade_for(&bird, 0);
-            assert(shade >= 0 && shade < shades);
-            assert(shade >= previous);
-            previous = shade;
-        }
-    }
-
-    /* Fixed: whatever it was given at birth, left alone. */
-    config.colour_by = COLOUR_BY_FIXED;
-    bird_t painted = {.shade = 3};
-    assert(shade_for(&painted, 50) == 3);
-
-    /* A palette with one shade has nothing to choose, whatever the mode. */
-    config.palette = palette_named("original");
-    config.colour_by = COLOUR_BY_HEADING;
+    /* A palette with one shade has nothing to choose. Somebody's own sprite is
+     * that case: it keeps the colours it was drawn in, so there is one set of
+     * images and nothing is tinted. */
+    sprite_path = "somebody.png";
+    assert(palette_shades() == 1);
     bird_t any = {.direction = 2.0};
-    assert(shade_for(&any, 7) == 0);
+    assert(shade_for(&any) == 0);
+    sprite_path = NULL;
     reset_test_config();
 }
 
@@ -1680,9 +1596,7 @@ static void test_the_hawk_is_never_the_colour_of_the_flock(void) {
         const uint8_t *hawk = hawk_colour();
         double nearest = 1e9;
         for (int shade = 0; shade < palette()->shades; shade++) {
-            const uint8_t *tint =
-                palette()->tints != NULL ? palette()->tints[shade] : SPRITE_OWN_COLOUR;
-            double gap = colour_distance(hawk, tint);
+            double gap = colour_distance(hawk, palette()->tints[shade]);
             if (gap < nearest) nearest = gap;
         }
         /* Two hundred is about the distance from scarlet to a mid grey: further
@@ -1703,9 +1617,7 @@ static void test_the_hawk_is_never_the_colour_of_the_flock(void) {
         for (int candidate = 0; candidate < HAWK_COLOUR_COUNT; candidate++) {
             double other = 1e9;
             for (int shade = 0; shade < palette()->shades; shade++) {
-                const uint8_t *tint =
-                    palette()->tints != NULL ? palette()->tints[shade] : SPRITE_OWN_COLOUR;
-                double gap = colour_distance(HAWK_COLOURS[candidate], tint);
+                double gap = colour_distance(HAWK_COLOURS[candidate], palette()->tints[shade]);
                 if (gap < other) other = gap;
             }
             assert(other <= nearest);
@@ -1822,22 +1734,24 @@ static void test_each_flock_flies_at_its_own_pace(void) {
     reset_test_config();
 }
 
-/* --matrix sets a green palette, and used to set the shade mode with it, which
- * quietly threw away the colours that tell three flocks apart. */
-static void test_the_matrix_keeps_the_flocks_apart(void) {
+/* --matrix is the rain: green, falling, wrapping, with tails. The falling and the
+ * wrapping used to be two switches of their own, which is how a flock came to be
+ * able to leave the screen by one edge and arrive at the other in broad daylight
+ * — and, with nothing to break the symmetry, converge on a single heading in two
+ * seconds and stay there for as long as anybody watched. */
+static void test_the_matrix_is_the_only_thing_that_rains(void) {
     char *argv[] = {"cbirds", "--matrix", "--flocks", "3", NULL};
-    char *asked[] = {"cbirds", "--matrix", "--flocks", "3", "--color-by", "heading", NULL};
 
     reset_test_config();
+    the_rain_is_falling = 0;
     read_options(4, argv);
     assert(config.palette == palette_named("matrix"));
-    assert(config.wrap == 1 && config.trails == 1);
-    assert(config.colour_by == COLOUR_BY_FLOCK);
-
-    /* Unless the shade mode was asked for, which still wins. */
-    reset_test_config();
-    read_options(6, asked);
-    assert(config.colour_by == COLOUR_BY_HEADING);
+    assert(config.trails == 1);
+    assert(the_rain_is_falling == 1);
+    /* And three flocks are still three colours in it. */
+    bird_t first = {.flock = 0}, last = {.flock = 2};
+    assert(shade_for(&first) != shade_for(&last));
+    the_rain_is_falling = 0;
     reset_test_config();
 }
 
@@ -2005,13 +1919,13 @@ static void test_flocks_do_not_align_with_each_other(void) {
      * going: the two flocks' centres coincide, and a flock of one is always at
      * its own centre. */
     measure_flocks(birds);
-    assert(flock_direction(birds, &grid, 0, NULL) == 0.0);
+    assert(flock_direction(birds, &grid, 0) == 0.0);
 
     /* Put them all in one flock and the same crowd turns it right around. */
     config.flocks = 1;
     for (int i = 0; i < BIRD_COUNT; i++) birds[i].flock = 0;
     measure_flocks(birds);
-    assert(angle_difference(flock_direction(birds, &grid, 0, NULL), M_PI) < 1e-12);
+    assert(angle_difference(flock_direction(birds, &grid, 0), M_PI) < 1e-12);
 
     spatial_grid_destroy(&grid);
     legend_enabled = 1;
@@ -2293,21 +2207,21 @@ int main(void) {
     test_the_recording_rate_is_one_a_gif_has();
     test_birds_bank_rather_than_snap();
     test_the_konami_code();
-    test_wind_leans_the_flock();
+    test_only_the_rain_has_a_wind();
     test_autopilot_wanders_and_yields();
     test_hawks_hunt_and_the_flock_flees();
     test_the_turn_limits_follow_the_frame_rate();
-    test_more_flocks_colour_by_flock();
+    test_more_flocks_are_more_colours();
     test_the_flock_can_be_laid_out_as_text();
     test_presets_set_every_notch();
     test_a_notch_survives_the_round_trip();
     test_the_pointer_moves_the_flock();
-    test_shade_follows_the_chosen_mode();
+    test_the_shade_follows_the_heading();
     test_the_hawk_is_never_the_colour_of_the_flock();
     test_the_theme_ramp_never_reaches_the_background();
     test_theme_colours_are_parsed();
     test_each_flock_flies_at_its_own_pace();
-    test_the_matrix_keeps_the_flocks_apart();
+    test_the_matrix_is_the_only_thing_that_rains();
     test_recording_gives_the_whole_frame_to_the_flock();
     test_flocks_keep_to_their_own_side_of_the_sky();
     test_flocks_do_not_align_with_each_other();

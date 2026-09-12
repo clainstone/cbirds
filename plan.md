@@ -112,3 +112,28 @@ own.
 48. [EASTER EGG] Droppings — what birds do
 49. [EASTER EGG] Matrix rain — it is raining birds **(built)**
 50. [EASTER EGG] Flappy — one bird, some pipes, the space bar
+
+## Taken back out
+
+Four testers then went over every combination of flags and reported what a
+newcomer would actually see. Eight of the twenty turned out to be, in whole or
+in part, controls nobody could see working — and the record is only honest if it
+says so.
+
+| gone | why, measured |
+|---|---|
+| `--cohesion` | the whole travel of the slider moved the flock's own measure of itself by a twentieth; the force stays, at its default weight |
+| `--wind` | it existed to keep a flock off centre: 33.3% off centre at notch 0, 34.1% at notch 12, and three times as many birds outside the frame |
+| `--wrap` | with no walls the alignment converged on one heading in two seconds and never broke again — one colour, one direction, for as long as anybody watched. The rain still falls through the floor |
+| `--color-by` | four modes: one good, one that painted two thirds of a default flock in the single darkest shade, and two that were the same thing. One flock is coloured by heading, more than one by flock, and there is no flag |
+| `--stats` | three unlabelled numbers that did nothing at all without the panel. The panel now always says what the frame costs |
+| `--auto`, `--idle` | three flags for one behaviour: it flies itself after a minute, and `--screensaver` does it from the first frame |
+| `-c paper`, `-c original` | unreadable on both light and dark grounds; and a one-shade palette silently disabled trails, flock colours and the hawk's contrast. A `--sprite` now keeps its own colours instead |
+| `--shape bat`, `--shape fish` | indistinguishable from `arrow` at any size anybody uses |
+| `-m cat` | inert for four and a half of every six seconds, then barely stronger than `flee` |
+| `--record-columns`, `--record-rows` | two flags for one idea: `--record-size 96x26` |
+| `--preset school`, `--preset calm` | the leakiest of the five and the choppiest of the five, and neither was distinct from what is left |
+| `--hawks` 5–8, `--flocks` 4–5 | hawks overlapped each other and pushed the flock off the screen; the two nearest flock shades were closer to each other than two birds are wide |
+
+Forty-six flags became thirty-eight, and the eight that went were the eight
+nobody could have used well.

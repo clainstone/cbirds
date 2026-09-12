@@ -1,211 +1,85 @@
-# Cbirds: terminal high-Performance Boid Flocking Simulation in C
+<div align="center">
 
-![Language](https://img.shields.io/badge/Language-C-blue.svg)
+# cbirds
+
+**A flock of birds in your terminal.** Real sprites, real flocking, no dependencies.
+
+![Language](https://img.shields.io/badge/Language-C99-blue.svg)
+![Dependencies](https://img.shields.io/badge/Dependencies-libc%20%2B%20libm-brightgreen.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS-lightgrey.svg)
 
-A high-performance implementation of Craig Reynolds' **Boids algorithm** in pure C, featuring real-time GPU-accelerated terminal graphics rendering. This flocking simulation brings autonomous agent behavior to life directly in your terminal using the Kitty Graphics Protocol.
+![The flock spelling its own name](docs/hero.png)
 
-Zero dependencies: no libraries beyond libc and libm, no asset files. The bird sprite is a PNG compiled into the binary, and every rotation frame is produced at startup by the PNG library included in the project.
+*That is a terminal. Those are PNG sprites. It wrote its own name, and then took
+its own photograph with its own PNG encoder.*
 
-![Cbirds Demo](./demo.gif)
+</div>
 
-## Table of Contents
+## What this is
 
-- [Overview](#overview)
-- [Key Features](#key-features)
-- [How It Works](#how-it-works)
-- [Requirements](#requirements)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Configuration](#configuration)
-- [Technical Details](#technical-details)
-- [Contributing](#contributing)
-- [License](#license)
+Craig Reynolds' boids, from 1986, rendered as rotated PNG sprites through the
+Kitty graphics protocol. Eight hundred birds at sixty frames a second, in a
+terminal, in about a third of a millisecond of CPU per frame.
 
-## Overview
-
-**Cbirds** is a terminal-based flocking simulation that implements the classic Boids algorithm for simulating coordinated animal motion such as bird flocks or fish schools. Unlike traditional ASCII-based terminal animations, Cbirds leverages the **Kitty Graphics Protocol** to render hundreds of high-quality PNG sprites with full 360-degree rotation, achieving smooth, GPU-accelerated animation at 60+ FPS.
-
-### What are Boids?
-
-Boids is an artificial life program developed by Craig Reynolds in 1986 that simulates the flocking behavior of birds. Each "boid" (bird-oid object) follows three simple rules:
-
-1. **Separation**: Avoid crowding neighbors
-2. **Alignment**: Steer towards the average heading of neighbors
-3. **Cohesion**: Move toward the average position of neighbors
-
-These simple rules create surprisingly realistic emergent behavior resembling natural flocking patterns.
-
-## Key Features
-
-### Core Algorithm
-- ✅ **Complete Boids Implementation**: Full implementation of Reynolds' three flocking rules
-- ✅ **Boundary Avoidance**: Intelligent edge detection prevents boids from leaving the screen
-- ✅ **Perception Radius**: Configurable neighbor detection for realistic local interactions
-- ✅ **Dynamic Weight Adjustment**: Real-time tuning of behavioral parameters
-
-### Graphics & Performance
-- 🎨 **Native Terminal Graphics**: Direct PNG rendering via Kitty Graphics Protocol
-- 🔄 **360° Sprite Animation**: 90 rotation frames generated at startup, no files involved
-- 📦 **Self Contained**: own PNG decoder, encoder and DEFLATE implementation, no zlib, no libpng
-- ⚡ **High Performance**: Handles 800+ boids at 60 FPS on modern hardware
-- 📐 **Responsive Layout**: Automatic adaptation to terminal resizing
-- 🎚️ **Parameter Panel**: every adjustable value as a slider in the top left corner, and the flock cannot fly through it
-- 🎮 **Real-time Control**: Interactive parameter adjustment during runtime
-
-### Customization
-- 🎛️ **Adjustable Population**: Scale from tens to thousands of boids
-- ⏱️ **Variable Frame Rate**: Configure FPS from 30 to 120
-- 📏 **Sprite Size**: chosen at startup with `-s`, the frames are rendered for that size
-- 🎚️ **Behavioral Tuning**: Fine-tune separation, alignment, cohesion, and boundary weights
-
-## How It Works
-
-Cbirds combines several technologies to achieve high-performance terminal graphics:
-
-1. **Sprite Generation**: the embedded PNG is decoded once, then rotated and scaled into 90 frames, each re-encoded as a PNG in memory
-2. **Kitty Graphics Protocol**: Binary image data is Base64-encoded and transmitted to the terminal using escape sequences
-3. **Double Buffering**: State updates are computed on a separate copy to ensure consistency
-4. **Spatial Grid**: boids are grouped into fixed 12×12 pixel cells so neighbor searches stay local
-5. **Rotation Precomputation**: the 90 frames are built at startup so the main loop only sends positions
-6. **Raw Terminal Mode**: Direct terminal control for responsive keyboard input
-
-## Requirements
-
-### Supported Terminal Emulators
-
-Cbirds requires a terminal that supports the **Kitty Graphics Protocol**:
-
-| Terminal | Status | Notes |
-|----------|--------|-------|
-| **Kitty** | ✅ Fully Supported | Original implementation |
-| **WezTerm** | ✅ Fully Supported | Excellent performance |
-| **Ghostty** | ✅ Fully Supported | Modern alternative |
-| **Konsole** | ✅ Supported | Requires recent version  |
-| Alacritty | ❌ Not Supported | No graphics protocol support |
-| GNOME Terminal | ❌ Not Supported | No graphics protocol support |
-| Windows Terminal | ⚠️ Partial | Newer versions only |
-
-### System Requirements
-
-- **Operating System**: Linux or macOS
-- **Compiler**: GCC 7+ or Clang 10+
-- **Libraries**:
-  - `libm` (math library)
-  - Standard C library
-- **Image Assets**: none, the sprite is compiled into the binary
-
-## Project Layout
-
-The sources sit in the repository root, the tests in `tests/`:
-
-| File | |
-|---|---|
-| `boids.c` | simulation and terminal handling |
-| `kitty_graphics.c` / `kitty_graphics.h` | buffered Kitty graphics protocol API, plus the terminal text and erase it shares the buffer with |
-| `spatial_grid.c` / `spatial_grid.h` | fixed-size spatial grid and contiguous cell buckets |
-| `png.c` / `png.h` | the PNG library (decode, encode, rotate, resize, tint) |
-| `sprite_png.h` | the bird PNG, generated, compiled into the binary |
-| `mkasset.c` | regenerates that header from `matrix.png` |
-| `matrix.png` | the original artwork |
-| `tests/boids_test.c` | panel, obstacle, grid-versus-brute-force and input tests |
-| `tests/kitty_graphics_test.c` | protocol formatting and chunking tests |
-| `tests/spatial_grid_test.c` | spatial lookup and brute-force equivalence tests |
-
-Each test reaches its subject with a `../` include and nothing else, so it needs
-no search path and builds from wherever it is invoked. `tests/boids_test.c`
-includes `boids.c` whole, with `main` renamed out of the way, which is what lets
-it drive the real static functions rather than a copy of them.
-
-## Installation
-
-### Clone the Repository
+There is no zlib, no libpng, no ncurses and no SDL. The PNG decoder, the PNG
+encoder, the DEFLATE compressor *and* decompressor, the CRC and Adler checksums,
+the rotation, the resampling and the 5×7 font are all in this repository, in
+about 7,500 lines of C99 that link against libc and libm and nothing else. The bird is one PNG
+compiled into the binary; every rotation and every colour of it is built at
+startup, in memory, by the project's own code.
 
 ```bash
-git clone https://github.com/yourusername/cbirds.git
-cd cbirds
+git clone https://github.com/clainstone/cbirds && cd cbirds && make && ./cbirds
 ```
 
-### Build from Source
+## Try these
+
+The flock writes whatever you pipe into it:
 
 ```bash
-make
+fortune | cbirds --spell -
+echo "SHIP IT" | cbirds --spell -
 ```
 
-The compiled binary `cbirds` is created in the repository root. It needs
-nothing else at runtime: copy it anywhere and run it.
-
-Run the protocol, spatial grid and simulation tests with:
+It wears your terminal's own colours, because it asks:
 
 ```bash
-make test
+cbirds                    # already does, that is the default
+cbirds --color ember      # or pick a ramp
 ```
 
-### Changing the Artwork
-
-The bird is `matrix.png`, embedded in the binary as `sprite_png.h`.
-After editing the artwork, regenerate the header:
+<div align="center"><img src="docs/murmuration.png" alt="A murmuration" width="90%"></div>
 
 ```bash
-make asset
-make
+cbirds --preset murmuration --trails    # the starling look, with tails
+cbirds --hawks 2                        # give the clip a story
+cbirds --flocks 3 --color ice           # three flocks that will not merge
+cbirds --clock                          # the flock is the time
+cbirds --screensaver                    # for a terminal left open
+cbirds --matrix                         # it is raining birds
+cbirds --shape fish --wrap              # or a school, off one edge and onto the other
 ```
 
-`make asset` builds `mkasset`, which validates the PNG with the project's
-own decoder before writing the header.
+<table>
+<tr>
+<td width="50%"><img src="docs/hawks.png" alt="Two hawks scattering the flock"></td>
+<td width="50%"><img src="docs/matrix.png" alt="Matrix rain, as birds"></td>
+</tr>
+<tr>
+<td align="center"><code>--hawks 2 --color acid</code></td>
+<td align="center"><code>--matrix</code></td>
+</tr>
+</table>
 
-## Usage
+And then move your mouse. The flock parts around the pointer.
 
-### Basic Usage
+## The panel
 
-Run with default settings (800 boids at 60 FPS):
-
-```bash
-./cbirds
-```
-
-### Command-Line Options
-
-```bash
-./cbirds [OPTIONS]
-
-Options:
-  -n NUMBER    Set number of boids (default: 800, max: 4096)
-  -f FPS       Set frame rate (default: 60, from 30 to 120)
-  -s SIZE      Set bird size in pixels (default: 15, from 4 to 64)
-  --no-legend  Hide the parameter panel, the flock keeps the corner
-  -h           Show usage and exit
-
-Examples:
-  ./cbirds -n 1500 -f 75     # 1500 boids at 75 FPS
-  ./cbirds -n 100            # 100 boids at default 60 FPS
-  ./cbirds -f 30             # Default 800 boids at 30 FPS
-```
-
-### Runtime Controls
-
-While the simulation is running, use these keyboard commands:
-
-#### General Controls
-- `q` or `Ctrl+C` - Quit the simulation (the terminal is always restored, crashes included)
-
-#### Behavioral Parameters
-- `B` / `b` - Increase/decrease **boundary avoidance** weight
-- `S` / `s` - Increase/decrease **separation** weight
-- `C` / `c` - Increase/decrease **cohesion** weight
-- `A` / `a` - Increase/decrease **alignment** weight
-- `P` / `p` - Increase/decrease **perception radius** by one notch, 4 pixels (12–60 pixels)
-
-#### Performance
-- `R` / `r` - Increase/decrease frame rate by one notch (limited to 30–120)
-
-#### The Parameter Panel
-
-The top left corner carries a panel of sliders, one per adjustable parameter,
-each with its current value and the two keys that move it. The keys are written
-lowercase first because that is the end of the bar each one works from, and the
-values are right aligned in a column of their own so the numbers stack.
+Every adjustable parameter is a slider in the corner, with its value and the two
+keys that move it. Lowercase lowers, uppercase raises, and **one keypress is
+exactly one notch of bar** — the notch is the state the keys move and the value
+is derived from it, so the number and the bar cannot disagree.
 
 ```
 ╭────────────────────────────────────╮
@@ -220,224 +94,159 @@ values are right aligned in a column of their own so the numbers stack.
 ╰────────────────────────────────────╯
 ```
 
-Each number carries just enough decimals to tell one notch from the next:
-hundredths for the boundary and alignment weights, thousandths for separation and
-cohesion, whole pixels for the perception radius and whole frames a second for
-the rate. The bar and the number come off the same notch, so they cannot disagree.
+The flock cannot fly through it. The panel's rectangle carries an edge force of
+100000, far above every other term in the model, aimed at whichever of its two
+open sides is nearer — and the force acts on the panel grown by one frame of
+travel, which is what makes it unreachable rather than merely unwelcoming. Over
+**784,000 placements across seven configurations**, not one landed on it.
 
-**One keypress is one notch of bar.** The bar has twelve cells, and every
-parameter travels through exactly twelve steps from its floor to its ceiling, so
-pressing a key always moves its slider by one cell and never by a fraction of
-one. That holds because the notch is the state the keys move: the weight, the
-radius and the frame rate are all derived from it, so a value and its bar cannot
-drift apart. Each default sits on the fourth notch, a third along, except
-perception which starts on the sixth.
+| key | | key | |
+|---|---|---|---|
+| `b`/`B` `s`/`S` `c`/`C` `a`/`A` `p`/`P` `r`/`R` | one notch down / up | `h` | hide the panel |
+| `space` | pause | `.` | one frame |
+| `0` | back to the defaults | `Tab` | next preset |
+| `+`/`-` | more or fewer birds | `k`/`K` | summon or dismiss a hawk |
+| `e` | trails | `w` | wrap |
+| `M` | cycle the pointer's mode | `L` | cycle what picks a colour |
+| `q` | quit, with a fly-away | | |
 
-The panel is 38 by 10 cells and never changes size: it follows the longest
-parameter name, the bar and the value column, not the terminal. It is dropped
-below 50 columns or 14 rows, where it would leave no corridor to fly in, and
-`--no-legend` turns it off outright.
+There is also the Konami code. It is in `--help`, under **Oddities**, because an
+easter egg nobody finds is wasted.
 
-**The flock cannot enter it.** While the panel is up its rectangle carries an
-edge force of magnitude 100000, far above every other term in the model, aimed
-at whichever of the two open sides is nearer. The force acts on the panel grown
-by one frame of travel, which is what makes the panel unreachable rather than
-merely unwelcoming: a bird just outside that margin lands at worst a hair inside
-it, still clear of the panel, and is turned away before the next step. The margin
-is derived from the speed, so it follows the frame rate on its own. A run of 800
-boids issues no placement over the panel at any frame rate.
+## Options
 
-Because the panel takes a corner rather than a row, the flyable area stays an L:
-the flock keeps the full width below the panel and the full height beside it.
-Note that `demo.gif` above predates the panel.
+`cbirds -h` is one screen of the dozen that matter. `cbirds --help` is all
+forty, grouped. Both come off the same table that drives the parser, so they
+cannot drift apart, and `--completion bash|zsh|fish` walks it too.
 
-## Configuration
+It accepts what people actually type: `-n 800`, `-n800`, `--birds 800`,
+`--birds=800`, clustered flags, `--no-NAME`, `--` to end the options. A typo is
+answered with the name you probably meant. Usage errors exit 2, so a script can
+tell a mistyped command from a run that went wrong.
 
-### Default Parameters
-
-The simulation uses these default values (defined in source):
-
-```c
-BIRDS_N = 800              // Number of boids
-FRAME_RATE = 60            // Frames per second
-SPEED = 40                 // Movement speed (pixels/frame at 60 FPS)
-BIRD_SIZE = 15             // Sprite size (pixels), see -s
-SPATIAL_CELL_SIZE = 12     // Fixed grid cell size in pixels
-VISION_RADIUS = 36         // Default perception radius in pixels, 12 to 60
-LEGEND_BAR_CELLS = 12      // Bar cells, and the steps every parameter travels
-
-// Behavioral weights, twelve notches from a floor to a ceiling, default on the 4th
-SEPARATION_W = 0.005       // Avoidance strength, 0.001 to 0.013
-ALIGNMENT_W = 1.5          // Direction matching strength, 0.1 to 4.3
-COHESION_W = 0.01          // Grouping strength, 0.002 to 0.026
-BOUNDARY_AV_W = 0.2        // Edge avoidance strength, 0.01 to 0.58
-
-// Edge bands the flock turns away from, as a fraction of the viewport
-TURN_BAND_DIVISOR = 3      // Sides and top: one third of width / height
-BOTTOM_BAND_DIVISOR = 6    // Bottom: one sixth of the height
+```
+$ cbirds --colour ember
+cbirds: unknown option '--colour', did you mean '--color'?
+Try 'cbirds --help'.
 ```
 
-`SPEED` is derived from the requested frame rate so that the nominal distance
-covered per second stays constant: changing FPS (`-f`, or `R`/`r` at runtime)
-does not change the flock speed while the terminal sustains that rate.
+## How it works
 
-The perception radius is tuned in pixels, from 12 to 60 in steps of 4, rather
-than in whole grid cells: that is what lets it share the same twelve step travel
-as everything else. The block of cells the neighbor search sweeps is derived from
-it and rounds up, so it always reaches as far as the radius does; cells only
-select candidates, and the final distance check remains circular on the exact
-radius.
+**The sprite.** One PNG, compiled into the binary as a C array. At startup it is
+decoded, scaled up 8×, then rotated into 90 frames at 4° apart and re-encoded as
+90 PNGs in memory — 50 ms. Colour is a second set of images, because Kitty has
+no per-placement tint; the rotation is the expensive half and does not depend on
+the colour, so each angle is rotated **once** and then tinted and encoded per
+shade. Five shades cost 35 ms, not 250.
 
-Each weight is bounded on both sides. The ceiling is three times the default,
-which gives the panel's sliders a scale to fill against and keeps a keypress
-worth between two and six cells of bar.
+**The protocol.** Each frame is one synchronized update (`CSI ? 2026 h`), one
+global placement clear, one placement per bird, then the panel, then a
+non-blocking flush that keeps only the unsent suffix if the terminal cannot
+swallow it. The screen is **never** cleared after the sprites are uploaded:
+clearing deletes them, and every later placement would point at an image that no
+longer exists. A test asserts that no frame ever carries a screen erase.
 
-The turn bands are proportional to the viewport, so they follow a resize and
-stay a band on a short terminal instead of covering it whole. The bottom one is
-deliberately half the others: birds approaching the last rows get a later, and
-therefore sharper, turn. The flock starts spread over the region no band covers.
+**The compression.** `png_encode` runs LZ77 with a hash chain and the fixed
+Huffman codes of RFC 1951, which the inflater in the same file has always been
+able to read. Fixed rather than dynamic because there is no tree to build and no
+second pass, and on this data — long runs of one colour, long runs of
+transparency — it lands within a few percent of what a dynamic tree would.
+Stored blocks remain the fallback, so incompressible data cannot come out larger
+than it went in. It earns its place twice: `--size 64` used to push 10 MB of
+base64 before drawing anything and now pushes 726 KB, and the images in this
+README came straight out of `--snapshot` at 50–100 KB instead of 4.15 MB each.
 
-### Optimizing Performance
+**The neighbours.** A uniform 12×12 pixel grid, rebuilt every frame with counting
+and prefix sums. The cell size is exactly the perception quantum, so the
+`(2v+1)²` block a bird sweeps is provably sufficient with no slop — and a test
+compares the grid against a brute-force scan to 1e-11, across every radius and
+every flock count.
 
-**For smoother animation:**
-- Reduce boid count: `./cbirds -n 400`
-- Lower frame rate: `./cbirds -f 30`
-- Use smaller sprites: `./cbirds -s 10`
+**The flocking.** Separation, alignment and cohesion, from the same immutable
+snapshot for every bird, so the order they are updated in cannot matter. Flocks
+are social, not physical: separation applies to every bird in reach, alignment
+and cohesion only to your own flock, which is why three flocks interpenetrate
+and refuse to merge.
 
-**For more dramatic flocking:**
-- Increase cohesion: Press `C` multiple times
-- Decrease separation: Press `s` multiple times
+**The writing.** A 5×7 font, authored as rows of `#` so it can be corrected by
+eye. A target per lit cell, a bird per target round robin, and a bird with a
+target steers at it and moves the *smaller of its speed and the distance left* —
+which is what makes a letter crisp instead of a cloud orbiting one.
 
-**For more chaotic behavior:**
-- Decrease alignment: Press `a` multiple times
-- Increase separation: Press `S` multiple times
+## Numbers
 
-## Technical Details
+`--bench N` runs N frames with no terminal at all and prints these, so you can
+check them rather than take them on trust. Ryzen-class laptop, 1600×800 viewport:
 
-### Architecture
+| birds | CPU per frame | ceiling | bytes per frame |
+|---|---|---|---|
+| 400 | 0.170 ms | 5900 fps | 11.4 KB |
+| 800 | 0.353 ms | 2832 fps | 22.3 KB |
+| 2000 | 1.003 ms | 997 fps | 45.4 KB |
+| 4096 | 2.734 ms | 366 fps | 108.3 KB |
 
-The simulation follows this execution flow:
+The simulation is not the bottleneck and has not been since the spatial grid
+landed. The limit is terminal bandwidth: 1.3 MB/s at the default, 6.5 MB/s at
+four thousand birds.
 
-1. **Initialization**: Decode the embedded PNG, build the 90 rotation frames, Base64-encode them
-2. **State Setup**: Initialize boid positions and velocities randomly
-3. **Main Loop**:
-   - Process keyboard input and drain any pending terminal output
-   - Copy current state for consistent calculations
-   - Rebuild the spatial grid from that immutable snapshot
-   - Queue the current positions for rendering, then the panel on top
-   - Calculate neighbor influences from nearby cells
-   - Apply flocking rules and update positions
-   - Update rotation frame IDs based on new directions
-   - Flush the Kitty commands without blocking
-   - Sleep for the remainder of the frame budget, measured with a monotonic clock
+## Requirements
 
-### The PNG Library
+A terminal that speaks the Kitty graphics protocol: **Kitty**, **WezTerm**,
+**Ghostty**, recent **Konsole**. Alacritty and GNOME Terminal cannot show it.
 
-`png.c` / `png.h` are self contained, no zlib and no libpng:
+You will not get a black screen finding out. cbirds asks the terminal whether it
+can draw, before taking the screen, and says so plainly if it cannot:
 
-| Function | What it does |
+```
+$ cbirds
+cbirds draws with the Kitty graphics protocol, and this terminal did not
+answer for it. Kitty, WezTerm, Ghostty and recent Konsole all do.
+Run it under one of those, or pass --force to try anyway.
+```
+
+Build needs GCC 7+ or Clang 10+ and `make`. `make test` runs four suites.
+
+## Layout
+
+| | |
 |---|---|
-| `png_decode` | 8 bit non interlaced PNG (gray, RGB, with or without alpha) into RGBA, chunk CRCs verified |
-| `png_encode` | RGBA back into a PNG kept in memory |
-| `png_rotate` | rotation around the center, canvas preserved |
-| `png_resize` | box filter when shrinking, bilinear when enlarging |
-| `png_rotate_resize` | the two above in sequence, which is how the sprites are built |
-| `png_tint` | recolors, multiply or replace, alpha untouched |
-
-The DEFLATE decompressor supports all three block types (stored, fixed and
-dynamic Huffman), so any real PNG can be read. Compression on the way out uses
-stored blocks only: the sprites are a few hundred bytes each and are sent to the
-terminal once, so the ratio does not matter. Filtering runs on premultiplied
-alpha, otherwise the color of the transparent pixels bleeds into the wings.
-
-### Key Algorithms
-
-**Spatial Grid**: the screen is divided into fixed 12×12 pixel cells. Each
-frame uses counting and prefix sums to group boid indices into contiguous cell
-ranges. A boid visits only the cells covered by its current vision radius, then
-applies the exact circular distance test. Building the grid is `O(n + cells)`;
-neighbor lookup is proportional to the local candidates, with `O(n²)` retained
-only as the worst case when the whole flock is densely clustered.
-
-**Direction Calculation**: Weighted vector sum of all behavioral components:
-```c
-result = separation×W₁ + alignment×W₂ + cohesion×W₃ + boundary×W₄
-```
-
-### Graphics Protocol
-
-Cbirds uses Kitty's graphics protocol with these commands:
-
-- `\033_Ga=t,f=100,I=<id>;<base64_data>\033\\` - Upload image
-- `\033_Ga=p,I=<id>,X=<x>,Y=<y>\033\\` - Display image
-- `\033_Ga=d,d=a\033\\` - Delete all visible placements inside the synchronized frame
-
-Image uploads are Base64 encoded and automatically split into protocol chunks
-of at most 4096 bytes by `kitty_graphics.c`.
-
-As in the original fast renderer, each frame uses one global placement clear
-followed by all current placements, and then the panel. The whole operation
-is wrapped in DEC synchronized-update mode (`CSI ? 2026 h` / `CSI ? 2026 l`), so
-the terminal presents it atomically instead of displaying the empty intermediate
-state.
-
-The panel travels in the same buffer as the graphics commands, so it shares that
-atomic frame and the flow control below. It is text rather than a placement,
-which means the per frame placement clear does not remove it. Being anchored to
-the origin and constant in cells, it never strands text by moving; the only rows
-that ever need an erase are the ten it held when a shrinking viewport switches it
-off, and those are erased one line at a time with `CSI K`. Never the whole
-screen. Clearing the screen once the sprites are uploaded deletes them, and every
-later placement then refers to an image that no longer exists, so the flock stops
-being drawn altogether: that is also why the one full erase at startup happens
-before the upload, not after. Redrawing the panel every frame costs about 500
-bytes against the 29 KB a frame of 800 boids already spends.
-Default placement and z-index IDs are omitted to keep every command compact;
-`C=1` prevents cursor movement and accidental scrolling.
-
-Runtime output is flow-controlled. If the terminal cannot consume a frame
-immediately, Cbirds preserves only that frame's unsent suffix, keeps polling
-both terminal input and output, and resumes as soon as either becomes ready. It
-does not generate another frame until the pending output has drained. The
-selected FPS is therefore an upper target: output saturation can lower the
-effective rate, but cannot create an unbounded queue or starve the `R`, `r`,
-and `q` input handling.
-
-### Performance Characteristics
-
-| Boid Count | Frame Rate | CPU Usage* | Memory Usage |
-|------------|------------|------------|--------------|
-| 400 | 60 FPS | ~8% | ~1.9 MB |
-| 800 | 60 FPS | ~20% | ~2 MB |
-
-*On an Intel i9-9880H with 8 cores
-
-Startup, sprite generation included, is about 50 ms at the default size and
-160 ms at `-s 64`.
+| `boids.c` | the simulation, the panel, the terminal |
+| `options.c` `options.h` | the option table that drives both the parser and `--help` |
+| `kitty_graphics.c` `.h` | the buffered protocol, with flow control |
+| `spatial_grid.c` `.h` | the uniform grid and its contiguous cell buckets |
+| `png.c` `png.h` | the PNG library: decode, encode, DEFLATE, rotate, resize, tint |
+| `font.c` `font.h` | the 5×7 font the flock writes with |
+| `sprite_png.h` | the bird, generated from `matrix.png` by `mkasset.c` |
+| `tests/` | four suites, run by `make test` |
 
 ## Contributing
 
-Contributions are welcome! Areas for improvement:
+Genuinely open, and one of these is nearly free:
 
-- **Optimization**: multithreading or SIMD for dense flocks, a real DEFLATE compressor for the encoder
-- **Features**: Predator-prey dynamics, obstacle avoidance, 3D visualization
-- **Portability**: Windows support, additional terminal protocols
+**A dynamic Huffman encoder.** `png_encode` uses fixed codes, which is within a
+few percent on sprite data and further off on photographs. The decoder already
+reads dynamic blocks, so the tests are waiting for it.
+
+**A canvas renderer.** One image a frame instead of one placement a bird, which
+is the road to twenty thousand birds: composite into one RGBA canvas — the
+`--snapshot` path already does exactly this — compress it, and send it as a
+single `a=T`. The flocking update is trivially parallel thanks to the snapshot.
+
+**More sprites.** `--sprite FILE` takes any PNG through the project's own
+decoder, and `--shape` draws five of them from triangles. A sixth is a pull
+request with one function in it.
+
+**The ideas not taken.** Music reactivity, obstacles the flock must fly around,
+perching along the bottom edge, V formations, a config file, tmux passthrough.
+Fifty were proposed and twenty were built; the rest are listed in `plan.md`.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT. See [LICENSE](LICENSE).
 
-## Acknowledgments
+## Acknowledgements
 
-- **Craig Reynolds** for the original Boids algorithm (1986)
-- **Kovid Goyal** for the Kitty graphics protocol specification
-
-## See Also
-
-- [Original Boids Paper](http://www.red3d.com/cwr/boids/) by Craig Reynolds
-- [Kitty Graphics Protocol Documentation](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
-- [Flocking Behavior on Wikipedia](https://en.wikipedia.org/wiki/Flocking_(behavior))
-
----
-
-**Made with ❤️ and C**
+**Craig Reynolds** for the [boids algorithm](http://www.red3d.com/cwr/boids/),
+1986. **Kovid Goyal** for the
+[Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/),
+without which none of this could be in a terminal at all.

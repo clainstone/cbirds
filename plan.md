@@ -1,160 +1,114 @@
-# cbirds: the twenty
+# cbirds: the twenty, built
 
-Fable 5.1 audited the project and proposed fifty features. These are the twenty
-being built, chosen from its own ranking: everything in its top ten, everything
-that makes the first frame sell itself, and the handful of extravagances that
-give a second post something to show. This document replaces the panel plan,
-which shipped in `31fae78`.
+Fable 5.1 audited the project and proposed fifty features. Twenty were chosen
+from its own ranking — everything in its top ten, everything that makes the
+first frame sell itself, and the handful of extravagances that give a second
+post something to show — and all twenty are in. This document is the record of
+that, and the list of what was not taken and why.
 
-Ordered by the value each adds per hour of work, which is also the order they
-are implemented in. Every one of them keeps the rules the codebase already has:
-no screen clear after the sprites are uploaded, the flock never draws over the
-panel, one keypress is one notch, and the terminal comes back exactly as it was.
+Every one of them keeps the rules the codebase already had: the screen is never
+cleared after the sprites are uploaded, the flock never draws over the panel, one
+keypress is one notch, and the terminal comes back exactly as it was.
 
-## Already in
+## Built
 
-Three landed before the audit returned, as the foundation everything else needs:
+| | what | how it shows up |
+|---|---|---|
+| 1 | A table driven option parser | `options.c`, one row per switch, drives the parser and both help screens |
+| 2 | Colour ramps | `--color`, and the fifth shade costs nothing because each angle is rotated once |
+| 3 | The terminal's own colours | the default: OSC 4 and 11, asked at startup, ember if unanswered |
+| 4 | Shade by heading, density or flock | `--color-by`, a turn runs a ripple through the flock |
+| 5 | Flocks that will not merge | `--flocks`, separation physical, alignment and cohesion social |
+| 6 | The pointer as predator, feeder or cat | `--mouse`, the default, and the viewer is in the demo in a second |
+| 7 | Hawks | `--hawks`, `k`/`K`, the split and reform that makes a clip loop |
+| 8 | The flock writes | `--spell`, `font.c`, and `fortune \| cbirds --spell -` |
+| 9 | The clock | `--clock`, re-formed when the minute turns |
+| 10 | Sliders, presets and a seed on the command line | five weights as notches, `--preset`, `--seed` |
+| 11 | Autopilot and idling | `--auto`, `--idle`, one notch every four seconds |
+| 12 | Screensaver | `--screensaver`, and anything at all ends it |
+| 13 | Intro, outro and a frame limit | `--intro`, `--outro`, `--frames`, so a recording ends by itself |
+| 14 | Wrap and trails | `--wrap`, `--trails`, `w` and `e` |
+| 15 | Wind | `--wind`, a slow wandering breeze |
+| 16 | Shapes and your own sprite | `--shape` draws five from triangles, `--sprite` reads any PNG |
+| 17 | The protocol probe | asked before the screen is taken, so no visitor gets a black rectangle |
+| 18 | Stats, bench and snapshot | `--stats`, `--bench`, `--snapshot`, numbers anyone can check |
+| 19 | Pause, step, reset, population, panel toggle | `space` `.` `0` `+` `-` `h`, the missing basics |
+| 20 | Oddities | `--matrix`, and the Konami code, listed in `--help` |
 
-- **A table driven option parser** (`options.c`), because a tool with forty
-  switches cannot keep them in a chain of `strcmp`. Both the parser and `--help`
-  come off one table.
-- **Palette tints**, because Kitty has no per placement tint: a colour is a
-  second set of images, and rotating once per angle then tinting per shade makes
-  the fifth shade free.
-- **Independent flocks**, Fable's #10: separation is physical and applies to
-  everyone, alignment and cohesion are social and read only your own flock.
-- **Pointer tracking**, mode 1003 with 1006 coordinates, with nothing steering
-  by it yet.
+Two more went in because the work asked for them:
 
-## 1. Protocol probe (Fable #36)
+- **A real DEFLATE compressor.** `--size 64` pushed ten megabytes of base64 and
+  drew nothing for three seconds. LZ77 with fixed Huffman fixed it: 726 KB and
+  drawing in 0.8 s, and a snapshot went from 4.15 MB to 50 KB.
+- **A test suite for `png.c`.** The largest and most intricate module was the only
+  one without one.
 
-A first run in the wrong terminal shows a black screen and the visitor leaves.
-Send `\033_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\033\\` plus a Primary Device
-Attributes request, then poll stdin for 200 ms: a Kitty reply means yes, DA1
-alone means no. On no, close the alt screen and print one sentence naming the
-terminals that work. `--force` skips the check.
+## Not taken, and why
 
-Touches `enter_terminal`. Tested by feeding both replies to the parser.
+- **A canvas renderer** for twenty thousand birds: the `--snapshot` path already
+  composites, so the road is open, but deflating a 1080p canvas every frame is
+  the whole frame budget and the result is 20 fps rather than 60.
+- **Music reactivity**: needs an audio source to verify honestly, and a claim
+  that cannot be tested is not one to ship.
+- **Flappy Bird inside it**: the only proposal that repaints columns every frame,
+  against a codebase whose one hard rule is about what it may repaint.
+- **Obstacles, perching, V formations, depth layers, a config file, tmux
+  passthrough, droppings, a countdown, the cursor riding a bird.** All viable,
+  none of them the difference between a repository someone stars and one they
+  scroll past.
 
-## 2. Colour from the terminal's own theme (Fable #3, new default)
+## The fifty, as proposed
 
-Every screenshot then matches the poster's setup, which is what r/unixporn
-upvotes. Query `OSC 4;i;?` for palette entries 1 to 6 and `OSC 10/11` for
-foreground and background, parse `rgb:RRRR/GGGG/BBBB`, build a five step ramp
-between the two most saturated answers. Falls back to `ember` when the terminal
-does not answer. Becomes palette `theme`, the new default.
+Fable's list, verbatim, for anyone who wants to pick one up. The numbers are its
+own.
 
-Touches the palette table, which already takes an arbitrary list of tints.
-
-## 3. Colour by heading (Fable #1)
-
-Shade from `bird->direction` instead of at birth, so every turn runs a ripple of
-colour through the flock. One line in `update_birds`: `bird->shade = shade_for()`
-where the mode picks heading, density, flock or fixed.
-
-`--colour-by heading|density|flock|fixed`.
-
-## 4. The pointer is a predator (Fable #20, new default)
-
-The viewer becomes part of the demo inside a second. `mouse` already carries a
-position; add a term to `flock_direction` that repels within a radius, the same
-shape as the panel's repulsion but finite and weighted. Modes: `flee`, `follow`,
-`cat` (flee, but the flock creeps back when the pointer holds still), `off`.
-
-`--mouse MODE`.
-
-## 5. The sliders on the command line
-
-Six runtime rows with no flag between them means no dotfile can express a look.
-Each weight takes its notch, 0 to 12, because the notch is the state; perception
-and rate take real units and snap, as `-f` already does.
-
-`--boundary N --separation N --cohesion N --alignment N --perception PX`.
-
-## 6. The flock writes (Fable #18, #24, #38)
-
-The shareable unit: birds that spell your name. A 5x7 bitmap font for 96
-printable characters, laid out into target points across the free rectangle,
-with a per bird target and a spring term that beats the flocking weights while
-`spell` is active, then releases. `-` reads stdin, so `fortune | cbirds --spell -`
-is the one liner.
-
-New `font.c` and `spell.c`. The largest piece of work here.
-
-## 7. Hawks (Fable #11)
-
-A predator gives a clip a story: the flock splits and reforms. One to eight
-hawks, larger sprites from the same PNG at a bigger `bird_size`, chasing the
-nearest bird; every bird gets a flee term. Reuses the pointer predator's maths.
-
-`--hawks N`.
-
-## 8. Presets, seeds, and autopilot (the owner's round robin)
-
-- `--preset murmuration|swarm|school|storm|calm` sets the six notches together.
-- `--seed N` makes a run reproducible, which is what lets a bug report be shared.
-- `--auto` wanders the notches by themselves, one notch every few seconds,
-  smoothly, so a terminal left open keeps changing.
-
-## 9. Screensaver (Fable #37)
-
-The omarchy and DHH crowd installs what slots into what they already run.
-`--screensaver` is `--auto --no-panel --idle 0` plus any key or pointer movement
-quits. Small, given 8.
-
-## 10. It demos itself (Fable #33, #34, #35)
-
-The README GIF needs no hands. `--intro` writes the title as birds and lets go;
-`--outro` flies the flock off the top on `q`; `--frames N` quits after N frames
-so a recording ends by itself. All three on by default, each with a `--no-`.
-
-## 11. Wrap and trails
-
-`--wrap` takes a bird off one edge and back on the other, which turns the
-boundary weight off and looks completely different. `--trails` keeps the last
-few placements of every tenth bird at a dimmer shade, which is the cheapest way
-to make a still frame look like motion.
-
-## 12. Stats, bench and snapshot
-
-The performance flex, and the numbers the README needs. `--stats` adds a row to
-the panel with frame time, bytes a frame and the effective rate. `--bench N`
-runs N frames with no terminal and prints the numbers. `--snapshot FILE` writes
-the last frame as a PNG through `png_encode`, which the project already has.
-
-## 13. The clock (Fable #31)
-
-`--clock` spells the time with #6's machinery and re-forms it every minute. The
-useful toy is the one that stays installed.
-
-## 14. Bring your own sprite (Fable #4)
-
-User made variants are free marketing. `--sprite FILE` decodes any PNG with the
-project's own decoder; `--sprite bird|fish|bat|arrow|dot` picks a built-in.
-Per flock when repeated.
-
-## 15. Oddities (Fable #47, #49)
-
-`--matrix` is green birds falling in columns, named after `matrix.png`, for the
-crowd that runs cmatrix. The Konami code in `handle_input` spawns eight hawks
-and spells NICE. Listing an easter egg in `--help` is itself a screenshot.
-
-## 16. The CLI, finished (Fable section B)
-
-- `--no-legend` becomes `--no-panel`, with the old name kept as a silent alias.
-- `-h` is one screen, `--help` is everything, grouped, as ripgrep does it.
-- Help to stdout and exit 0; usage errors to stderr and exit 2; runtime failures
-  exit 1.
-- Every default in parentheses in one template. A "did you mean" on a typo.
-- An **Oddities** group, visible.
-- `--completion bash|zsh|fish` walks the same table.
-
-## Not doing, and why
-
-- **A real DEFLATE compressor** (#45) and the **canvas renderer** (#46): both
-  large, and neither shows up in a screenshot. The README already lists the
-  compressor as an invitation to contribute, which is worth more than the code.
-- **Music reactive** (#30): needs an audio source to verify honestly, and a
-  claim I cannot test is not one to ship.
-- **Flappy** (#50): the only feature that repaints columns every frame, against
-  a codebase whose one hard rule is about what it may repaint.
+1. [VISUAL] Colour by heading — each of the 90 frames tinted by its own angle — `--color heading` **(built)**
+2. [VISUAL] Colour by density — birds glow cool to hot as neighbours pile up — `--color density` **(built)**
+3. [VISUAL] Terminal theme colours — the flock wears the terminal's own palette **(built, the default)**
+4. [VISUAL] Bring your own sprite — any PNG becomes the bird — `--sprite FILE` **(built)**
+5. [VISUAL] Built-in sprite set — fish, bat, plane, arrow, dot **(built, drawn from triangles)**
+6. [VISUAL] Flapping wings — three wing poses synthesised from the one drawing
+7. [VISUAL] Depth layers — three sizes, three speeds, parallax
+8. [VISUAL] Leader trails — faint comet tails behind two dozen birds **(built)**
+9. [VISUAL] Panel in your accent, in any corner
+10. [BEHAVIOUR] Species — N groups that align and cohere only with their own kind **(built as --flocks)**
+11. [BEHAVIOUR] The hawk — a predator that hunts the flock **(built)**
+12. [BEHAVIOUR] Turning inertia — a maximum turn per frame, so birds bank
+13. [BEHAVIOUR] Wind — a slow, wandering breeze the whole flock leans into **(built)**
+14. [BEHAVIOUR] Velocity slider and speed jitter
+15. [BEHAVIOUR] Wrap-around world — leave one edge, arrive from the other **(built)**
+16. [BEHAVIOUR] Obstacles — boxes the flock must fly around
+17. [BEHAVIOUR] Geese — V formations instead of a cloud
+18. [BEHAVIOUR] The flock spells text — the formation engine **(built)**
+19. [BEHAVIOUR] Perching — birds land along the bottom edge
+20. [INTERACTION] The pointer is a predator — birds flee the mouse **(built, the default)**
+21. [INTERACTION] The pointer is a feeder — birds gather on the mouse **(built)**
+22. [INTERACTION] Click to scatter, drag to herd, resize to flinch
+23. [INTERACTION] Cat mode — this is kitty, after all **(built)**
+24. [INTERACTION] Type and they write it — a vim-style `:` prompt
+25. [INTERACTION] Pause, step, reset — the missing basics **(built)**
+26. [INTERACTION] Live population — grow or shrink the flock without restarting **(built)**
+27. [INTERACTION] Panel toggle that clears its ground **(built)**
+28. [INTERACTION] Presets — named slider sets, cycled with Tab **(built)**
+29. [INTERACTION] The cursor rides a bird
+30. [AUDIO-VISUAL] The flock dances to your music — raw PCM in, cohesion out
+31. [AUDIO-VISUAL] Bird clock — the flock is the time **(built)**
+32. [AUDIO-VISUAL] Bird countdown — a pomodoro that scatters at zero
+33. [SELF-DEMO] Autopilot — the sliders wander by themselves **(built)**
+34. [SELF-DEMO] The intro — birds stream in and write "cbirds" **(built)**
+35. [SELF-DEMO] The outro — on q the flock flies off the top **(built)**
+36. [POLISH] Protocol probe with a kind failure — no more black screens **(built)**
+37. [INTEGRATION] Screensaver mode — a drop-in for omarchy/hypridle setups **(built)**
+38. [INTEGRATION] `fortune | cbirds` — the flock writes whatever is piped in **(built)**
+39. [INTEGRATION] Config file — `~/.config/cbirds/config`
+40. [INTEGRATION] Completions and a man page — generated from the option table **(built, completions)**
+41. [INTEGRATION] Self-screenshot — the program writes its own PNG **(built)**
+42. [INTEGRATION] tmux passthrough
+43. [PERFORMANCE] Stats, bench, seed, frames **(built)**
+44. [POLISH] Adaptive rate — the rate slider lowers itself on a slow terminal
+45. [PERFORMANCE] A real DEFLATE compressor **(built, and it fixed a real bug)**
+46. [PERFORMANCE] Canvas renderer — one image a frame, for 20,000 boids
+47. [EASTER EGG] Konami code **(built)**
+48. [EASTER EGG] Droppings — what birds do
+49. [EASTER EGG] Matrix rain — it is raining birds **(built)**
+50. [EASTER EGG] Flappy — one bird, some pipes, the space bar

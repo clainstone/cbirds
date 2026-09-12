@@ -4,10 +4,16 @@
 
 #include <assert.h>
 
+/* The model, written out a second time the obvious way. It knows the three rules,
+ * the edges and the leash, and it deliberately does not know the pointer, the
+ * hawks or the wind: the test that uses it asserts that those are all switched
+ * off, so that this stays a check of the search and not a second implementation
+ * to keep in step. */
 static double brute_force_flock_direction(const bird_t *birds, int target_index) {
     const bird_t *target = &birds[target_index];
     vector_t separation = {0, 0}, alignment = {0, 0}, cohesion = {0, 0};
     vector_t boundary = boundary_vector(target);
+    vector_t leash = leash_vector(target);
     int neighbors = 0, kin = 0;
 
     for (int i = 0; i < config.birds; i++) {
@@ -35,14 +41,16 @@ static double brute_force_flock_direction(const bird_t *birds, int target_index)
             cohesion.y = cohesion.y / kin - target->y;
         }
         double x = separation.x * config.separation + alignment.x * config.alignment +
-                   cohesion.x * config.cohesion + boundary.x * config.boundary;
+                   cohesion.x * config.cohesion + boundary.x * config.boundary +
+                   leash.x * LEASH_WEIGHT;
         double y = separation.y * config.separation + alignment.y * config.alignment +
-                   cohesion.y * config.cohesion + boundary.y * config.boundary;
+                   cohesion.y * config.cohesion + boundary.y * config.boundary +
+                   leash.y * LEASH_WEIGHT;
         return x == 0 && y == 0 ? target->direction : normalized_angle(y, x);
     }
 
-    boundary.x *= config.boundary;
-    boundary.y *= config.boundary;
+    boundary.x = boundary.x * config.boundary + leash.x * LEASH_WEIGHT;
+    boundary.y = boundary.y * config.boundary + leash.y * LEASH_WEIGHT;
     if (boundary.x != 0 || boundary.y != 0) {
         double x = cos(target->direction) + boundary.x;
         double y = sin(target->direction) + boundary.y;
@@ -77,6 +85,10 @@ static void reset_test_config(void) {
     config.turning_notch = DEFAULT_TURNING_NOTCH;
     config.wind_notch = 0;
     config.flocks = 1;
+    config.wrap = 0;
+    config.trails = 0;
+    config.hawks = 0;
+    matrix_mode = 0;
     apply_notches();
 }
 
@@ -139,10 +151,18 @@ static void test_engine_matches_brute_force(void) {
     assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRD_COUNT) == SPATIAL_GRID_OK);
     assert(spatial_grid_build(&grid, BIRD_COUNT, read_bird_position, snapshot) == SPATIAL_GRID_OK);
 
+    /* The three terms the reference does not model must all be quiet, or it is
+     * not modelling the same thing. */
+    assert(config.hawks == 0);
+    assert(!mouse.present || config.mouse_mode == MOUSE_OFF);
+    assert(config.wind_notch == 0);
+
     /* Swept over the flock count too: the reference models the same social rule,
      * so a divergence would mean one of the two forgot it. */
     for (config.flocks = 1; config.flocks <= MAX_FLOCKS; config.flocks++) {
         for (int i = 0; i < BIRD_COUNT; i++) snapshot[i].flock = i % config.flocks;
+        /* What update_birds does before any bird reads its flock's whereabouts. */
+        measure_flocks(snapshot);
         for (config.vision_notch = 0; config.vision_notch <= LEGEND_BAR_CELLS;
              config.vision_notch++) {
             apply_notches();
@@ -203,11 +223,15 @@ static void test_boundary_bands_follow_the_viewport(void) {
     vector_t center_force = boundary_vector(&center);
 
     /* The horizontal bands mirror each other, the vertical ones are a third of
-     * the height at the top and a sixth at the bottom. */
-    assert(left_force.x == 1 && left_force.y == 0);
-    assert(right_force.x == -1 && right_force.y == 0);
-    assert(top_force.x == 0 && top_force.y == 1);
-    assert(bottom_force.x == 0 && bottom_force.y == -1);
+     * the height at the top and a sixth at the bottom. The push grows with depth
+     * rather than being a unit vector, so what mirrors is the sign and the size. */
+    assert(left_force.x > 0 && left_force.y == 0);
+    assert(right_force.x == -left_force.x && right_force.y == 0);
+    assert(top_force.x == 0 && top_force.y > 0);
+    assert(bottom_force.x == 0 && bottom_force.y < 0);
+    /* And one pixel inside a band half as wide is twice as deep into it, so the
+     * bottom pushes harder there than the top does. */
+    assert(-bottom_force.y > top_force.y);
     /* One pixel past either edge the band must already be over. */
     assert(below_top_force.x == 0 && below_top_force.y == 0);
     assert(above_bottom_force.x == 0 && above_bottom_force.y == 0);
@@ -216,6 +240,80 @@ static void test_boundary_bands_follow_the_viewport(void) {
 
 /* A bottom band of a fixed 100 pixels used to swallow a short viewport whole
  * and push every bird upwards, flock pinned to the top edge. */
+/* The band used to push with a unit vector wherever in it a bird was, so the
+ * flocking terms outvoted it everywhere except in aggregate and most of the flock
+ * spent its time off the screen entirely. The push has to grow with depth, and
+ * past the screen's own edge it has to stop caring what the boundary weight is. */
+static void test_the_edge_pushes_harder_the_further_out_a_bird_is(void) {
+    set_test_screen(900, 600);
+
+    /* Every band, not just the left one: the bottom band is half the width of the
+     * top and is the one birds actually leak through. */
+    double previous = 0;
+    for (int x = 299; x >= -200; x -= 10) {
+        const bird_t bird = {.x = x, .y = 300};
+        double push = boundary_vector(&bird).x;
+        assert(push > previous);
+        previous = push;
+    }
+    previous = 0;
+    for (int x = 601; x <= 1100; x += 10) {
+        const bird_t bird = {.x = x, .y = 300};
+        double push = -boundary_vector(&bird).x;
+        assert(push > previous);
+        previous = push;
+    }
+    previous = 0;
+    for (int y = 199; y >= -200; y -= 10) {
+        const bird_t bird = {.x = 450, .y = y};
+        double push = boundary_vector(&bird).y;
+        assert(push > previous);
+        previous = push;
+    }
+    previous = 0;
+    for (int y = 501; y <= 900; y += 10) {
+        const bird_t bird = {.x = 450, .y = y};
+        double push = -boundary_vector(&bird).y;
+        assert(push > previous);
+        previous = push;
+    }
+
+    /* The push a bird actually feels is the band's times the boundary weight, and
+     * it has no step in it at the screen's own edge: a bird crossing the line is
+     * turned, not slapped. That is the one place the two halves of the formula
+     * meet, and they used to differ by a factor of a hundred at notch zero. */
+    for (int notch = 0; notch <= LEGEND_BAR_CELLS; notch++) {
+        config.boundary_notch = notch;
+        apply_notches();
+        const bird_t inside = {.x = 0.001, .y = 300};
+        const bird_t outside = {.x = -0.001, .y = 300};
+        double in = boundary_vector(&inside).x * config.boundary;
+        double out = boundary_vector(&outside).x * config.boundary;
+        assert(fabs(out - in) < 1e-3);
+    }
+
+    /* And the softest boundary anyone can ask for brings a bird that has left the
+     * screen back about as firmly as the firmest does: at notch zero it turns
+     * late, not never. A hundred pixels out the two are within a fifth of each
+     * other, while at the edge itself — where the weight is supposed to decide —
+     * they differ by a factor of sixty. */
+    const bird_t gone = {.x = -100, .y = 300};
+    const bird_t leaving = {.x = 0, .y = 300};
+    config.boundary_notch = 0;
+    apply_notches();
+    double softest = boundary_vector(&gone).x * config.boundary;
+    double soft_edge = boundary_vector(&leaving).x * config.boundary;
+    config.boundary_notch = LEGEND_BAR_CELLS;
+    apply_notches();
+    double firmest = boundary_vector(&gone).x * config.boundary;
+    double firm_edge = boundary_vector(&leaving).x * config.boundary;
+    assert(softest > firmest * 0.8);
+    assert(softest > EDGE_FIRM);
+    assert(soft_edge < firm_edge / 10);
+    config.boundary_notch = DEFAULT_NOTCH;
+    apply_notches();
+}
+
 static void test_bottom_band_scales_on_a_short_viewport(void) {
     set_test_screen(640, 96); /* Six rows of sixteen pixels. */
     assert(screen.turn_y == 32);
@@ -229,8 +327,8 @@ static void test_bottom_band_scales_on_a_short_viewport(void) {
     }
     const bird_t low = {.x = 320, .y = 95};
     const bird_t high = {.x = 320, .y = 1};
-    assert(boundary_vector(&low).y == -1);
-    assert(boundary_vector(&high).y == 1);
+    assert(boundary_vector(&low).y < 0);
+    assert(boundary_vector(&high).y > 0);
 }
 
 static void test_birds_start_spread_inside_the_free_region(void) {
@@ -494,10 +592,12 @@ static void test_legend_repels_towards_the_nearer_way_out(void) {
 
     /* One step outside the zone the panel stands aside and the screen bands
      * answer exactly as they did before it existed: that point is still inside
-     * the left and top bands, so it gets their unit push, not the panel's. */
+     * the left and top bands, so it gets their push, not the panel's, and theirs
+     * grows with depth and is nowhere near LEGEND_PUSH. */
     const bird_t clear = {.x = w + m + 1, .y = h + m + 1};
     vector_t force = boundary_vector(&clear);
-    assert(force.x == 1 && force.y == 1);
+    assert(force.x > 0 && force.x < EDGE_FIRM);
+    assert(force.y > 0 && force.y < EDGE_FIRM);
     assert(clear.x < screen.turn_x && clear.y < screen.turn_y);
 
     /* And in open water there is no force at all. */
@@ -511,7 +611,10 @@ static void test_legend_repels_towards_the_nearer_way_out(void) {
     assert(screen.legend_width == 0);
     const bird_t origin = {.x = 1, .y = 1};
     force = boundary_vector(&origin);
-    assert(force.x == 1 && force.y == 1); /* Only the screen bands, as before. */
+    /* Only the screen bands, and one pixel in from the corner they are pushing
+     * about as hard as they ever do, nowhere near LEGEND_PUSH. */
+    assert(force.x > EDGE_FIRM * 0.9 && force.x <= EDGE_FIRM);
+    assert(force.y > EDGE_FIRM * 0.9 && force.y <= EDGE_FIRM);
     legend_enabled = 1;
 }
 
@@ -852,14 +955,18 @@ static void test_hawks_hunt_and_the_flock_flees(void) {
     place_hawks();
 
     /* One hawk in the middle, pointing the wrong way, and the flock off to its
-     * right well out of reach. */
+     * right well out of reach. The birds are spread and each has a heading of its
+     * own: piled on one point they are indistinguishable, and then a test that
+     * says the hawk keeps to one bird is not saying anything. */
     hawks[0].x = 800;
     hawks[0].y = 400;
     hawks[0].direction = M_PI;
     hawks[0].prey = -1;
     hawks[0].commitment = 0;
     hawks[0].passing = 0;
-    for (int i = 0; i < BIRD_COUNT; i++) birds[i] = (bird_t){.x = 1100, .y = 400};
+    for (int i = 0; i < BIRD_COUNT; i++)
+        birds[i] =
+            (bird_t){.x = 1100 + (i % 5) * 20, .y = 340 + (i / 5) * 30, .direction = i * 0.3};
 
     /* It banks rather than snapping: one frame turns it by its limit and no more,
      * which is what stopped it reading as a glitch. */
@@ -868,39 +975,140 @@ static void test_hawks_hunt_and_the_flock_flees(void) {
     double turned = angle_difference(hawks[0].direction, before);
     assert(turned > 0);
     assert(turned <= HAWK_TURN + 1e-9);
-    assert(hawks[0].prey >= 0); /* And it has chosen something. */
+    int first = hawks[0].prey;
+    assert(first >= 0); /* And it has chosen something. */
 
-    /* Given time it comes round and closes. */
-    double gap_before = 1100 - hawks[0].x;
-    for (int frame = 0; frame < 60; frame++) hunt(birds);
-    assert(cos(hawks[0].direction) > 0.9);
-    assert(1100 - hawks[0].x < gap_before);
+    /* And it arrives, against birds that are flocking and fleeing rather than
+     * standing still: what it strikes is the bird it chose, at the distance a
+     * strike is defined to happen at, having held that one bird the whole way in.
+     * The chase that did not converge at all was the complaint — a wide turn and a
+     * fixed aim ahead of the bird had it cutting across in front of the flock and
+     * out the far side, round and round — and the chase that ended on whatever
+     * else was nearby was worse, because it looked like a chase and was not. */
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRD_COUNT) == SPATIAL_GRID_OK);
+    double gap_before = distance_to_bird(birds, &hawks[0], first);
+    int held = first, struck = -1;
+    double struck_at = 0;
+    bird_t moving[BIRD_COUNT];
+    memcpy(moving, birds, sizeof(birds));
+    for (int frame = 0; frame < 60 && struck < 0; frame++) {
+        bird_t snapshot[BIRD_COUNT];
+        memcpy(snapshot, moving, sizeof(moving));
+        assert(spatial_grid_build(&grid, BIRD_COUNT, read_bird_position, snapshot) ==
+               SPATIAL_GRID_OK);
+        update_birds(moving, snapshot, &grid);
+        int before = hawks[0].prey;
+        double reach = before >= 0 ? distance_to_bird(snapshot, &hawks[0], before) : 0;
+        hunt(snapshot);
+        if (hawks[0].passing > 0 && before >= 0) {
+            struck = before;
+            struck_at = reach;
+        } else if (hawks[0].prey >= 0) {
+            held = hawks[0].prey;
+        }
+    }
+    spatial_grid_destroy(&grid);
+    assert(struck >= 0);                                     /* It got there. */
+    assert(struck == held);                                  /* On the bird it was chasing. */
+    assert(struck_at < config.speed + config.bird_size * 2); /* Actually reached. */
+    assert(distance_to_bird(moving, &hawks[0], struck) < gap_before);
 
     /* It sticks with one bird rather than swapping every frame: that flip
-     * flopping was the whole reason it looked broken. */
+     * flopping was the whole reason it looked broken. Even with another bird put
+     * directly in its path, the commitment holds. */
     hawks[0].x = 400;
     hawks[0].y = 400;
+    hawks[0].passing = 0;
     hawks[0].prey = -1;
     hawks[0].commitment = 0;
-    hawks[0].passing = 0;
     hunt(birds);
     int chosen = hawks[0].prey;
     assert(chosen >= 0);
-    int changes = 0;
-    for (int frame = 0; frame < 20; frame++) {
+    int bait = (chosen + 1) % BIRD_COUNT;
+    hawks[0].commitment = HAWK_COMMITMENT;
+    birds[bait].x = hawks[0].x + 10;
+    birds[bait].y = hawks[0].y + 10;
+    hunt(birds);
+    assert(hawks[0].prey == chosen || hawks[0].passing > 0);
+
+    /* And once the commitment runs out it drops a bird it has not caught and takes
+     * a fresh one, chosen from a distance rather than from under its nose: a
+     * strike with no approach is over before anyone has seen it start. */
+    hawks[0].passing = 0;
+    hawks[0].prey = chosen;
+    hawks[0].commitment = 0;
+    birds[chosen].x = hawks[0].x + HAWK_GIVE_UP + 40; /* Outrun it. */
+    birds[chosen].y = hawks[0].y;
+    birds[bait].x = hawks[0].x + 80; /* And one right beside it. */
+    birds[bait].y = hawks[0].y;
+    int picked_from = -1;
+    {
+        /* Measured before the hawk moves: afterwards it is a step closer, and a
+         * test that allows for the step is a test that would pass at 260 px when
+         * the rule says 340. */
+        hawk_t before_move = hawks[0];
         hunt(birds);
-        if (hawks[0].prey != chosen) {
-            changes++;
-            chosen = hawks[0].prey;
-        }
+        picked_from = hawks[0].prey;
+        assert(picked_from >= 0);
+        assert(distance_to_bird(birds, &before_move, picked_from) >= HAWK_STALK);
     }
-    assert(changes <= 1);
+    assert(hawks[0].prey != chosen);
+    assert(hawks[0].prey != bait);
+
+    /* Unless there are not enough birds to go round, in which case they do share:
+     * eight hawks and two birds is a legal thing to ask for, and a hawk with no
+     * prey at all would simply stop hunting. */
+    {
+        int flock_was = config.birds;
+        config.birds = 2;
+        config.hawks = 4;
+        place_hawks();
+        for (int i = 0; i < config.hawks; i++) {
+            hawks[i].prey = -1;
+            hawks[i].commitment = 0;
+            hawks[i].passing = 0;
+        }
+        hunt(birds);
+        for (int i = 0; i < config.hawks; i++) assert(hawks[i].prey >= 0);
+        config.birds = flock_was;
+        config.hawks = 1;
+    }
+
+    /* Two hawks never share a bird: converging on one point they arrive on top of
+     * each other and read as one hawk with a rendering fault. */
+    config.hawks = 2;
+    place_hawks();
+    /* Exactly on the same spot, so the nearest bird is the same bird for both and
+     * only the rule can separate them. */
+    hawks[0].x = hawks[1].x = 400;
+    hawks[0].y = hawks[1].y = 400;
+    hawks[0].direction = hawks[1].direction = 0;
+    hawks[0].prey = hawks[1].prey = -1;
+    hawks[0].commitment = hawks[1].commitment = 0;
+    hawks[0].passing = hawks[1].passing = 0;
+    hunt(birds);
+    assert(hawks[0].prey >= 0 && hawks[1].prey >= 0);
+    assert(hawks[0].prey != hawks[1].prey);
+    /* And each keeps its distance from the other: a nudge away from any hawk
+     * inside HAWK_SPACING, nothing at all beyond it, so eight of them share a
+     * flock instead of flying as one thick smear. */
+    hawks[0].x = hawks[1].x = 400;
+    hawks[0].y = 380;
+    hawks[1].y = 420;
+    assert(hawk_spacing(0).y < 0);
+    assert(hawk_spacing(1).y == -hawk_spacing(0).y);
+    hawks[1].y = 380 + HAWK_SPACING;
+    assert(hawk_spacing(0).x == 0 && hawk_spacing(0).y == 0);
+    config.hawks = 1;
+    assert(hawk_spacing(0).x == 0 && hawk_spacing(0).y == 0);
 
     /* Flying among them starts a pass: it stops steering and goes straight out
      * the other side, which is what a stoop looks like from outside. */
     hawks[0].x = birds[0].x;
     hawks[0].y = birds[0].y;
     hawks[0].passing = 0;
+    hawks[0].prey = 0;
     hunt(birds);
     assert(hawks[0].passing > 0);
     assert(hawks[0].prey < 0);
@@ -909,7 +1117,9 @@ static void test_hawks_hunt_and_the_flock_flees(void) {
     assert(angle_difference(hawks[0].direction, heading) < 1e-12); /* Straight. */
 
     /* Turned back at a wall rather than pinned against it: pinning cost it a
-     * quarter of every run sliding along an edge. */
+     * quarter of every run sliding along an edge, and it turns while its whole
+     * silhouette is still on the screen, because a placement that does not fit is
+     * one the terminal drops and every wall used to cost a blink. */
     hawks[0].x = screen.width - 1;
     hawks[0].y = 400;
     hawks[0].direction = 0; /* Straight at the wall. */
@@ -917,10 +1127,75 @@ static void test_hawks_hunt_and_the_flock_flees(void) {
     hawks[0].commitment = 30;
     hawks[0].passing = 30;
     hunt(birds);
-    assert(hawks[0].x <= screen.width);
+    assert(hawks[0].x <= screen.width - 1 - hawk_draw_offset());
     assert(cos(hawks[0].direction) < 0); /* Sent back the other way. */
     hunt(birds);
-    assert(hawks[0].x < screen.width - 1); /* And actually leaving. */
+    assert(hawks[0].x < screen.width - 1 - hawk_draw_offset()); /* And actually leaving. */
+
+    /* A wall is seen a whole turning circle off, and the panel is a wall too: a
+     * hawk that only saw the glass when it arrived bounced off it about once a
+     * second, and one that could not see the panel at all flew over the sliders in
+     * a sixth of every run. */
+    config.hawks = 1;
+    legend_enabled = 1;
+    measure_legend();
+    update_turn_distances();
+    hawk_t near_left = {.x = 2, .y = screen.height / 2.0};
+    hawk_t near_bottom = {.x = screen.width / 2.0, .y = screen.height - 2};
+    assert(screen.legend_width > 0);
+    assert(hawk_wall_vector(&near_left).x > 0);
+    assert(hawk_wall_vector(&near_bottom).y < 0);
+    assert(hawk_wall_band() > hawk_turning_radius()); /* Seen in time to act on. */
+
+    /* A place the screen's own walls cannot reach, so that what is being measured
+     * is the panel and only the panel: past the left band, below the top one, and
+     * still inside the panel's own. */
+    double band = hawk_wall_band();
+    hawk_t beside_panel = {.x = screen.legend_width + band / 2, .y = band + 10};
+    assert(beside_panel.x > band);                        /* Clear of the left band. */
+    assert(beside_panel.y < screen.legend_height + band); /* Inside the panel's. */
+    assert(hawk_wall_vector(&beside_panel).x > 0 || hawk_wall_vector(&beside_panel).y > 0);
+    legend_enabled = 0;
+    measure_legend();
+    update_turn_distances();
+    /* And with no panel there is nothing there to steer around. */
+    assert(hawk_wall_vector(&beside_panel).x == 0 && hawk_wall_vector(&beside_panel).y == 0);
+
+    /* A hawk's alarm carries less far on a small screen, or eight of them leave
+     * the flock nowhere at all to be. */
+    apply_screen_size(LEGEND_MIN_COLS, LEGEND_MIN_ROWS, LEGEND_MIN_COLS * 8, LEGEND_MIN_ROWS * 16);
+    assert(hawk_reach() < HAWK_REACH);
+    assert(fabs(hawk_reach() - screen.height / 3.0) < 1e-9);
+    apply_screen_size(200, 50, 1600, 800);
+    assert(hawk_reach() == HAWK_REACH);
+
+    /* And over a long run against a flock that is flocking, the reflection at the
+     * wall — the one thing in the chase that is not a bank — stays rare. */
+    config.hawks = 2;
+    place_hawks();
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRD_COUNT) == SPATIAL_GRID_OK);
+    for (int i = 0; i < BIRD_COUNT; i++)
+        birds[i] = (bird_t){.x = 400 + (i % 5) * 30, .y = 300 + (i / 5) * 30, .direction = i * 0.3};
+    int reflections = 0, steps = 600;
+    double before_turn[MAX_HAWKS];
+    for (int i = 0; i < config.hawks; i++) before_turn[i] = hawks[i].direction;
+    for (int frame = 0; frame < steps; frame++) {
+        bird_t snapshot[BIRD_COUNT];
+        memcpy(snapshot, birds, sizeof(birds));
+        assert(spatial_grid_build(&grid, BIRD_COUNT, read_bird_position, snapshot) ==
+               SPATIAL_GRID_OK);
+        update_birds(birds, snapshot, &grid);
+        hunt(snapshot);
+        for (int i = 0; i < config.hawks; i++) {
+            if (angle_difference(hawks[i].direction, before_turn[i]) > hawk_turn_limit() + 1e-9)
+                reflections++;
+            before_turn[i] = hawks[i].direction;
+        }
+    }
+    spatial_grid_destroy(&grid);
+    assert(reflections * 25 < steps * config.hawks); /* Under four frames in a hundred. */
+    config.hawks = 1;
 
     /* Every bird flees every hawk in reach, hardest when closest, not at all
      * beyond it. */
@@ -933,6 +1208,22 @@ static void test_hawks_hunt_and_the_flock_flees(void) {
     assert(hawk_vector(&close).x > hawk_vector(&further).x);
     assert(hawk_vector(&further).x > 0);
     assert(hawk_vector(&clear).x == 0 && hawk_vector(&clear).y == 0);
+    /* Part of the flee is sideways, so the flock streams around the hawk and
+     * closes behind it instead of bursting straight open. */
+    assert(fabs(hawk_vector(&close).y) > 0);
+    /* And on a small screen the alarm carries less far: the bird that felt it at
+     * a hundred and thirty pixels on a big screen feels nothing here. */
+    apply_screen_size(LEGEND_MIN_COLS, LEGEND_MIN_ROWS, LEGEND_MIN_COLS * 8, LEGEND_MIN_ROWS * 16);
+    hawks[0].x = screen.width / 2.0;
+    hawks[0].y = screen.height / 2.0;
+    const bird_t far_on_a_small_screen = {.x = screen.width / 2.0 + HAWK_REACH - 20,
+                                          .y = screen.height / 2.0};
+    const bird_t near_on_a_small_screen = {.x = screen.width / 2.0 + 10, .y = screen.height / 2.0};
+    assert(hawk_vector(&far_on_a_small_screen).x == 0);
+    assert(hawk_vector(&near_on_a_small_screen).x > 0);
+    apply_screen_size(200, 50, 1600, 800);
+    hawks[0].x = 800;
+    hawks[0].y = 400;
     config.hawks = 0;
     assert(hawk_vector(&close).x == 0);
 
@@ -945,18 +1236,91 @@ static void test_hawks_hunt_and_the_flock_flees(void) {
     assert(cos(flock_direction(birds, &grid, 0, NULL)) > 0);
     spatial_grid_destroy(&grid);
 
-    /* However long the chase runs, a hawk stays on the screen. */
-    config.hawks = MAX_HAWKS;
-    place_hawks();
-    for (int step = 0; step < 400; step++) {
-        hunt(birds);
-        for (int i = 0; i < config.hawks; i++) {
-            assert(hawks[i].x >= 0 && hawks[i].x <= screen.width);
-            assert(hawks[i].y >= 0 && hawks[i].y <= screen.height);
+    /* However long the chase runs, every hawk stays wholly on the screen: not
+     * merely inside it, but far enough in that all of its sprite is too. Tried on
+     * the smallest viewport the program will run in as well, where the distance a
+     * hawk needs to see a wall coming is wider than half the screen. */
+    static const int VIEWPORTS[][2] = {{200, 50}, {LEGEND_MIN_COLS, LEGEND_MIN_ROWS}};
+    for (size_t view = 0; view < sizeof(VIEWPORTS) / sizeof(*VIEWPORTS); view++) {
+        apply_screen_size(VIEWPORTS[view][0], VIEWPORTS[view][1], VIEWPORTS[view][0] * 8,
+                          VIEWPORTS[view][1] * 16);
+        config.hawks = MAX_HAWKS;
+        place_hawks();
+        double least_x = screen.width, most_x = 0, least_y = screen.height, most_y = 0;
+        for (int step = 0; step < 400; step++) {
+            hunt(birds);
+            for (int i = 0; i < config.hawks; i++) {
+                assert(hawks[i].x >= hawk_draw_offset());
+                assert(hawks[i].y >= hawk_draw_offset());
+                assert(hawks[i].x <= screen.width - 1 - hawk_draw_offset());
+                assert(hawks[i].y <= screen.height - 1 - hawk_draw_offset());
+                if (hawks[i].x < least_x) least_x = hawks[i].x;
+                if (hawks[i].x > most_x) most_x = hawks[i].x;
+                if (hawks[i].y < least_y) least_y = hawks[i].y;
+                if (hawks[i].y > most_y) most_y = hawks[i].y;
+            }
         }
+        /* In the middle of the screen there is no wall to be seen, whatever the
+         * turning circle is: a band wider than half the screen would otherwise
+         * reach past the centre and push the same way from everywhere. */
+        hawk_t middle = {.x = screen.width / 2.0, .y = screen.height / 2.0};
+        assert(hawk_wall_vector(&middle).x == 0);
+        assert(hawk_wall_vector(&middle).y == 0);
+
+        /* And they use the screen rather than being held against one side of it:
+         * the distance a hawk needs to see a wall coming can be wider than half a
+         * small screen, and unclamped it would be pushed the same way from every
+         * position on it. */
+        assert(most_x - least_x > screen.width / 2.0);
+        assert(most_y - least_y > screen.height / 2.0);
     }
+    apply_screen_size(200, 50, 200 * 8, 50 * 16);
+
+    /* Summoning one leaves the others exactly where they were hunting. */
+    config.hawks = 3;
+    place_hawks();
+    for (int step = 0; step < 10; step++) hunt(birds);
+    double kept_x = hawks[0].x, kept_y = hawks[0].y;
+    config.hawks = 4;
+    place_one_hawk(config.hawks - 1);
+    assert(hawks[0].x == kept_x && hawks[0].y == kept_y);
+
     config.hawks = 0;
     legend_enabled = 1;
+    reset_test_config();
+}
+
+/* Both turn limits are radians a second dressed as radians a frame, so they have
+ * to be divided by the frame rate: left alone, --fps 30 moved a bird twice as far
+ * per frame and allowed it the same turn for it, and one bird in eight ended up
+ * off the screen against one in thirty at sixty. */
+static void test_the_turn_limits_follow_the_frame_rate(void) {
+    reset_test_config();
+    apply_screen_size(100, 28, 800, 448);
+    config.turning_notch = 6;
+
+    config.frame_rate = DEFAULT_FRAME_RATE;
+    update_speed();
+    double bird_at_sixty = turn_limit(), hawk_at_sixty = hawk_turn_limit();
+    double step_at_sixty = config.speed;
+
+    config.frame_rate = DEFAULT_FRAME_RATE / 2;
+    update_speed();
+    assert(fabs(config.speed - step_at_sixty * 2) < 1e-9);      /* Twice the ground. */
+    assert(fabs(turn_limit() - bird_at_sixty * 2) < 1e-9);      /* Twice the turn. */
+    assert(fabs(hawk_turn_limit() - hawk_at_sixty * 2) < 1e-9); /* Both of them. */
+
+    config.frame_rate = DEFAULT_FRAME_RATE * 2;
+    update_speed();
+    assert(fabs(turn_limit() - bird_at_sixty / 2) < 1e-9);
+    assert(fabs(hawk_turn_limit() - hawk_at_sixty / 2) < 1e-9);
+
+    /* Instant stays instant, and nothing ever exceeds a half turn a frame. */
+    config.turning_notch = LEGEND_BAR_CELLS;
+    config.frame_rate = MIN_FRAME_RATE;
+    update_speed();
+    assert(turn_limit() == 2 * M_PI);
+    assert(hawk_turn_limit() <= M_PI);
     reset_test_config();
 }
 
@@ -987,6 +1351,11 @@ static void test_more_flocks_colour_by_flock(void) {
     int distinct = 0;
     for (int i = 0; i < MAX_FLOCKS; i++) distinct += seen[i];
     assert(distinct == 3); /* Three flocks, three shades. */
+    /* And they are spread: the two outer flocks get the ends of the ramp, so the
+     * difference between them is the widest the palette has to offer. */
+    bird_t lowest = {.flock = 0}, highest = {.flock = 2};
+    assert(shade_for(&lowest, 0) == 0);
+    assert(shade_for(&highest, 0) == palette_shades() - 1);
 
     /* Asking for heading explicitly still wins, whatever the flock count. */
     config.colour_by = COLOUR_BY_HEADING;
@@ -1192,11 +1561,23 @@ static void test_shade_follows_the_chosen_mode(void) {
     assert(shade_for(&alone, 100) == shades - 1);
     assert(shade_for(&alone, 4) > 0 && shade_for(&alone, 4) < shades - 1);
 
-    /* Flock: a colour per flock, which is what makes two of them legible. */
+    /* Flock: a colour per flock, spread across the whole ramp rather than taken
+     * from one end of it, because two flocks given shades zero and one are two
+     * flocks nobody can tell apart. */
     config.colour_by = COLOUR_BY_FLOCK;
-    for (int f = 0; f < MAX_FLOCKS; f++) {
-        bird_t bird = {.flock = f};
-        assert(shade_for(&bird, 0) == f % shades);
+    config.flocks = 2;
+    bird_t first_flock = {.flock = 0}, second_flock = {.flock = 1};
+    assert(shade_for(&first_flock, 0) == 0);
+    assert(shade_for(&second_flock, 0) == shades - 1);
+    for (config.flocks = 1; config.flocks <= MAX_FLOCKS; config.flocks++) {
+        int previous = -1;
+        for (int f = 0; f < config.flocks; f++) {
+            bird_t bird = {.flock = f};
+            int shade = shade_for(&bird, 0);
+            assert(shade >= 0 && shade < shades);
+            assert(shade >= previous);
+            previous = shade;
+        }
     }
 
     /* Fixed: whatever it was given at birth, left alone. */
@@ -1243,6 +1624,188 @@ static void test_theme_colours_are_parsed(void) {
     for (int i = 1; i < 5; i++) assert(theme_tints[i][0] <= theme_tints[i - 1][0]);
 }
 
+/* Two flocks at the same speed pass through each other symmetrically and it looks
+ * like one flock with two colours. A little apart, they shear. */
+static void test_each_flock_flies_at_its_own_pace(void) {
+    reset_test_config();
+    config.flocks = 1;
+    assert(flock_pace(0) == 1.0);
+    config.flocks = 3;
+    assert(flock_pace(0) == 1.0);
+    assert(flock_pace(1) < flock_pace(0));
+    assert(flock_pace(2) < flock_pace(1));
+    assert(flock_pace(2) > 0.8); /* Different, not crippled. */
+
+    /* And the difference shows up in the distance covered. */
+    apply_screen_size(200, 50, 1600, 800);
+    bird_t birds[2], snapshot[2];
+    spatial_grid_t grid;
+    config.birds = 2;
+    /* Both well clear of every edge band, so what is being compared is the pace
+     * and nothing else: started inside one, the band bends one of them and the
+     * difference being measured is not the one the test is named after. */
+    birds[0] = (bird_t){.x = 800, .y = 400, .direction = 0, .flock = 0};
+    birds[1] = (bird_t){.x = 800, .y = 450, .direction = 0, .flock = 2};
+    memcpy(snapshot, birds, sizeof(birds));
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, 2) == SPATIAL_GRID_OK);
+    assert(spatial_grid_build(&grid, 2, read_bird_position, snapshot) == SPATIAL_GRID_OK);
+    update_birds(birds, snapshot, &grid);
+    assert(boundary_vector(&snapshot[0]).x == 0 && boundary_vector(&snapshot[0]).y == 0);
+    assert(boundary_vector(&snapshot[1]).x == 0 && boundary_vector(&snapshot[1]).y == 0);
+    assert(birds[0].x - 800 > birds[1].x - 800);
+    spatial_grid_destroy(&grid);
+    reset_test_config();
+}
+
+/* --matrix sets a green palette, and used to set the shade mode with it, which
+ * quietly threw away the colours that tell three flocks apart. */
+static void test_the_matrix_keeps_the_flocks_apart(void) {
+    char *argv[] = {"cbirds", "--matrix", "--flocks", "3", NULL};
+    char *asked[] = {"cbirds", "--matrix", "--flocks", "3", "--color-by", "heading", NULL};
+
+    reset_test_config();
+    read_options(4, argv);
+    assert(config.palette == palette_named("matrix"));
+    assert(config.wrap == 1 && config.trails == 1);
+    assert(config.colour_by == COLOUR_BY_FLOCK);
+
+    /* Unless the shade mode was asked for, which still wins. */
+    reset_test_config();
+    read_options(6, asked);
+    assert(config.colour_by == COLOUR_BY_HEADING);
+    reset_test_config();
+}
+
+/* A GIF has no panel in it, so it must not have a hole where one would be. */
+static void test_recording_gives_the_whole_frame_to_the_flock(void) {
+    char path[] = "/tmp/cbirds_record_test.gif";
+    legend_enabled = 1;
+    reset_test_config();
+    config.birds = 40;
+    record_path = path;
+    record_fps = 25;
+    record_seconds = 1;
+    record_columns = 60;
+    record_rows = 20;
+    /* It reports what it wrote on stdout, which in a test run is noise. */
+    fflush(stdout);
+    int saved = dup(STDOUT_FILENO);
+    FILE *quiet = freopen("/dev/null", "w", stdout);
+    assert(quiet != NULL);
+    int status = run_recording();
+    fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+    clearerr(stdout);
+    assert(status == EXIT_SUCCESS);
+    assert(legend_enabled == 0);
+    assert(screen.legend_width == 0 && screen.legend_height == 0);
+    remove(path);
+    record_path = NULL;
+    legend_enabled = 1;
+    reset_test_config();
+}
+
+/* Two flocks that cannot see past their own noses drift through each other within
+ * a couple of seconds, and what is left is one flock in three colours. The leash
+ * to each flock's own centre, and the shove those centres give each other, are
+ * what make a flock a body and three flocks three bodies. */
+static void test_flocks_keep_to_their_own_side_of_the_sky(void) {
+    enum { BIRD_COUNT = 300 };
+    static bird_t birds[BIRD_COUNT], snapshot[BIRD_COUNT];
+    spatial_grid_t grid;
+
+    for (int flocks = 2; flocks <= MAX_FLOCKS; flocks++) {
+        reset_test_config();
+        legend_enabled = 0;
+        apply_screen_size(100, 28, 800, 448);
+        config.birds = BIRD_COUNT;
+        config.flocks = flocks;
+
+        /* All of them started in one heap in the middle, which is the hardest
+         * case: if they sort themselves out from there they sort themselves out
+         * from anywhere. */
+        for (int i = 0; i < BIRD_COUNT; i++)
+            birds[i] = (bird_t){.x = screen.width / 2.0 + (i % 17) - 8,
+                                .y = screen.height / 2.0 + (i % 13) - 6,
+                                .direction = i * 0.21,
+                                .flock = i % flocks};
+
+        assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+        assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRD_COUNT) ==
+               SPATIAL_GRID_OK);
+        double gap_sum = 0;
+        int measured = 0;
+        for (int frame = 0; frame < 700; frame++) {
+            memcpy(snapshot, birds, sizeof(birds));
+            assert(spatial_grid_build(&grid, BIRD_COUNT, read_bird_position, snapshot) ==
+                   SPATIAL_GRID_OK);
+            update_birds(birds, snapshot, &grid);
+            if (frame < 300) continue; /* Time to sort themselves out first. */
+
+            /* Home is always somewhere a flock can be. A home off the screen puts
+             * the leash and the edge in a tug of war of about equal strength, and
+             * the flock parks on the glass for as long as it lasts. */
+            double least = screen.width + screen.height;
+            for (int f = 0; f < flocks; f++) {
+                assert(flock_home_x[f] >= 0 && flock_home_x[f] <= screen.width);
+                assert(flock_home_y[f] >= 0 && flock_home_y[f] <= screen.height);
+                /* And home is a shove away from the flock, not a throw: four
+                 * flocks all pushing the middle one used to send its home four
+                 * rooms clear of where the flock actually was. */
+                double shove_x = flock_home_x[f] - flock_center_x[f];
+                double shove_y = flock_home_y[f] - flock_center_y[f];
+                assert(sqrt(shove_x * shove_x + shove_y * shove_y) <= flock_room() + 1e-9);
+                for (int g = f + 1; g < flocks; g++) {
+                    double dx = flock_center_x[f] - flock_center_x[g];
+                    double dy = flock_center_y[f] - flock_center_y[g];
+                    double distance = sqrt(dx * dx + dy * dy);
+                    if (distance < least) least = distance;
+                }
+            }
+            gap_sum += least;
+            measured++;
+        }
+        spatial_grid_destroy(&grid);
+        assert(measured > 0);
+        /* The two closest flocks, averaged over the run, keep a leash between
+         * them: they cross and touch, they do not settle on top of each other. */
+        assert(gap_sum / measured > FLOCK_LEASH * 0.8);
+
+        /* And a bird's neighbours are its own kind: mixed evenly, more than half
+         * of them would be strangers with five flocks up. */
+        measure_flocks(birds);
+        long foreign = 0, counted = 0;
+        for (int i = 0; i < BIRD_COUNT; i += 7) {
+            int nearest = -1;
+            double best = 0;
+            for (int j = 0; j < BIRD_COUNT; j++) {
+                if (j == i) continue;
+                double dx = birds[i].x - birds[j].x, dy = birds[i].y - birds[j].y;
+                double distance = dx * dx + dy * dy;
+                if (nearest < 0 || distance < best) {
+                    best = distance;
+                    nearest = j;
+                }
+            }
+            counted++;
+            if (birds[nearest].flock != birds[i].flock) foreign++;
+        }
+        assert(counted > 0);
+        assert(foreign * 4 < counted); /* Under a quarter, against 1 - 1/flocks. */
+    }
+
+    /* One flock has nothing to keep away from, and pays nothing for the rule. */
+    config.flocks = 1;
+    for (int i = 0; i < BIRD_COUNT; i++) birds[i].flock = 0;
+    measure_flocks(birds);
+    for (int f = 0; f < MAX_FLOCKS; f++) assert(flock_center_x[f] == 0 && flock_center_y[f] == 0);
+    assert(leash_vector(&birds[0]).x == 0 && leash_vector(&birds[0]).y == 0);
+    legend_enabled = 1;
+    reset_test_config();
+}
+
 static void test_flocks_do_not_align_with_each_other(void) {
     enum { BIRD_COUNT = 40 };
     bird_t birds[BIRD_COUNT];
@@ -1265,12 +1828,17 @@ static void test_flocks_do_not_align_with_each_other(void) {
     assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRD_COUNT) == SPATIAL_GRID_OK);
     assert(spatial_grid_build(&grid, BIRD_COUNT, read_bird_position, birds) == SPATIAL_GRID_OK);
 
-    /* Not its flock, so it holds its own heading however many of them there are. */
+    /* Not its flock, so it holds its own heading however many of them there are.
+     * Its own flock is one bird, so the leash pulls it nowhere it was not already
+     * going: the two flocks' centres coincide, and a flock of one is always at
+     * its own centre. */
+    measure_flocks(birds);
     assert(flock_direction(birds, &grid, 0, NULL) == 0.0);
 
     /* Put them all in one flock and the same crowd turns it right around. */
     config.flocks = 1;
     for (int i = 0; i < BIRD_COUNT; i++) birds[i].flock = 0;
+    measure_flocks(birds);
     assert(angle_difference(flock_direction(birds, &grid, 0, NULL), M_PI) < 1e-12);
 
     spatial_grid_destroy(&grid);
@@ -1527,7 +2095,9 @@ static void test_no_legend_leaves_the_corner_to_the_flock(void) {
 
     const bird_t corner = {.x = 1, .y = 1};
     vector_t force = boundary_vector(&corner);
-    assert(force.x == 1 && force.y == 1); /* Screen bands only. */
+    /* Screen bands only, pushing inwards and nothing like the panel's push. */
+    assert(force.x > 0 && force.x <= EDGE_FIRM);
+    assert(force.y > 0 && force.y <= EDGE_FIRM);
 
     assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
     assert(queue_render_frame(&graphics, &bird) == KITTY_GRAPHICS_OK);
@@ -1543,6 +2113,7 @@ static void test_no_legend_leaves_the_corner_to_the_flock(void) {
 int main(void) {
     test_engine_matches_brute_force();
     test_boundary_bands_follow_the_viewport();
+    test_the_edge_pushes_harder_the_further_out_a_bird_is();
     test_bottom_band_scales_on_a_short_viewport();
     test_birds_start_spread_inside_the_free_region();
     test_the_recording_rate_is_one_a_gif_has();
@@ -1551,6 +2122,7 @@ int main(void) {
     test_wind_leans_the_flock();
     test_autopilot_wanders_and_yields();
     test_hawks_hunt_and_the_flock_flees();
+    test_the_turn_limits_follow_the_frame_rate();
     test_more_flocks_colour_by_flock();
     test_the_flock_can_be_laid_out_as_text();
     test_presets_set_every_notch();
@@ -1558,6 +2130,10 @@ int main(void) {
     test_the_pointer_moves_the_flock();
     test_shade_follows_the_chosen_mode();
     test_theme_colours_are_parsed();
+    test_each_flock_flies_at_its_own_pace();
+    test_the_matrix_keeps_the_flocks_apart();
+    test_recording_gives_the_whole_frame_to_the_flock();
+    test_flocks_keep_to_their_own_side_of_the_sky();
     test_flocks_do_not_align_with_each_other();
     test_mouse_reports_are_parsed();
     test_vision_controls();

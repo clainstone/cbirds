@@ -47,9 +47,11 @@ enum {
     INTRO_SECONDS = 3,
     MAX_HAWKS = 8,
     HAWK_REACH = 150,
-    HAWK_COMMITMENT = 45, /* Frames it stays after one bird before reconsidering. */
-    HAWK_GIVE_UP = 420,   /* Pixels at which the chase is lost. */
-    HAWK_PASS = 22,       /* Frames it flies straight after a pass. */
+    HAWK_COMMITMENT = 40, /* Frames it stays after one bird before reconsidering. */
+    HAWK_GIVE_UP = 200,   /* Pixels past which a reconsidered chase is dropped. */
+    HAWK_STALK = 340,     /* And how far off it looks for the next bird. */
+    HAWK_PASS = 14,       /* Frames it flies straight after a pass. */
+    HAWK_SPACING = 150,   /* Pixels two hawks try to keep between them. */
     /* A GIF's delay is in hundredths of a second, so the rates it can express are
      * 100/1, 100/2, 100/3 and so on. Viewers also clamp anything under two
      * hundredths up to a tenth of a second, which puts the real ceiling at fifty:
@@ -109,20 +111,54 @@ enum {
 /* The same scale as the original bottom edge turn: large enough that it settles
  * the direction on its own, whatever the flocking terms are doing. */
 static const double LEGEND_PUSH = 100000.0;
+/* How hard an edge pushes once a bird reaches the screen's own edge, against a
+ * flocking sum of one to four. Twelve turns them well inside the band and still
+ * leaves them the whole screen to use; much more and the flock plays in a box. */
+static const double EDGE_FIRM = 12.0;
+/* And how much harder each further band-width of straying costs. */
+static const double ESCAPE_PENALTY = 8.0;
 /* Heavy enough to bend a flock that is busy flocking, light enough that it bends
  * rather than shatters. */
 static const double MOUSE_WEIGHT = 4.0;
-static const double HAWK_WEIGHT = 6.0;
-static const double HAWK_SPEED = 1.10;
+/* A hawk frightens a bird; it does not get to throw it off the screen. At six
+ * the flee beat the edge even at the screen's own edge, and four birds in fifty
+ * were outside the frame at any moment with four hawks up. */
+static const double HAWK_WEIGHT = 3.0;
+/* A shade slower than the flock when it is only cruising, so it has to dive to
+ * catch anything: a hawk that outruns the birds at rest never has to commit, and
+ * the moment it commits is the moment worth watching. */
+static const double HAWK_SPEED = 0.90;
 /* Sharper than a bird's bank, because a raptor is more agile, but a limit all the
- * same: without one it turned forty degrees a frame and read as a glitch. */
-static const double HAWK_TURN = 0.22;
+ * same: without one it turned forty degrees a frame and read as a glitch. A fifth
+ * of a radian looked calm and never caught anything: the turning circle was wider
+ * than the flock, so every miss became a long trip to a wall and back. */
+static const double HAWK_TURN = 0.5;
+/* That is per frame at sixty a second. At any other rate it has to be rescaled or
+ * the hawk is a different animal: half a radian a frame is 1718 degrees a second
+ * at sixty and 3437 at a hundred and twenty. */
+#define HAWK_TURN_PER_FRAME() (HAWK_TURN * DEFAULT_FRAME_RATE / (double)config.frame_rate)
 static const double HAWK_LEAD = 3.0; /* Frames ahead of the prey it aims. */
 /* Inside the dive it accelerates and stops leading: a bird that flees is only a
  * tenth slower than a cruising hawk, so without this the chase never closes and
  * there is no moment to watch. */
-static const double HAWK_DIVE = 240.0;
+static const double HAWK_DIVE = 90.0;
 static const double HAWK_DIVE_SPEED = 1.45;
+/* How much of the flee is sideways rather than straight away. Purely radial and
+ * the flock bursts like a firework and is gone; with a curl to it the birds peel
+ * around the hawk and close up behind, which is the shape people watch for. */
+static const double HAWK_SWIRL = 0.9;
+/* What one hawk's company is worth to another, against a chase of one. */
+static const double HAWK_APART = 1.2;
+/* And what a wall is worth: more than the chase, or it follows a bird into the
+ * edge and bounces off it. */
+static const double HAWK_WALL = 2.5;
+/* Flocking is local — a bird sees sixty pixels at most — so nothing in the three
+ * rules keeps a flock together as a body across a whole screen, and three flocks
+ * left to themselves spread until they are one cloud in three colours. The leash
+ * is the missing long range term: nothing at all within a flock's own width of
+ * its centre, and a pull that grows outside it. */
+static const int FLOCK_LEASH = 150;
+static const double LEASH_WEIGHT = 2.5;
 /* A breeze the whole flock leans into. Enough to shape it, not enough to carry
  * it off: at the top notch it is about a third of the alignment weight. */
 static const double WIND_WEIGHT = 0.5;
@@ -483,12 +519,15 @@ static int saturation_of(const uint8_t rgb[3]) {
     return high - low;
 }
 
-/* Five steps from the accent to the background, so the ramp ends where the
- * screen does and the far end of the flock reads as distance. */
+/* Five steps from the accent to the background, so the ramp ends where the screen
+ * does and the far end of the flock reads as distance. Divided by four rather
+ * than six: over six the last step stopped two thirds of the way along, and the
+ * five shades sat so close together that three flocks in the terminal's own
+ * colours were three brightnesses of one colour and could not be told apart. */
 static void ramp_between(const uint8_t from[3], const uint8_t to[3]) {
     for (int i = 0; i < 5; i++)
         for (int c = 0; c < 3; c++)
-            theme_tints[i][c] = (uint8_t)(from[c] + (to[c] - from[c]) * i / 6);
+            theme_tints[i][c] = (uint8_t)(from[c] + (to[c] - from[c]) * i / 4);
 }
 
 static int learn_the_theme(void) {
@@ -590,11 +629,16 @@ static int palette_shades(void) {
     return palette()->shades;
 }
 
-/* A hawk is not one of the flock's shades. It gets a dark silhouette whatever the
- * palette is, because what has to read instantly is that this one is different,
- * and dark against a lit flock is the fastest way to say so. */
+/* A hawk is not one of the flock's shades. It gets one colour whatever the palette
+ * is, because what has to read instantly is that this one is different.
+ *
+ * It used to be a dark silhouette, which is what a hawk looks like against the
+ * sky and what nothing looks like against a black terminal: barely a twentieth of
+ * a stop above the background, invisible in every recording. So it is scarlet
+ * instead, five times the background's brightness, and no palette's ramp goes
+ * anywhere near it. */
 static void hawk_tint(png_image_t *image) {
-    png_tint(image, 26, 22, 28, PNG_TINT_REPLACE);
+    png_tint(image, 255, 60, 72, PNG_TINT_REPLACE);
 }
 
 /* Shade zero of a tinted palette is still a tint: the list is the whole ramp. */
@@ -605,6 +649,19 @@ static void palette_tint(png_image_t *image, int shade) {
     if (shade >= chosen->shades) shade = chosen->shades - 1;
     png_tint(image, chosen->tints[shade][0], chosen->tints[shade][1], chosen->tints[shade][2],
              chosen->mode);
+}
+
+/* Twice a bird, clamped: a hawk has to read as the bigger thing at a glance. */
+static int hawk_sprite_size(void) {
+    int size = config.bird_size * 2;
+    return size > MAX_BIRD_SIZE ? MAX_BIRD_SIZE : size;
+}
+
+/* A bird is drawn from its top left corner; a hawk from its middle, so that the
+ * point the flock flees and the silhouette on the screen are the same place. One
+ * function, because the live frame and the recorder both have to agree. */
+static int hawk_draw_offset(void) {
+    return hawk_sprite_size() / 2;
 }
 
 /*
@@ -978,10 +1035,19 @@ static double turn_towards(double from, double to, double most) {
     return turned;
 }
 
-/* Twelve is instant, zero is a straight line and nothing in between is either. */
+/* Twelve is instant, zero is a straight line and nothing in between is either.
+ *
+ * Scaled by the frame rate, like the speed is, so that both are really per second
+ * and a bird's turning circle is the same number of pixels whatever the rate. Left
+ * per frame, a bird at thirty covered twice the ground per frame and was allowed
+ * the same turn for it: the flock could not come round inside the edge band any
+ * more, and one bird in eight was off the screen at --fps 30 against one in
+ * thirty at sixty. */
 static double turn_limit(void) {
     if (config.turning_notch >= LEGEND_BAR_CELLS) return 2 * M_PI;
-    return M_PI * config.turning_notch / LEGEND_BAR_CELLS / 2.0;
+    double per_frame = M_PI * config.turning_notch / LEGEND_BAR_CELLS / 2.0;
+    double scaled = per_frame * DEFAULT_FRAME_RATE / (double)config.frame_rate;
+    return scaled > 2 * M_PI ? 2 * M_PI : scaled;
 }
 
 /*
@@ -1005,27 +1071,42 @@ static hawk_t hawks[MAX_HAWKS];
 /* The hawks' images always go up, so k can summon one at any time. */
 static int hawk_sets_built;
 
+/* One hawk, so that summoning one with k leaves the hawks already hunting exactly
+ * where they are instead of teleporting the lot of them. */
+static void place_one_hawk(int i) {
+    hawks[i].x = screen.width * (i + 1.0) / (config.hawks + 1.0);
+    hawks[i].y = screen.height * (i % 2 ? 0.75 : 0.25);
+    hawks[i].direction = 2 * M_PI * random_unit();
+    hawks[i].frame = direction_frame(hawks[i].direction);
+    hawks[i].prey = -1;
+    hawks[i].commitment = 0;
+    hawks[i].passing = 0;
+}
+
 static void place_hawks(void) {
-    for (int i = 0; i < config.hawks; i++) {
-        hawks[i].x = screen.width * (i + 1.0) / (config.hawks + 1.0);
-        hawks[i].y = screen.height * (i % 2 ? 0.75 : 0.25);
-        hawks[i].direction = 2 * M_PI * random_unit();
-        hawks[i].frame = direction_frame(hawks[i].direction);
-        hawks[i].prey = -1;
-        hawks[i].commitment = 0;
-        hawks[i].passing = 0;
-    }
+    for (int i = 0; i < config.hawks; i++) place_one_hawk(i);
 }
 
 /* The nearest bird, by brute force: eight hawks against four thousand birds is a
  * few tens of thousands of comparisons, well under a percent of a frame, and it
- * needs no structure of its own. */
-static int nearest_bird(const bird_t *birds, double x, double y) {
+ * needs no structure of its own. A hawk another hawk has already chosen is passed
+ * over when `unclaimed` is asked for: two silhouettes converging on one bird read
+ * as one hawk with a rendering fault, and they arrive on top of each other. */
+static int nearest_bird(const bird_t *birds, double x, double y, int self, int unclaimed,
+                        double no_nearer_than) {
     int best = -1;
     double best_distance = 0;
+    double floor_squared = no_nearer_than * no_nearer_than;
     for (int b = 0; b < config.birds; b++) {
+        if (unclaimed) {
+            int taken = 0;
+            for (int h = 0; h < config.hawks && !taken; h++)
+                if (h != self && hawks[h].prey == b) taken = 1;
+            if (taken) continue;
+        }
         double dx = birds[b].x - x, dy = birds[b].y - y;
         double distance = dx * dx + dy * dy;
+        if (distance < floor_squared) continue;
         if (best < 0 || distance < best_distance) {
             best_distance = distance;
             best = b;
@@ -1034,27 +1115,146 @@ static int nearest_bird(const bird_t *birds, double x, double y) {
     return best;
 }
 
+static double distance_to_bird(const bird_t *birds, const hawk_t *hawk, int bird) {
+    double dx = birds[bird].x - hawk->x, dy = birds[bird].y - hawk->y;
+    return sqrt(dx * dx + dy * dy);
+}
+
+/* Pick, or keep. A hawk holds on to its bird for HAWK_COMMITMENT frames whatever
+ * else wanders past, and only when that runs out will it trade up, and then only
+ * for a bird a clear quarter closer than the one it is on. Without the hold it
+ * re-picked the nearest bird every frame, which in a dense flock means a different
+ * bird most frames: it turned on the spot and looked broken rather than hungry. */
+static void choose_prey(hawk_t *hawk, const bird_t *birds, int self) {
+    if (hawk->prey >= config.birds) hawk->prey = -1;
+    if (hawk->prey >= 0 && hawk->commitment > 0) return; /* Committed: hold on. */
+    /* And with the commitment spent, a chase that has not closed by now is over:
+     * the bird outran it, and there are five hundred others. */
+    if (hawk->prey >= 0 && distance_to_bird(birds, hawk, hawk->prey) > HAWK_GIVE_UP)
+        hawk->prey = -1;
+
+    /* And it picks its bird from outside the flock's own alarm radius, so there is
+     * a chase to watch: the nearest bird to a hawk that has just flown through the
+     * middle of a flock is one already beside it, and a strike with no approach is
+     * over before anybody sees it start. */
+    int candidate = nearest_bird(birds, hawk->x, hawk->y, self, 1, HAWK_STALK);
+    if (candidate < 0) candidate = nearest_bird(birds, hawk->x, hawk->y, self, 1, 0);
+    if (candidate < 0) candidate = nearest_bird(birds, hawk->x, hawk->y, self, 0, 0);
+    if (candidate < 0) return;
+    if (hawk->prey >= 0 &&
+        distance_to_bird(birds, hawk, candidate) > 0.75 * distance_to_bird(birds, hawk, hawk->prey))
+        return; /* Not enough of an improvement to be worth changing its mind. */
+    hawk->prey = candidate;
+    hawk->commitment = HAWK_COMMITMENT;
+}
+
+static double hawk_turn_limit(void) {
+    double limit = HAWK_TURN_PER_FRAME();
+    /* And never so lazy that it cannot turn inside the room it has: on a small
+     * terminal a turning circle wider than a third of the screen means the hawk
+     * is committed to the glass before it can see it, and it spends the run
+     * bouncing from wall to wall. */
+    double shorter = screen.width < screen.height ? screen.width : screen.height;
+    if (shorter > 0) {
+        double needed = config.speed * HAWK_DIVE_SPEED / (shorter / 3.0);
+        if (needed > limit) limit = needed;
+    }
+    return limit > M_PI ? M_PI : limit;
+}
+
+/* How tight a circle it can fly. */
+static double hawk_turning_radius(void) {
+    return config.speed * HAWK_DIVE_SPEED / hawk_turn_limit();
+}
+
+/* And how far off it has to see a wall: a whole diameter, not a radius. A radius
+ * is the bare minimum to turn ninety degrees, and since the push starts at
+ * nothing at the band's edge the hawk was always committed before the push was
+ * worth anything — it reflected off the glass about once a second. */
+static double hawk_wall_band(void) {
+    return hawk_turning_radius() * 2;
+}
+
+/* A wall, seen a turning circle ahead. Without this the hawk flew into the edge
+ * and reflected: a hundred and eighty degrees in one frame, three times a second,
+ * which is exactly what "buggy" looks like. Now it banks away like the flock does,
+ * and the reflection below is a safety net that almost never fires. */
+static vector_t hawk_wall_vector(const hawk_t *hawk) {
+    vector_t wall = {0, 0};
+    double band = hawk_wall_band();
+    /* Never more than a third of the room there is, or on a small terminal the two
+     * sides of the same axis would overlap and the nearer one would win
+     * everywhere: the hawk would be pushed one way from every position on the
+     * screen and end up pinned against the far edge. */
+    double band_x = band < screen.width / 3.0 ? band : screen.width / 3.0;
+    double band_y = band < screen.height / 3.0 ? band : screen.height / 3.0;
+    if (band_x >= 1) {
+        if (hawk->x < band_x)
+            wall.x = (band_x - hawk->x) / band_x;
+        else if (hawk->x > screen.width - band_x)
+            wall.x = -(hawk->x - (screen.width - band_x)) / band_x;
+    }
+    if (band_y >= 1) {
+        if (hawk->y < band_y)
+            wall.y = (band_y - hawk->y) / band_y;
+        else if (hawk->y > screen.height - band_y)
+            wall.y = -(hawk->y - (screen.height - band_y)) / band_y;
+    }
+    /* The panel is a wall as well. Every bird is forbidden from it and a hawk was
+     * not, so it flew over the sliders in a sixth of all frames: the one thing on
+     * the screen that is not sky, with something flying through it. It is steered
+     * around rather than forbidden, because a hawk that stopped dead at an edge
+     * nobody can see would look stranger than one that crosses it. */
+    if (screen.legend_width > 0 && hawk->x < screen.legend_width + band_x &&
+        hawk->y < screen.legend_height + band_y) {
+        double out_right = screen.legend_width + band_x - hawk->x;
+        double out_below = screen.legend_height + band_y - hawk->y;
+        if (out_right / band_x < out_below / band_y)
+            wall.x += out_right / band_x;
+        else
+            wall.y += out_below / band_y;
+    }
+    return wall;
+}
+
+/* Room for the other hawks: a nudge away from any hawk closer than HAWK_SPACING,
+ * so eight of them share a flock instead of flying as one thick smear. */
+static vector_t hawk_spacing(int self) {
+    vector_t apart = {0, 0};
+    for (int i = 0; i < config.hawks; i++) {
+        if (i == self) continue;
+        double dx = hawks[self].x - hawks[i].x, dy = hawks[self].y - hawks[i].y;
+        double squared = dx * dx + dy * dy;
+        if (squared >= (double)HAWK_SPACING * HAWK_SPACING || squared < 1e-9) continue;
+        double distance = sqrt(squared);
+        /* Unanswerable at contact rather than merely firm: a push that fades to
+         * nothing as they touch is a push that lets two hawks overlap, which is
+         * the one thing this rule exists to prevent. */
+        double strength = HAWK_SPACING / distance - 1;
+        apart.x += strength * dx / distance;
+        apart.y += strength * dy / distance;
+    }
+    return apart;
+}
+
 /*
  * The chase.
  *
- * A hawk that re-picks the nearest bird every frame does not look like it is
- * hunting: in a dense flock the nearest bird changes constantly and the hawk
- * flips between them, turning forty degrees a frame and reading as a glitch. So
- * it picks one bird and commits to it, for a fixed number of frames or until it
- * is caught or lost, and only then looks for another.
+ * A hawk aims where its bird is going rather than where it is, which is what makes
+ * the pursuit look intelligent instead of trailing. It banks: a limit on the turn
+ * per frame, looser than a bird's because a raptor is more agile, but a limit all
+ * the same. Inside HAWK_DIVE it stops leading, goes straight at the bird and
+ * accelerates, because a fleeing bird is only a tenth slower than a cruising hawk
+ * and without that last push the gap never closes and there is nothing to watch.
  *
- * It aims where the bird is going rather than where it is, which is what makes
- * the pursuit look intelligent instead of trailing. And it banks: a limit on the
- * turn per frame, looser than a bird's because a raptor is more agile, but a
- * limit all the same.
+ * Then it is through them, and flies straight for a few frames before turning
+ * back: that exit is the half of a stoop that makes the flock close up behind.
  */
 static void hunt(const bird_t *birds) {
     for (int i = 0; i < config.hawks; i++) {
         hawk_t *hawk = &hawks[i];
+        if (hawk->commitment > 0) hawk->commitment--;
 
-        /* Mid pass: flying straight out of the flock it just went through, which
-         * is what a stoop looks like from outside. It steers at nothing until it
-         * is clear, and then turns back for another. */
         if (hawk->passing > 0) {
             hawk->passing--;
             hawk->prey = -1;
@@ -1062,83 +1262,148 @@ static void hunt(const bird_t *birds) {
             /* A pass is being among them, not catching the one it set out after:
              * the bird it chose is fleeing, so what it actually flies through is
              * whichever birds are there when it arrives. */
-            int closest = nearest_bird(birds, hawk->x, hawk->y);
-            if (closest >= 0) {
-                double dx = birds[closest].x - hawk->x, dy = birds[closest].y - hawk->y;
-                if (dx * dx + dy * dy <
-                    (double)(config.bird_size * 2) * (double)(config.bird_size * 2)) {
-                    hawk->prey = -1;
-                    hawk->passing = HAWK_PASS; /* Through and out the other side. */
-                }
-            }
-            /* And a chase that has gone too far is over. */
-            if (hawk->prey >= 0 && hawk->prey < config.birds) {
-                double dx = birds[hawk->prey].x - hawk->x, dy = birds[hawk->prey].y - hawk->y;
-                if (dx * dx + dy * dy > HAWK_GIVE_UP * HAWK_GIVE_UP) hawk->prey = -1;
-            } else if (hawk->passing == 0) {
+            /* Within one step, or within a silhouette: at these speeds a hawk
+             * covers more ground in a frame than a bird is wide, so a threshold of
+             * a couple of sprites alone let it jump clean over the flock without
+             * ever registering that it had arrived. */
+            double arrived = config.bird_size * 2;
+            if (arrived < config.speed) arrived = config.speed;
+            /* Its own bird, and only its own bird. Counting whatever else it
+             * happened to pass close to ended nine chases in ten before they were
+             * chases: the strike fired the frame the dive began, sixty pixels from
+             * the bird it had chosen, and the commitment, the lead and the dive
+             * were all dead letters. */
+            int struck = hawk->prey >= 0 && hawk->prey < config.birds &&
+                         distance_to_bird(birds, hawk, hawk->prey) < arrived;
+            if (struck) {
                 hawk->prey = -1;
-            }
-            if (hawk->commitment > 0) hawk->commitment--;
-            if (hawk->prey < 0 && hawk->passing == 0) {
-                hawk->prey = nearest_bird(birds, hawk->x, hawk->y);
-                hawk->commitment = HAWK_COMMITMENT;
+                hawk->commitment = 0;
+                hawk->passing = HAWK_PASS; /* Through and out the other side. */
+            } else {
+                choose_prey(hawk, birds, i);
             }
         }
 
         double pace = HAWK_SPEED;
+        vector_t apart = hawk_spacing(i);
+        vector_t wall = hawk_wall_vector(hawk);
+        double want_x = apart.x * HAWK_APART + wall.x * HAWK_WALL;
+        double want_y = apart.y * HAWK_APART + wall.y * HAWK_WALL;
         if (hawk->prey >= 0) {
-            /* Where it will be, not where it is: the prey's own heading, a few
-             * frames ahead, which is what a raptor is actually doing. Close in, it
-             * stops leading and goes straight at the bird, faster. */
             const bird_t *prey = &birds[hawk->prey];
-            double gap_x = prey->x - hawk->x, gap_y = prey->y - hawk->y;
-            double gap = sqrt(gap_x * gap_x + gap_y * gap_y);
-            double lead = config.speed * HAWK_LEAD;
-            if (gap < HAWK_DIVE) {
-                pace = HAWK_DIVE_SPEED;
-                lead *= gap / HAWK_DIVE;
-            }
+            double gap = distance_to_bird(birds, hawk, hawk->prey);
+            if (gap < HAWK_DIVE) pace = HAWK_DIVE_SPEED;
+            /* Aim where the bird will be when the hawk gets there, not a fixed
+             * distance ahead: close in, that is almost no lead at all, and a fixed
+             * one had it cutting across in front of the bird and out the far side,
+             * round and round. Never further ahead than HAWK_LEAD frames, because
+             * past that the guess is worth less than the chase. */
+            double frames = gap / (config.speed * pace);
+            if (frames > HAWK_LEAD) frames = HAWK_LEAD;
+            double lead = config.speed * frames;
             double to_x = prey->x + cos(prey->direction) * lead - hawk->x;
             double to_y = prey->y + sin(prey->direction) * lead - hawk->y;
-            if (to_x * to_x + to_y * to_y > 1e-9)
-                hawk->direction =
-                    turn_towards(hawk->direction, normalized_angle(to_y, to_x), HAWK_TURN);
+            double reach = sqrt(to_x * to_x + to_y * to_y);
+            if (reach > 1e-9) {
+                want_x += to_x / reach;
+                want_y += to_y / reach;
+            }
         }
+        if (want_x * want_x + want_y * want_y > 1e-9)
+            hawk->direction =
+                turn_towards(hawk->direction, normalized_angle(want_y, want_x), hawk_turn_limit());
 
         hawk->x += config.speed * pace * cos(hawk->direction);
         hawk->y += config.speed * pace * sin(hawk->direction);
 
         /* Turned back at the walls rather than pinned against them: a clamp left
-         * it sliding along an edge for a quarter of every run. */
-        if (hawk->x < 0 || hawk->x > screen.width) {
-            hawk->x = hawk->x < 0 ? 0 : screen.width;
+         * it sliding along an edge for a quarter of every run. The margin is half
+         * its own silhouette, so it turns while it is still wholly on the screen —
+         * clamping to the screen edge instead put the sprite's far half outside it,
+         * and a placement that does not fit is a placement the terminal drops, so
+         * every wall cost a one frame blink. */
+        double margin = hawk_draw_offset();
+        double last_x = screen.width - 1 - margin, last_y = screen.height - 1 - margin;
+        if (last_x < margin) last_x = margin;
+        if (last_y < margin) last_y = margin;
+        if (hawk->x < margin || hawk->x > last_x) {
+            hawk->x = hawk->x < margin ? margin : last_x;
             hawk->direction = normalized_angle(sin(hawk->direction), -cos(hawk->direction));
             hawk->prey = -1; /* Whatever it was after, it is not that way now. */
+            hawk->commitment = 0;
             hawk->passing = 0;
         }
-        if (hawk->y < 0 || hawk->y > screen.height) {
-            hawk->y = hawk->y < 0 ? 0 : screen.height;
+        if (hawk->y < margin || hawk->y > last_y) {
+            hawk->y = hawk->y < margin ? margin : last_y;
             hawk->direction = normalized_angle(-sin(hawk->direction), cos(hawk->direction));
             hawk->prey = -1;
+            hawk->commitment = 0;
             hawk->passing = 0;
         }
         hawk->frame = direction_frame(hawk->direction);
     }
 }
 
-/* Every bird flees every hawk in reach, hardest when it is closest. */
+/* How far a hawk's alarm carries. Never more than a third of the shorter side of
+ * the screen: eight hawks with a hundred and fifty pixel reach on a terminal three
+ * hundred pixels wide leave the flock nowhere at all to be, and it spends its time
+ * pressed against the edges. */
+static double hawk_reach(void) {
+    double shorter = screen.width < screen.height ? screen.width : screen.height;
+    double fits = shorter / 3.0;
+    return HAWK_REACH < fits ? HAWK_REACH : fits;
+}
+
+/* Every bird flees every hawk in reach, hardest when it is closest, and not
+ * straight away from it: part of the flee is sideways, around the hawk, on
+ * whichever side the bird is already heading. Straight away and the flock bursts
+ * open and is simply gone; around, and it opens, streams past and closes behind,
+ * which is the shape worth recording. */
 static vector_t hawk_vector(const bird_t *bird) {
     vector_t force = {0, 0};
     for (int i = 0; i < config.hawks; i++) {
+        double reach = hawk_reach();
         double dx = bird->x - hawks[i].x, dy = bird->y - hawks[i].y;
         double squared = dx * dx + dy * dy;
-        if (squared >= HAWK_REACH * HAWK_REACH || squared < 1e-9) continue;
+        if (squared >= reach * reach || squared < 1e-9) continue;
         double distance = sqrt(squared);
-        double strength = (HAWK_REACH - distance) / HAWK_REACH;
-        force.x += strength * dx / distance;
-        force.y += strength * dy / distance;
+        double strength = (reach - distance) / reach;
+        double away_x = dx / distance, away_y = dy / distance;
+        /* One of the two ways round; the one the bird is already turning. */
+        double side_x = -away_y, side_y = away_x;
+        if (cos(bird->direction) * side_x + sin(bird->direction) * side_y < 0) {
+            side_x = -side_x;
+            side_y = -side_y;
+        }
+        force.x += strength * (away_x + HAWK_SWIRL * side_x);
+        force.y += strength * (away_y + HAWK_SWIRL * side_y);
     }
     return force;
+}
+
+/* Each flock flies at its own pace, the first at full speed and the last at
+ * seven eighths of it. Two flocks at identical speeds pass through each other and
+ * come out symmetrical; a little apart and they shear, overtake and tangle, which
+ * is the part that looks alive. Small enough that nobody reads it as a bug. */
+static double flock_pace(int flock) {
+    if (config.flocks <= 1) return 1.0;
+    return 1.0 - 0.125 * flock / (config.flocks - 1);
+}
+
+/* Where each flock is, measured once a frame off the same snapshot every bird
+ * reads, so every bird in a flock agrees about where its flock is. */
+static double flock_center_x[MAX_FLOCKS], flock_center_y[MAX_FLOCKS];
+/* Where each flock is told to be: its own centre, shoved clear of the others. */
+static double flock_home_x[MAX_FLOCKS], flock_home_y[MAX_FLOCKS];
+
+/* A flock's shade: the ramp's ends first, then the space between them, so two
+ * flocks come out as far apart as the palette allows instead of as shade zero and
+ * shade one, which on any five step ramp are nearly the same colour. */
+static int shade_for_flock(int flock) {
+    int shades = palette_shades();
+    if (shades <= 1 || config.flocks <= 1) return 0;
+    int spread = flock * (shades - 1) / (config.flocks - 1);
+    return spread >= shades ? shades - 1 : spread;
 }
 
 /* One bird, so that growing the flock at runtime places only the new ones. */
@@ -1147,6 +1412,26 @@ static void place_one_bird(bird_t *bird, int index) {
     double min_y = screen.turn_y, max_y = screen.height - screen.turn_bottom;
     if (max_x <= min_x) min_x = max_x = screen.width / 2.0;
     if (max_y <= min_y) min_y = max_y = screen.height / 2.0;
+
+    /* Flocks are handed out round robin so they come out even. Each one starts in
+     * its own column of the screen, because scattered evenly they begin as one
+     * speckled cloud and take half a minute to sort themselves out; started apart
+     * they read as separate flocks from the first frame and then go and meet. */
+    bird->flock = index % config.flocks;
+    if (config.flocks > 1) {
+        double band = (max_x - min_x) / config.flocks;
+        min_x += band * bird->flock;
+        max_x = min_x + band;
+        /* Unless that flock is already flying somewhere, in which case a bird
+         * added with + joins it there rather than appearing in the column it
+         * started in a minute ago and being dragged across the screen. */
+        if (flock_home_x[bird->flock] != 0 || flock_home_y[bird->flock] != 0) {
+            min_x = flock_home_x[bird->flock] - FLOCK_LEASH / 2.0;
+            max_x = min_x + FLOCK_LEASH;
+            min_y = flock_home_y[bird->flock] - FLOCK_LEASH / 2.0;
+            max_y = min_y + FLOCK_LEASH;
+        }
+    }
 
     /* Rejected rather than clamped, so the whole free region stays in play
      * instead of the flock piling up along one edge of the panel. Bounded, with a
@@ -1164,11 +1449,9 @@ static void place_one_bird(bird_t *bird, int index) {
     }
     bird->direction = 2 * M_PI * random_unit();
     bird->frame = direction_frame(bird->direction);
-    /* Flocks are handed out round robin so they come out even, and when there is
-     * more than one the palette follows them: a colour per flock is what makes
-     * two of them legible as two. */
-    bird->flock = index % config.flocks;
-    bird->shade = config.flocks > 1 ? bird->flock % palette_shades()
+    /* When there is more than one flock the palette follows them: a colour per
+     * flock is what makes two of them legible as two. */
+    bird->shade = config.flocks > 1 ? shade_for_flock(bird->flock)
                                     : (int)(random_unit() * palette_shades()) % palette_shades();
 }
 
@@ -1215,19 +1498,143 @@ static vector_t pointer_vector(const bird_t *bird) {
     return force;
 }
 
+/*
+ * How hard an edge pushes, given how far into its band a bird has gone.
+ *
+ * This used to be a flat 1 anywhere in the band, which is why most of the flock
+ * ended up off screen: a constant push loses to a strong enough alignment, and
+ * once it has lost there is nothing stronger further out to win it back. It now
+ * grows, gently through the band and then steeply past the edge of the screen,
+ * so leaving is always possible and staying away never is.
+ */
+static double edge_push(double past, double band) {
+    if (past <= 0) return 0;
+    double depth = past / band; /* Zero at the band's inner edge, one at the screen's. */
+    if (depth <= 1) return EDGE_FIRM * depth * depth;
+    /* Past the screen itself the weight stops having a vote: the softest boundary
+     * is still a boundary. Dividing it out here means the push a bird feels once
+     * it is out of sight is the same at notch 0 as at notch 12, so a low boundary
+     * makes them turn late rather than leave. Carrying the weight in the first
+     * term keeps the whole thing continuous at the edge: without it the push
+     * jumped by a factor of a hundred at notch 0 and a bird was slapped rather
+     * than turned. */
+    return EDGE_FIRM * (config.boundary + (depth - 1) * ESCAPE_PENALTY) / config.boundary;
+}
+
 static vector_t boundary_vector(const bird_t *bird) {
     vector_t boundary = {0, 0};
     if (legend_repels(bird, &boundary)) return boundary;
     if (config.wrap) return boundary; /* A door, so no wall. */
     if (bird->x < screen.turn_x)
-        boundary.x = 1;
+        boundary.x = edge_push(screen.turn_x - bird->x, screen.turn_x);
     else if (bird->x > screen.width - screen.turn_x)
-        boundary.x = -1;
+        boundary.x = -edge_push(bird->x - (screen.width - screen.turn_x), screen.turn_x);
     if (bird->y < screen.turn_y)
-        boundary.y = 1;
+        boundary.y = edge_push(screen.turn_y - bird->y, screen.turn_y);
     else if (bird->y > screen.height - screen.turn_bottom)
-        boundary.y = -1;
+        boundary.y = -edge_push(bird->y - (screen.height - screen.turn_bottom), screen.turn_bottom);
     return boundary;
+}
+
+/* How much room one flock asks of another: two leashes, or nearly the whole of
+ * the shorter side of the screen when that is less, so that on a small viewport
+ * the flocks are not all shoved into the corners. It is an ask, not a promise:
+ * five flocks cannot all be three hundred pixels apart on a screen four hundred
+ * pixels tall, and what they settle at is as far apart as there is room for. */
+static double flock_room(void) {
+    double room = 2.0 * FLOCK_LEASH;
+    double shorter = screen.width < screen.height ? screen.width : screen.height;
+    double fits = 0.9 * shorter;
+    return room < fits ? room : fits;
+}
+
+static void measure_flocks(const bird_t *birds) {
+    int counted[MAX_FLOCKS] = {0};
+    for (int f = 0; f < MAX_FLOCKS; f++) {
+        flock_center_x[f] = flock_center_y[f] = 0;
+        flock_home_x[f] = flock_home_y[f] = 0;
+    }
+    if (config.flocks <= 1) return;
+    for (int i = 0; i < config.birds; i++) {
+        int flock = birds[i].flock;
+        if (flock < 0 || flock >= MAX_FLOCKS) continue;
+        flock_center_x[flock] += birds[i].x;
+        flock_center_y[flock] += birds[i].y;
+        counted[flock]++;
+    }
+    for (int f = 0; f < MAX_FLOCKS; f++)
+        if (counted[f] > 0) {
+            flock_center_x[f] /= counted[f];
+            flock_center_y[f] /= counted[f];
+        }
+
+    /* Left to themselves the three centres of gravity drift to the middle of the
+     * screen and sit on top of each other, and three flocks become one cloud in
+     * three colours. So each flock is sent home to its own centre moved clear of
+     * every other flock's: they shoulder each other apart, find their own corners
+     * of the sky and keep them, without any of it being on rails. */
+    double room = flock_room();
+    for (int f = 0; f < config.flocks && f < MAX_FLOCKS; f++) {
+        flock_home_x[f] = flock_center_x[f];
+        flock_home_y[f] = flock_center_y[f];
+        if (counted[f] == 0) continue;
+        double shove_x = 0, shove_y = 0;
+        int crowding = 0;
+        for (int g = 0; g < config.flocks && g < MAX_FLOCKS; g++) {
+            if (g == f || counted[g] == 0) continue;
+            double dx = flock_center_x[f] - flock_center_x[g];
+            double dy = flock_center_y[f] - flock_center_y[g];
+            double distance = sqrt(dx * dx + dy * dy);
+            if (distance >= room) continue;
+            if (distance < 1e-9) {
+                /* Exactly on top of one another: pick a direction rather than
+                 * dividing by nothing, one for each flock, and let them unfold. */
+                double angle = 2 * M_PI * f / config.flocks;
+                dx = cos(angle);
+                dy = sin(angle);
+                distance = 1;
+            }
+            shove_x += (room - distance) * dx / distance;
+            shove_y += (room - distance) * dy / distance;
+            crowding++;
+        }
+        /* The sum of the shoves, but never further than one room's worth of it:
+         * four flocks all pushing the middle one used to throw its home two
+         * hundred pixels clear off the screen, where the leash drags the flock
+         * into an edge that is pushing back just as hard. Averaging instead was
+         * worse — in a row of three the two outer shoves on the middle flock
+         * oppose each other, and an average of opposites is nothing at all. */
+        if (crowding > 0) {
+            double shove = sqrt(shove_x * shove_x + shove_y * shove_y);
+            if (shove > room) {
+                shove_x = shove_x * room / shove;
+                shove_y = shove_y * room / shove;
+            }
+            flock_home_x[f] += shove_x;
+            flock_home_y[f] += shove_y;
+        }
+        /* And home is somewhere a flock can actually be. */
+        if (flock_home_x[f] < 0) flock_home_x[f] = 0;
+        if (flock_home_y[f] < 0) flock_home_y[f] = 0;
+        if (flock_home_x[f] > screen.width) flock_home_x[f] = screen.width;
+        if (flock_home_y[f] > screen.height) flock_home_y[f] = screen.height;
+    }
+}
+
+/* The leash: nothing within FLOCK_LEASH of its own flock's centre, and outside
+ * that a pull home that grows with the distance. */
+static vector_t leash_vector(const bird_t *bird) {
+    vector_t pull = {0, 0};
+    if (config.flocks <= 1 || bird->flock < 0 || bird->flock >= MAX_FLOCKS) return pull;
+    double dx = flock_home_x[bird->flock] - bird->x;
+    double dy = flock_home_y[bird->flock] - bird->y;
+    double distance = sqrt(dx * dx + dy * dy);
+    if (distance <= FLOCK_LEASH || distance < 1e-9) return pull;
+    double strength = (distance - FLOCK_LEASH) / FLOCK_LEASH;
+    if (strength > 1) strength = 1;
+    pull.x = strength * dx / distance;
+    pull.y = strength * dy / distance;
+    return pull;
 }
 
 static void read_bird_position(const void *context, int index, double *x, double *y) {
@@ -1250,6 +1657,7 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
     }
     vector_t separation = {0, 0}, alignment = {0, 0}, cohesion = {0, 0};
     vector_t boundary = boundary_vector(target);
+    vector_t leash = leash_vector(target);
     vector_t pointer = pointer_vector(target);
     vector_t hawk = hawk_vector(target);
     vector_t wind = wind_vector();
@@ -1301,16 +1709,18 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
         }
         double x = separation.x * config.separation + alignment.x * config.alignment +
                    cohesion.x * config.cohesion + boundary.x * config.boundary +
-                   pointer.x * MOUSE_WEIGHT + hawk.x * HAWK_WEIGHT + wind.x * WIND_WEIGHT;
+                   leash.x * LEASH_WEIGHT + pointer.x * MOUSE_WEIGHT + hawk.x * HAWK_WEIGHT +
+                   wind.x * WIND_WEIGHT;
         double y = separation.y * config.separation + alignment.y * config.alignment +
                    cohesion.y * config.cohesion + boundary.y * config.boundary +
-                   pointer.y * MOUSE_WEIGHT + hawk.y * HAWK_WEIGHT + wind.y * WIND_WEIGHT;
+                   leash.y * LEASH_WEIGHT + pointer.y * MOUSE_WEIGHT + hawk.y * HAWK_WEIGHT +
+                   wind.y * WIND_WEIGHT;
         return x == 0 && y == 0 ? target->direction : normalized_angle(y, x);
     }
-    boundary.x = boundary.x * config.boundary + pointer.x * MOUSE_WEIGHT + hawk.x * HAWK_WEIGHT +
-                 wind.x * WIND_WEIGHT;
-    boundary.y = boundary.y * config.boundary + pointer.y * MOUSE_WEIGHT + hawk.y * HAWK_WEIGHT +
-                 wind.y * WIND_WEIGHT;
+    boundary.x = boundary.x * config.boundary + leash.x * LEASH_WEIGHT + pointer.x * MOUSE_WEIGHT +
+                 hawk.x * HAWK_WEIGHT + wind.x * WIND_WEIGHT;
+    boundary.y = boundary.y * config.boundary + leash.y * LEASH_WEIGHT + pointer.y * MOUSE_WEIGHT +
+                 hawk.y * HAWK_WEIGHT + wind.y * WIND_WEIGHT;
     if (boundary.x != 0 || boundary.y != 0) {
         double x = cos(target->direction) + boundary.x;
         double y = sin(target->direction) + boundary.y;
@@ -1339,7 +1749,7 @@ static int shade_for(const bird_t *bird, int crowd) {
             return shade >= shades ? shades - 1 : shade;
         }
         case COLOUR_BY_FLOCK:
-            return bird->flock % shades;
+            return shade_for_flock(bird->flock);
         default:
             return bird->shade;
     }
@@ -1356,6 +1766,7 @@ static void wrap_position(bird_t *bird) {
 }
 
 static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_grid_t *grid) {
+    measure_flocks(snapshot);
     for (int i = 0; i < config.birds; i++) {
         int crowd = 0;
         double direction = flock_direction(snapshot, grid, i, &crowd);
@@ -1371,7 +1782,7 @@ static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_gr
         birds[i].direction = direction;
         /* Never past the target: the last step is the distance left, which is
          * what makes a letter crisp instead of a cloud orbiting one. */
-        double step = config.speed;
+        double step = config.speed * flock_pace(snapshot[i].flock);
         double want_x, want_y;
         if (spell_target_of(i, &want_x, &want_y)) {
             double dx = want_x - birds[i].x, dy = want_y - birds[i].y;
@@ -1554,7 +1965,9 @@ static kitty_graphics_status_t queue_render_frame(kitty_graphics_t *graphics, co
             status = kitty_graphics_place(graphics, &placement);
     }
     for (int i = 0; status == KITTY_GRAPHICS_OK && i < config.hawks; i++) {
-        bird_t as_bird = {.x = hawks[i].x, .y = hawks[i].y, .frame = hawks[i].frame};
+        bird_t as_bird = {.x = hawks[i].x - hawk_draw_offset(),
+                          .y = hawks[i].y - hawk_draw_offset(),
+                          .frame = hawks[i].frame};
         kitty_graphics_placement_t placement;
         if (bird_placement(&as_bird, &placement)) {
             placement.image_id = hawk_image_id(hawks[i].frame);
@@ -1680,10 +2093,12 @@ static const option_t OPTIONS[] = {
      "how many birds (default 800)", "Flock", 1},
     {'s', "size", NULL, OPTION_INT, &config.bird_size, MIN_BIRD_SIZE, MAX_BIRD_SIZE, NULL, "PIXELS",
      "sprite size in pixels (default 15)", "Flock", 1},
-    {'k', "flocks", NULL, OPTION_INT, &config.flocks, 1, MAX_FLOCKS, NULL, "COUNT",
-     "flocks that keep to their own kind (default 1)", "Flock", 0},
-    {0, "hawks", NULL, OPTION_INT, &config.hawks, 0, MAX_HAWKS, NULL, "COUNT",
-     "predators hunting the flock (default 0)", "Flock", 0},
+    /* k is the hawk key in the panel, so k is the hawk flag on the line: -k 3 used
+     * to mean three flocks, which is a trap laid by the program's own help. */
+    {'g', "flocks", "groups", OPTION_INT, &config.flocks, 1, MAX_FLOCKS, NULL, "COUNT",
+     "flocks that keep to their own kind (default 1)", "Flock", 1},
+    {'k', "hawks", NULL, OPTION_INT, &config.hawks, 0, MAX_HAWKS, NULL, "COUNT",
+     "predators hunting the flock (default 0)", "Flock", 1},
     {0, "preset", NULL, OPTION_ENUM, &requested_preset, 0, 0, PRESET_NAMES, "NAME",
      "murmuration, swarm, school, storm, calm", "Flock", 1},
     {0, "seed", NULL, OPTION_INT, &requested_seed, 0, 2147483647, NULL, "N",
@@ -1768,7 +2183,7 @@ static const option_t OPTIONS[] = {
      "frames a second in the GIF, 50 is the ceiling (default 25)", "Output", 0},
     {0, "record-seconds", NULL, OPTION_INT, &record_seconds, 1, 120, NULL, "SECONDS",
      "how long the GIF runs (default 6)", "Output", 0},
-    {0, "record-size", NULL, OPTION_INT, &record_columns, 40, 400, NULL, "COLUMNS",
+    {0, "record-columns", "record-size", OPTION_INT, &record_columns, 40, 400, NULL, "COLUMNS",
      "the width to record at, in cells (default 100)", "Output", 0},
     {0, "record-rows", NULL, OPTION_INT, &record_rows, 14, 120, NULL, "ROWS",
      "the height to record at, in cells (default 30)", "Output", 0},
@@ -1787,13 +2202,15 @@ enum { OPTION_COUNT = sizeof(OPTIONS) / sizeof(*OPTIONS) };
 
 enum { EXIT_USAGE = 2 }; /* A mistyped command is not a run that went wrong. */
 
-static const char *const EXAMPLES[] = {
-    "cbirds                           a flock, and nothing to read",
-    "cbirds --preset murmuration        the starling look",
-    "fortune | cbirds --spell -         the flock writes whatever is piped in",
-    "cbirds --hawks 2 --color ember     something to watch",
-    "cbirds --screensaver               for a terminal left open",
-    NULL,
+static const option_example_t EXAMPLES[] = {
+    {"cbirds", "a flock, and nothing to read"},
+    {"cbirds --preset murmuration", "the starling look"},
+    {"cbirds --hawks 2 --color ember", "something to watch"},
+    {"cbirds --flocks 3 --color ice", "three of them, keeping to their own"},
+    {"fortune | cbirds --spell -", "the flock writes whatever is piped in"},
+    {"cbirds --record flock.gif", "a GIF, with no terminal in the way"},
+    {"cbirds --screensaver", "for a terminal left open"},
+    {NULL, NULL},
 };
 
 /* Back to the shipped look, which is what someone reaches for after pressing
@@ -1981,9 +2398,9 @@ static int handle_input(void) {
                 update_turn_distances();
                 continue;
             case 'k':
-                if (config.hawks < hawk_sets_built * MAX_HAWKS && config.hawks < MAX_HAWKS) {
+                if (hawk_sets_built && config.hawks < MAX_HAWKS) {
                     config.hawks++;
-                    place_hawks();
+                    place_one_hawk(config.hawks - 1);
                 }
                 continue;
             case 'K':
@@ -2125,7 +2542,7 @@ static png_status_t rasterise_sprites(png_image_t *frames) {
     png_status_t status = load_sprite(&source);
     if (status != PNG_OK) return status;
 
-    int hawk_size = config.bird_size * 2 > MAX_BIRD_SIZE ? MAX_BIRD_SIZE : config.bird_size * 2;
+    int hawk_size = hawk_sprite_size();
     int sets = palette_shades() + 1;
     for (int set = 0; set < sets && status == PNG_OK; set++) {
         int hawk = set == palette_shades();
@@ -2194,10 +2611,8 @@ static void compose(png_image_t *canvas, const png_image_t *frames, const bird_t
         const png_image_t *sprite =
             &frames[shades * ROTATION_FRAMES + hawks[i].frame % ROTATION_FRAMES];
         if (sprite->pixels == NULL) continue;
-        /* Drawn from its middle, because it is twice the size of a bird and a
-         * corner would put it half a bird off where it actually is. */
-        blend_sprite(canvas, sprite, (int)hawks[i].x - sprite->width / 4,
-                     (int)hawks[i].y - sprite->height / 4);
+        blend_sprite(canvas, sprite, (int)hawks[i].x - hawk_draw_offset(),
+                     (int)hawks[i].y - hawk_draw_offset());
     }
 }
 
@@ -2337,6 +2752,12 @@ static void read_options(int argc, char **argv) {
      * one flock colours by flock unless the colour was asked for explicitly. */
     if (config.flocks > 1 && config.colour_by == COLOUR_BY_HEADING && !colour_by_was_asked)
         config.colour_by = COLOUR_BY_FLOCK;
+    /* And a palette with one colour in it cannot tell them apart however they are
+     * coloured, which is worth saying out loud rather than letting someone wonder
+     * where their three flocks went. */
+    if (config.flocks > 1 && palette_shades() <= 1)
+        fprintf(stderr, "%s: %s has one colour, so the %d flocks will look like one\n",
+                program_name, palette()->name, config.flocks);
     /* It is raining birds: green, falling, wrapping, with tails. Every part of it
      * is a switch that already existed, which is the whole joke. */
     if (matrix_mode) {
@@ -2345,7 +2766,11 @@ static void read_options(int argc, char **argv) {
         config.trails = 1;
         config.alignment_notch = LEGEND_BAR_CELLS;
         config.wind_notch = LEGEND_BAR_CELLS;
-        config.colour_by = COLOUR_BY_FIXED;
+        /* One green, unless something asked otherwise: --matrix --flocks 3 asked
+         * for three flocks and got one colour, because this ran after the rule
+         * above and quietly undid it, and --color-by is an explicit request that
+         * no mode flag should be overruling either. */
+        if (config.flocks <= 1 && !colour_by_was_asked) config.colour_by = COLOUR_BY_FIXED;
         wind_direction = M_PI / 2; /* Straight down, and it stays there. */
         wind_is_fixed = 1;
         apply_notches();
@@ -2427,6 +2852,11 @@ static int run_recording(void) {
      * one, so a bird covers the same ground per second whatever the rate is. */
     config.speed = (double)DEFAULT_SPEED * DEFAULT_FRAME_RATE / actual_fps;
 
+    /* A GIF has no panel in it: the panel is terminal text, and compose() draws
+     * birds. Left enabled it would still reserve its corner and keep the flock
+     * out of it, and every recording would have an unexplained empty rectangle in
+     * the top left. */
+    legend_enabled = 0;
     apply_screen_size(record_columns, record_rows, record_columns * DEFAULT_CELL_WIDTH,
                       record_rows * DEFAULT_CELL_HEIGHT);
     if (spatial_grid_init(&grid, SPATIAL_CELL_SIZE) != SPATIAL_GRID_OK) return EXIT_FAILURE;
@@ -2595,9 +3025,7 @@ int main(int argc, char **argv) {
     build_rotation_frames(frames, palette_shades(), config.bird_size, 0);
     /* A hawk has to read as a bigger bird at a glance, so it gets its own set at
      * twice the size, one shade, uploaded straight after the flock's. */
-    build_rotation_frames(
-        frames + palette_shades() * ROTATION_FRAMES, 1,
-        config.bird_size * 2 > MAX_BIRD_SIZE ? MAX_BIRD_SIZE : config.bird_size * 2, 1);
+    build_rotation_frames(frames + palette_shades() * ROTATION_FRAMES, 1, hawk_sprite_size(), 1);
     hawk_sets_built = 1;
 
     bird_t *birds = calloc((size_t)config.birds, sizeof(*birds));

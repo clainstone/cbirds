@@ -248,8 +248,9 @@ static void render_option(FILE *out, size_t column, char shorthand, const char *
     fprintf(out, "%-*s%s\n", (int)column, left, help);
 }
 
-void options_usage(FILE *out, const char *program, const char *tagline, const char *const *examples,
-                   const option_t *table, size_t count, int everything) {
+void options_usage(FILE *out, const char *program, const char *tagline,
+                   const option_example_t *examples, const option_t *table, size_t count,
+                   int everything) {
     size_t column = strlen("  -V, --version");
     for (size_t i = 0; i < count; i++) {
         size_t width = option_width(&table[i]);
@@ -284,8 +285,14 @@ void options_usage(FILE *out, const char *program, const char *tagline, const ch
     }
 
     if (examples != NULL && everything) {
+        size_t widest = 0;
+        for (size_t i = 0; examples[i].command != NULL; i++) {
+            size_t length = strlen(examples[i].command);
+            if (length > widest) widest = length;
+        }
         fprintf(out, "\nExamples\n");
-        for (size_t i = 0; examples[i] != NULL; i++) fprintf(out, "  %s\n", examples[i]);
+        for (size_t i = 0; examples[i].command != NULL; i++)
+            fprintf(out, "  %-*s  %s\n", (int)widest, examples[i].command, examples[i].what);
     }
 }
 

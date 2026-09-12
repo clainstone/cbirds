@@ -58,13 +58,14 @@ enum {
      * terminal. Below the minimum viewport it is dropped and the flock keeps
      * everything; the minimums leave a corridor to the right of the panel and
      * one underneath it. */
-    LEGEND_COLUMNS = 32,
+    LEGEND_COLUMNS = 38,
     LEGEND_ROWS = 10,
     /* One notch a keypress, so this is also the number of steps every parameter
      * travels through, from its floor to its ceiling. */
     LEGEND_BAR_CELLS = 12,
     LEGEND_NAME_WIDTH = 10,
-    LEGEND_MIN_COLS = 44,
+    LEGEND_VALUE_WIDTH = 5,
+    LEGEND_MIN_COLS = 50,
     LEGEND_MIN_ROWS = 14,
     LEGEND_LINE_MAX = 128,
     SPAWN_ATTEMPTS = 32
@@ -504,8 +505,8 @@ static int bird_placement(const bird_t *bird, kitty_graphics_placement_t *placem
  * one first because that is the end of the bar it works from. The filled length
  * is the notch itself, not a value scaled into cells, so a keypress moves the bar
  * by exactly one cell and nothing rounds. No number: the bar is the readout. */
-static void legend_slider(char *line, size_t size, const char *name, int notch, char lower,
-                          char raise) {
+static void legend_slider(char *line, size_t size, const char *name, int notch, const char *value,
+                          char lower, char raise) {
     char bar[LEGEND_BAR_CELLS * 3 + 1];
     size_t at = 0;
 
@@ -515,8 +516,16 @@ static void legend_slider(char *line, size_t size, const char *name, int notch, 
         at += 3;
     }
     bar[at] = '\0';
-    snprintf(line, size, "\u2502 %-*s %s  %c/%c \u2502", LEGEND_NAME_WIDTH, name, bar, lower,
-             raise);
+    /* The value is right aligned in a column of its own, so the numbers line up
+     * under each other and the keys stay where the eye already looks for them. */
+    snprintf(line, size, "\u2502 %-*s %s %*s  %c/%c \u2502", LEGEND_NAME_WIDTH, name, bar,
+             LEGEND_VALUE_WIDTH, value, lower, raise);
+}
+
+/* Enough decimals to tell one notch from the next, and no more: separation and
+ * cohesion step in thousandths, the other two in hundredths. */
+static void legend_number(char *out, size_t size, double value, int decimals) {
+    snprintf(out, size, "%.*f", decimals, value);
 }
 
 /* The panel, ten rows of it, anchored to the top left corner. */
@@ -529,12 +538,21 @@ static void build_legend(char lines[LEGEND_ROWS][LEGEND_LINE_MAX]) {
     for (int i = 0; i < inner; i++, at += 3) memcpy(lines[0] + at, "\u2500", 3);
     memcpy(lines[0] + at, "\u256e", 4);
 
-    legend_slider(lines[1], LEGEND_LINE_MAX, "boundary", config.boundary_notch, 'b', 'B');
-    legend_slider(lines[2], LEGEND_LINE_MAX, "separation", config.separation_notch, 's', 'S');
-    legend_slider(lines[3], LEGEND_LINE_MAX, "cohesion", config.cohesion_notch, 'c', 'C');
-    legend_slider(lines[4], LEGEND_LINE_MAX, "alignment", config.alignment_notch, 'a', 'A');
-    legend_slider(lines[5], LEGEND_LINE_MAX, "perception", config.vision_notch, 'p', 'P');
-    legend_slider(lines[6], LEGEND_LINE_MAX, "rate", config.rate_notch, 'r', 'R');
+    char value[LEGEND_VALUE_WIDTH + 8];
+    legend_number(value, sizeof(value), config.boundary, 2);
+    legend_slider(lines[1], LEGEND_LINE_MAX, "boundary", config.boundary_notch, value, 'b', 'B');
+    legend_number(value, sizeof(value), config.separation, 3);
+    legend_slider(lines[2], LEGEND_LINE_MAX, "separation", config.separation_notch, value, 's',
+                  'S');
+    legend_number(value, sizeof(value), config.cohesion, 3);
+    legend_slider(lines[3], LEGEND_LINE_MAX, "cohesion", config.cohesion_notch, value, 'c', 'C');
+    legend_number(value, sizeof(value), config.alignment, 2);
+    legend_slider(lines[4], LEGEND_LINE_MAX, "alignment", config.alignment_notch, value, 'a', 'A');
+    /* Pixels and frames a second are whole numbers, so they print as such. */
+    snprintf(value, sizeof(value), "%dpx", config.vision_radius);
+    legend_slider(lines[5], LEGEND_LINE_MAX, "perception", config.vision_notch, value, 'p', 'P');
+    snprintf(value, sizeof(value), "%d", config.frame_rate);
+    legend_slider(lines[6], LEGEND_LINE_MAX, "rate", config.rate_notch, value, 'r', 'R');
 
     snprintf(lines[7], LEGEND_LINE_MAX, "\u2502 %*s \u2502", inner - 2, "");
     snprintf(lines[8], LEGEND_LINE_MAX, "\u2502 %-*s q%*s \u2502", LEGEND_NAME_WIDTH, "quit",

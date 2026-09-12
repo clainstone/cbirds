@@ -203,22 +203,27 @@ While the simulation is running, use these keyboard commands:
 #### The Parameter Panel
 
 The top left corner carries a panel of sliders, one per adjustable parameter,
-with the two keys that move each one. No numbers: the bar is the readout, and
-the keys are written lowercase first because that is the end of the bar each one
-works from.
+each with its current value and the two keys that move it. The keys are written
+lowercase first because that is the end of the bar each one works from, and the
+values are right aligned in a column of their own so the numbers stack.
 
 ```
-╭──────────────────────────────╮
-│ boundary   ▓▓▓▓░░░░░░░░  b/B │
-│ separation ▓▓▓▓░░░░░░░░  s/S │
-│ cohesion   ▓▓▓▓░░░░░░░░  c/C │
-│ alignment  ▓▓▓▓░░░░░░░░  a/A │
-│ perception ▓▓▓▓▓▓░░░░░░  p/P │
-│ rate       ▓▓▓▓░░░░░░░░  r/R │
-│                              │
-│ quit       q                 │
-╰──────────────────────────────╯
+╭────────────────────────────────────╮
+│ boundary   ▓▓▓▓░░░░░░░░  0.20  b/B │
+│ separation ▓▓▓▓░░░░░░░░ 0.005  s/S │
+│ cohesion   ▓▓▓▓░░░░░░░░ 0.010  c/C │
+│ alignment  ▓▓▓▓░░░░░░░░  1.50  a/A │
+│ perception ▓▓▓▓▓▓░░░░░░  36px  p/P │
+│ rate       ▓▓▓▓░░░░░░░░    60  r/R │
+│                                    │
+│ quit       q                       │
+╰────────────────────────────────────╯
 ```
+
+Each number carries just enough decimals to tell one notch from the next:
+hundredths for the boundary and alignment weights, thousandths for separation and
+cohesion, whole pixels for the perception radius and whole frames a second for
+the rate. The bar and the number come off the same notch, so they cannot disagree.
 
 **One keypress is one notch of bar.** The bar has twelve cells, and every
 parameter travels through exactly twelve steps from its floor to its ceiling, so
@@ -228,10 +233,10 @@ radius and the frame rate are all derived from it, so a value and its bar cannot
 drift apart. Each default sits on the fourth notch, a third along, except
 perception which starts on the sixth.
 
-The panel is 32 by 10 cells and never changes size: it follows the longest
-parameter name and the bar, not the terminal. It is dropped below 44 columns or
-14 rows, where it would leave no corridor to fly in, and `--no-legend` turns it
-off outright.
+The panel is 38 by 10 cells and never changes size: it follows the longest
+parameter name, the bar and the value column, not the terminal. It is dropped
+below 50 columns or 14 rows, where it would leave no corridor to fly in, and
+`--no-legend` turns it off outright.
 
 **The flock cannot enter it.** While the panel is up its rectangle carries an
 edge force of magnitude 100000, far above every other term in the model, aimed
@@ -385,7 +390,7 @@ off, and those are erased one line at a time with `CSI K`. Never the whole
 screen. Clearing the screen once the sprites are uploaded deletes them, and every
 later placement then refers to an image that no longer exists, so the flock stops
 being drawn altogether: that is also why the one full erase at startup happens
-before the upload, not after. Redrawing the panel every frame costs about 400
+before the upload, not after. Redrawing the panel every frame costs about 500
 bytes against the 29 KB a frame of 800 boids already spends.
 Default placement and z-index IDs are omitted to keep every command compact;
 `C=1` prevents cursor movement and accidental scrolling.

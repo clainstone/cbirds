@@ -380,6 +380,21 @@ static void test_legend_panel_layout(void) {
     char lines[LEGEND_ROWS][LEGEND_LINE_MAX];
 
     reset_test_config();
+    /* The panel waits for a window it is a fifth of rather than half of: at the
+     * smallest terminal it used to appear in, it covered 54% of the area and the
+     * force that keeps birds out of it squeezed half the flock off the edges of
+     * what was left. One column narrower and the flock was fine; one column wider
+     * and it was not. */
+    assert(LEGEND_COLUMNS * LEGEND_ROWS * 4 <= LEGEND_MIN_COLS * LEGEND_MIN_ROWS);
+    apply_screen_size(LEGEND_MIN_COLS - 1, LEGEND_MIN_ROWS, (LEGEND_MIN_COLS - 1) * 8,
+                      LEGEND_MIN_ROWS * 16);
+    assert(screen.legend_width == 0);
+    apply_screen_size(LEGEND_MIN_COLS, LEGEND_MIN_ROWS - 1, LEGEND_MIN_COLS * 8,
+                      (LEGEND_MIN_ROWS - 1) * 16);
+    assert(screen.legend_width == 0);
+    apply_screen_size(LEGEND_MIN_COLS, LEGEND_MIN_ROWS, LEGEND_MIN_COLS * 8, LEGEND_MIN_ROWS * 16);
+    assert(screen.legend_width > 0);
+
     apply_screen_size(80, 24, 80 * 8, 24 * 16);
     assert(screen.legend_width == LEGEND_COLUMNS * screen.cell_width);
     assert(screen.legend_height == LEGEND_ROWS * screen.cell_height);
@@ -406,6 +421,18 @@ static void test_legend_panel_layout(void) {
     assert(strstr(lines[0], "\u256e") != NULL);
     assert(strstr(lines[LEGEND_ROWS - 1], "\u2570") == lines[LEGEND_ROWS - 1]);
     assert(strstr(lines[LEGEND_ROWS - 1], "\u256f") != NULL);
+
+    /* Every notch the keys can reach comes back with 0, including the two the
+     * panel does not show: somebody who has turned the banking down with t cannot
+     * see what they did, so the one key that says "back to the defaults" has to
+     * actually mean it. */
+    config.turning_notch = 0;
+    config.wind_notch = LEGEND_BAR_CELLS;
+    config.boundary_notch = 0;
+    apply_preset_defaults();
+    assert(config.turning_notch == DEFAULT_TURNING_NOTCH);
+    assert(config.wind_notch == 0);
+    assert(config.boundary_notch == DEFAULT_NOTCH);
 
     /* One slider a parameter, named, with a bar and its pair of keys. */
     static const char *names[] = {"boundary",  "separation", "cohesion",
@@ -788,10 +815,23 @@ static void test_birds_bank_rather_than_snap(void) {
     /* Twelve notches is instant, which is what it always used to be. */
     config.turning_notch = LEGEND_BAR_CELLS;
     assert(angle_difference(turn_towards(0.0, M_PI, turn_limit()), M_PI) < 1e-12);
-    /* And none at all is a straight line. */
+    /* And the bottom notch is a long lazy bank — a sixth of a turn a frame, so a
+     * bird comes round in twelve — rather than nothing at all. Nothing meant the
+     * edges could not turn the flock back either, and the whole of it left the
+     * screen inside a second and stayed away; the bottom third of the bar was a
+     * setting nobody could want. Every notch is now one somebody might. */
     config.turning_notch = 0;
-    assert(turn_limit() == 0.0);
-    assert(turn_towards(1.0, 3.0, turn_limit()) == 1.0);
+    assert(turn_limit() > M_PI / 8);
+    assert(turn_limit() < M_PI / 4);
+    assert(turn_towards(1.0, 3.0, turn_limit()) > 1.0);
+    assert(turn_towards(1.0, 3.0, turn_limit()) < 1.0 + M_PI / 4);
+    /* And the bar still climbs from end to end. */
+    double previous = turn_limit();
+    for (int notch = 1; notch < LEGEND_BAR_CELLS; notch++) {
+        config.turning_notch = notch;
+        assert(turn_limit() > previous);
+        previous = turn_limit();
+    }
 
     /* Writing is exempt, or a bird could not land on a letter: it would circle
      * one, and the crispness of the letters is the whole point of them. */
@@ -1014,7 +1054,9 @@ static void test_hawks_hunt_and_the_flock_flees(void) {
                SPATIAL_GRID_OK);
         update_birds(moving, snapshot, &grid);
         int before = hawks[0].prey;
-        double reach = before >= 0 ? distance_to_bird(snapshot, &hawks[0], before) : 0;
+        /* Measured the way the strike is measured: along the whole of the step
+         * the hawk is about to fly, not from where it happens to stand. */
+        double reach = before >= 0 ? reach_along_the_step(snapshot, &hawks[0], before) : 0;
         hunt(snapshot);
         if (hawks[0].passing > 0 && before >= 0) {
             struck = before;
@@ -1024,9 +1066,9 @@ static void test_hawks_hunt_and_the_flock_flees(void) {
         }
     }
     spatial_grid_destroy(&grid);
-    assert(struck >= 0);                                     /* It got there. */
-    assert(struck == held);                                  /* On the bird it was chasing. */
-    assert(struck_at < config.speed + config.bird_size * 2); /* Actually reached. */
+    assert(struck >= 0);                      /* It got there. */
+    assert(struck == held);                   /* On the bird it was chasing. */
+    assert(struck_at < config.bird_size * 2); /* Actually reached it. */
     assert(distance_to_bird(moving, &hawks[0], struck) < gap_before);
 
     /* It sticks with one bird rather than swapping every frame: that flip
@@ -1311,7 +1353,9 @@ static void test_hawks_hunt_and_the_flock_flees(void) {
  * off the screen against one in thirty at sixty. */
 static void test_the_turn_limits_follow_the_frame_rate(void) {
     reset_test_config();
-    apply_screen_size(100, 28, 800, 448);
+    /* Roomy, so that the step is set by the frame rate alone: on a small screen
+     * it is capped by the screen instead, which is the next thing asserted. */
+    apply_screen_size(200, 60, 1600, 960);
     config.turning_notch = 6;
 
     config.frame_rate = DEFAULT_FRAME_RATE;
@@ -1329,6 +1373,16 @@ static void test_the_turn_limits_follow_the_frame_rate(void) {
     update_speed();
     assert(fabs(turn_limit() - bird_at_sixty / 2) < 1e-9);
     assert(fabs(hawk_turn_limit() - hawk_at_sixty / 2) < 1e-9);
+
+    /* And a bird never crosses more than a tenth of the shorter side in one
+     * frame, however low the rate goes: it cannot turn inside a band it clears in
+     * two frames, and on a forty by fourteen terminal one bird in six was off the
+     * screen because of it. */
+    config.frame_rate = MIN_FRAME_RATE;
+    apply_screen_size(40, 14, 320, 224);
+    assert(config.speed <= screen.height / 10.0 + 1e-9);
+    apply_screen_size(200, 60, 1600, 960);
+    assert(config.speed > screen.height / 20.0);
 
     /* Instant stays instant, and nothing ever exceeds a half turn a frame. */
     config.turning_notch = LEGEND_BAR_CELLS;
@@ -2035,6 +2089,8 @@ static void test_frame_rate_controls(void) {
     char keys[INPUT_BUFFER_SIZE + 1];
 
     reset_test_config();
+    /* Roomy, or the step is capped by the screen rather than by the rate. */
+    apply_screen_size(200, 60, 1600, 960);
     assert(config.frame_rate == DEFAULT_FRAME_RATE);
     memset(keys, 'R', INPUT_BUFFER_SIZE);
     keys[INPUT_BUFFER_SIZE] = '\0';

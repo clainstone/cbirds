@@ -54,7 +54,7 @@ cbirds --color ember      # or pick a ramp
 
 ```bash
 cbirds --preset murmuration --trails    # the starling look, with tails
-cbirds --turning 2                      # long, lazy banking turns
+cbirds --turning 0                      # long, lazy banking turns
 cbirds --hawks 2                        # give the clip a story
 cbirds --flocks 3 --color ice           # three flocks, each keeping to its own
 cbirds --clock                          # the flock is the time
@@ -110,6 +110,11 @@ open sides is nearer — and the force acts on the panel grown by one frame of
 travel, which is what makes it unreachable rather than merely unwelcoming. Over
 **5.3 million placements across eight configurations** — every combination of the
 turning limit's extremes and the frame rate's — not one landed on it.
+
+It waits for a window it is a quarter of, and switches itself off in anything
+smaller. On the smallest terminal it used to appear in, the panel covered half the
+screen and the force that keeps birds out of it squeezed half the flock off the
+edges of what was left.
 
 | key | | key | |
 |---|---|---|---|

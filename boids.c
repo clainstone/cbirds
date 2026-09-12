@@ -102,8 +102,12 @@ enum {
     LEGEND_BAR_CELLS = 12,
     LEGEND_NAME_WIDTH = 10,
     LEGEND_VALUE_WIDTH = 5,
-    LEGEND_MIN_COLS = 50,
-    LEGEND_MIN_ROWS = 14,
+    /* The panel is 38 by 10 cells and the flock may not enter it. At the smallest
+     * terminal it used to appear in it covered half the screen, and half the flock
+     * was squeezed off the edges of what was left: it needs to be a fifth of the
+     * room, not a half, so it waits for a window it fits inside. */
+    LEGEND_MIN_COLS = 76,
+    LEGEND_MIN_ROWS = 22,
     LEGEND_LINE_MAX = 128,
     SPAWN_ATTEMPTS = 32
 };
@@ -454,6 +458,10 @@ static void measure_legend(void) {
 }
 
 /* Split out of the ioctl query so the tests drive the real derivation. */
+/* Defined with the other notch arithmetic; needed here because the step a bird
+ * takes is capped by the size of the screen it is taking it on. */
+static void update_speed(void);
+
 static void apply_screen_size(int cols, int rows, int pixel_width, int pixel_height) {
     screen.cols = cols > 0 ? cols : DEFAULT_COLS;
     screen.rows = rows > 0 ? rows : DEFAULT_ROWS;
@@ -467,6 +475,9 @@ static void apply_screen_size(int cols, int rows, int pixel_width, int pixel_hei
     screen.cell_height = screen.height / screen.rows;
     if (screen.cell_width < 1) screen.cell_width = 1;
     if (screen.cell_height < 1) screen.cell_height = 1;
+    /* Before the distances, because the panel's turn zone is the panel grown by
+     * one frame of travel and the frame of travel depends on the screen. */
+    update_speed();
     measure_legend();
     update_turn_distances();
 }
@@ -1108,7 +1119,10 @@ static double turn_towards(double from, double to, double most) {
     return turned;
 }
 
-/* Twelve is instant, zero is a straight line and nothing in between is either.
+/* Twelve is instant, zero is as near a straight line as a bird gets — near, and
+ * not exactly, because a bird that cannot turn at all cannot be turned back by
+ * the edges either: at a true zero the whole flock flew out of the frame within a
+ * second and the screen stayed black until something else was pressed.
  *
  * Scaled by the frame rate, like the speed is, so that both are really per second
  * and a bird's turning circle is the same number of pixels whatever the rate. Left
@@ -1118,7 +1132,14 @@ static double turn_towards(double from, double to, double most) {
  * thirty at sixty. */
 static double turn_limit(void) {
     if (config.turning_notch >= LEGEND_BAR_CELLS) return 2 * M_PI;
-    double per_frame = M_PI * config.turning_notch / LEGEND_BAR_CELLS / 2.0;
+    /* The whole bar is a setting somebody might want: from a sixth of a turn a
+     * frame, which is a long lazy bank that swings wide, up to a quarter.
+     * Measured from zero instead, the bottom third of the travel put between a
+     * tenth and all of the flock outside the screen — at the very bottom no bird
+     * could turn at all, so the edges could not turn them back either and the
+     * whole flock left inside a second — and the bar was half poison, with the
+     * README recommending a value from the poisoned half. */
+    double per_frame = M_PI / 6 + (M_PI / 2 - M_PI / 6) * config.turning_notch / LEGEND_BAR_CELLS;
     double scaled = per_frame * DEFAULT_FRAME_RATE / (double)config.frame_rate;
     return scaled > 2 * M_PI ? 2 * M_PI : scaled;
 }
@@ -2096,6 +2117,14 @@ static kitty_graphics_status_t render_frame(kitty_graphics_t *graphics, bird_t *
 
 static void update_speed(void) {
     config.speed = (double)DEFAULT_SPEED * DEFAULT_FRAME_RATE / config.frame_rate;
+    /* And never more than a tenth of the shorter side in one frame. The step is
+     * fixed in pixels a second, which on a full screen is a bird crossing in half
+     * a second and on a small one is a bird crossing in an eighth: it cannot turn
+     * inside a band it clears in two frames, and one bird in six was off the
+     * screen at forty by fourteen. Above about four hundred and fifty pixels tall
+     * — which is most terminals — this changes nothing. */
+    double shorter = screen.width < screen.height ? screen.width : screen.height;
+    if (shorter > 0 && config.speed > shorter / 10.0) config.speed = shorter / 10.0;
 }
 
 static double notch_value(int notch, double minimum, double maximum) {
@@ -2160,11 +2189,16 @@ typedef struct {
 } preset_t;
 
 static const preset_t PRESETS[] = {
-    {"murmuration", "one great restless body, the starling look", {4, 3, 7, 9, 8, 4}},
-    {"swarm", "tight, fast and nervous, like insects", {5, 8, 9, 3, 3, 8}},
-    {"school", "wide and slow, fish over a reef", {3, 5, 6, 7, 11, 2}},
+    /* No preset takes the boundary below 7 or the frame rate below the default,
+     * whatever else it does. Under either, a preset is not a look, it is a flock
+     * that spends its time outside the frame or jumping five body lengths between
+     * one frame and the next: school had one bird in nine off the screen and calm,
+     * of all of them, was the choppiest thing in the program. */
+    {"murmuration", "one great restless body, the starling look", {7, 3, 7, 9, 8, 6}},
+    {"swarm", "tight, fast and nervous, like insects", {7, 8, 9, 3, 3, 8}},
+    {"school", "wide and slow, fish over a reef", {7, 5, 6, 7, 11, 6}},
     {"storm", "loose and violent, thrown about", {9, 10, 2, 2, 6, 9}},
-    {"calm", "a gentle drift, almost still", {2, 4, 4, 5, 6, 1}},
+    {"calm", "a gentle drift, almost still", {7, 4, 4, 5, 6, 6}},
 };
 enum { PRESET_COUNT = sizeof(PRESETS) / sizeof(*PRESETS) };
 static const char *PRESET_NAMES[PRESET_COUNT + 1];
@@ -2322,6 +2356,11 @@ static void apply_preset_defaults(void) {
     config.alignment_notch = DEFAULT_NOTCH;
     config.vision_notch = DEFAULT_VISION_NOTCH;
     config.rate_notch = DEFAULT_NOTCH;
+    /* These two as well. They are not on the panel, so somebody who has turned
+     * the banking down with t and cannot see what they did has nothing else to
+     * undo it with, and "back to the defaults" left them where they were. */
+    config.turning_notch = DEFAULT_TURNING_NOTCH;
+    config.wind_notch = 0;
     apply_notches();
 }
 

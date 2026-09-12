@@ -338,10 +338,14 @@ state.
 
 The mode line travels in the same buffer as the graphics commands, so it shares
 that atomic frame and the flow control below. It is text rather than a placement,
-which means the per frame placement clear does not remove it: a resize instead
-queues an explicit erase (`CSI 2 J`) ahead of the frame, otherwise the bar drawn
-at the previous size would stay stranded mid screen. Redrawing it every frame
-costs about 110 bytes against the 29 KB a frame of 800 boids already spends.
+which means the per frame placement clear does not remove it: when a resize moves
+the bar, the row it used to sit on is erased by hand (`CSI K` on that row alone),
+otherwise the old bar stays stranded mid screen. It has to be that row alone.
+Clearing the whole screen once the sprites are uploaded deletes them, and every
+later placement then refers to an image that no longer exists, so the flock stops
+being drawn altogether: that is also why the one full erase at startup happens
+before the upload, not after. Redrawing the bar every frame costs about 110 bytes
+against the 29 KB a frame of 800 boids already spends.
 Default placement and z-index IDs are omitted to keep every command compact;
 `C=1` prevents cursor movement and accidental scrolling.
 

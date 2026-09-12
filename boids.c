@@ -167,7 +167,7 @@ typedef struct {
 typedef struct {
     int birds, frame_rate, bird_size, palette, flocks, colour_by;
     int mouse_mode, mouse_reach;
-    int wrap, trails, hawks;
+    int wrap, trails, hawks, shape;
     double speed;
     int vision_cells, vision_radius, vision_radius_squared;
     double separation, alignment, cohesion, boundary;
@@ -572,15 +572,133 @@ static void palette_tint(png_image_t *image, int shade) {
              chosen->mode);
 }
 
+/*
+ * The bird, or something else.
+ *
+ * A shape is a handful of triangles in a unit square, pointing along +x because
+ * that is what frame zero means, rasterised with four samples a pixel so the
+ * edges survive the rotation and the shrink. Drawing them rather than embedding
+ * them means five more sprites for no more bytes, and the only external file the
+ * program will ever read is one the user chose.
+ */
+typedef struct {
+    double x[3], y[3];
+} triangle_t;
+
+typedef struct {
+    const char *name;
+    int count;
+    const triangle_t *triangles;
+    double roundness; /* Radius of a filled circle to union in, zero for none. */
+} shape_t;
+
+static const triangle_t ARROW_TRIANGLES[] = {
+    {{0.05, 0.95, 0.05}, {0.15, 0.50, 0.85}},
+    {{0.05, 0.45, 0.05}, {0.35, 0.50, 0.65}},
+};
+static const triangle_t PLANE_TRIANGLES[] = {
+    {{0.10, 0.95, 0.10}, {0.44, 0.50, 0.56}}, /* Fuselage. */
+    {{0.30, 0.55, 0.20}, {0.48, 0.50, 0.08}}, /* Upper wing. */
+    {{0.30, 0.55, 0.20}, {0.52, 0.50, 0.92}}, /* Lower wing. */
+    {{0.08, 0.22, 0.08}, {0.30, 0.50, 0.70}}, /* Tail. */
+};
+static const triangle_t FISH_TRIANGLES[] = {
+    {{0.05, 0.35, 0.05}, {0.22, 0.50, 0.78}}, /* Tail fin. */
+    {{0.30, 0.62, 0.30}, {0.32, 0.50, 0.68}}, /* Body, front half. */
+    {{0.30, 0.95, 0.30}, {0.42, 0.50, 0.58}}, /* Nose. */
+};
+static const triangle_t BAT_TRIANGLES[] = {
+    {{0.25, 0.85, 0.25}, {0.44, 0.50, 0.56}}, /* Body. */
+    {{0.30, 0.10, 0.55}, {0.46, 0.10, 0.30}}, /* Upper wing. */
+    {{0.30, 0.10, 0.55}, {0.54, 0.90, 0.70}}, /* Lower wing. */
+    {{0.10, 0.35, 0.10}, {0.10, 0.34, 0.40}}, /* Upper wing tip. */
+    {{0.10, 0.35, 0.10}, {0.90, 0.66, 0.60}}, /* Lower wing tip. */
+};
+
+static const shape_t SHAPES[] = {
+    {"bird", 0, NULL, 0.0}, /* The embedded drawing, not a shape at all. */
+    {"arrow", 2, ARROW_TRIANGLES, 0.0},
+    {"plane", 4, PLANE_TRIANGLES, 0.0},
+    {"fish", 3, FISH_TRIANGLES, 0.0},
+    {"bat", 5, BAT_TRIANGLES, 0.0},
+    {"dot", 0, NULL, 0.40},
+};
+enum { SHAPE_COUNT = sizeof(SHAPES) / sizeof(*SHAPES) };
+static const char *SHAPE_NAMES[SHAPE_COUNT + 1];
+
+static void name_the_shapes(void) {
+    for (int i = 0; i < SHAPE_COUNT; i++) SHAPE_NAMES[i] = SHAPES[i].name;
+    SHAPE_NAMES[SHAPE_COUNT] = NULL;
+}
+
+static int inside_triangle(const triangle_t *t, double x, double y) {
+    double d1 = (x - t->x[1]) * (t->y[0] - t->y[1]) - (t->x[0] - t->x[1]) * (y - t->y[1]);
+    double d2 = (x - t->x[2]) * (t->y[1] - t->y[2]) - (t->x[1] - t->x[2]) * (y - t->y[2]);
+    double d3 = (x - t->x[0]) * (t->y[2] - t->y[0]) - (t->x[2] - t->x[0]) * (y - t->y[0]);
+    return (d1 >= 0 && d2 >= 0 && d3 >= 0) || (d1 <= 0 && d2 <= 0 && d3 <= 0);
+}
+
+static int inside_shape(const shape_t *shape, double x, double y) {
+    if (shape->roundness > 0) {
+        double dx = x - 0.5, dy = y - 0.5;
+        if (dx * dx + dy * dy <= shape->roundness * shape->roundness) return 1;
+    }
+    for (int i = 0; i < shape->count; i++)
+        if (inside_triangle(&shape->triangles[i], x, y)) return 1;
+    return 0;
+}
+
+static png_status_t draw_shape(int which, int size, png_image_t *out) {
+    const shape_t *shape = &SHAPES[which];
+    png_status_t status = png_image_alloc(out, size, size);
+    if (status != PNG_OK) return status;
+
+    for (int py = 0; py < size; py++) {
+        for (int px = 0; px < size; px++) {
+            int hits = 0;
+            /* Four samples a pixel: enough of an edge to survive a rotation and a
+             * shrink, and cheap enough to do once at startup. */
+            for (int sy = 0; sy < 2; sy++)
+                for (int sx = 0; sx < 2; sx++)
+                    hits += inside_shape(shape, (px + 0.25 + sx * 0.5) / size,
+                                         (py + 0.25 + sy * 0.5) / size);
+            uint8_t *pixel = out->pixels + ((size_t)py * (size_t)size + (size_t)px) * 4;
+            pixel[0] = pixel[1] = pixel[2] = 255;
+            pixel[3] = (uint8_t)(hits * 255 / 4);
+        }
+    }
+    return PNG_OK;
+}
+
+static const char *sprite_path; /* --sprite, a file of the user's own. */
+
+/* Whichever the user asked for: a PNG of their own, one of the drawn shapes, or
+ * the drawing compiled into the binary. */
+static png_status_t load_sprite(png_image_t *out) {
+    if (sprite_path != NULL) {
+        FILE *file = fopen(sprite_path, "rb");
+        if (file == NULL) {
+            fprintf(stderr, "cbirds: cannot open %s\n", sprite_path);
+            exit(EXIT_FAILURE);
+        }
+        static uint8_t buffer[1 << 22]; /* Four megabytes of PNG is a generous bird. */
+        size_t length = fread(buffer, 1, sizeof(buffer), file);
+        fclose(file);
+        return png_decode(buffer, length, out);
+    }
+    if (config.shape != 0) return draw_shape(config.shape, SPRITE_WORK_MAX, out);
+    return png_decode(sprite_png, sprite_png_len, out);
+}
+
 /* Kitty has no per placement tint, so a colour is a second set of images. The
  * rotation is the expensive half and it does not depend on the colour, so each
  * angle is rotated once and then tinted and encoded per shade: the second shade
  * costs a few hundred microseconds, not another fifty milliseconds. */
 static void build_rotation_frames(image_frame_t *frames, int shades, int size) {
     png_image_t source = {0, 0, NULL}, canvas = {0, 0, NULL};
-    png_status_t status = png_decode(sprite_png, sprite_png_len, &source);
+    png_status_t status = load_sprite(&source);
     if (status != PNG_OK) {
-        fprintf(stderr, "Cannot decode the embedded sprite: %s\n", png_status_string(status));
+        fprintf(stderr, "cbirds: cannot read the sprite: %s\n", png_status_string(status));
         exit(EXIT_FAILURE);
     }
     int canvas_size = size * SPRITE_SUPERSAMPLE;
@@ -1371,6 +1489,10 @@ static const option_t OPTIONS[] = {
      "murmuration, swarm, school, storm, calm", "Flock"},
     {0, "seed", OPTION_INT, &requested_seed, 0, 2147483647, NULL, "N",
      "the same seed gives the same flock", "Flock"},
+    {0, "shape", OPTION_ENUM, &config.shape, 0, 0, SHAPE_NAMES, "NAME",
+     "bird, arrow, plane, fish, bat, dot (default bird)", "Colour"},
+    {0, "sprite", OPTION_STRING, &sprite_path, 0, 0, NULL, "FILE",
+     "a PNG of your own, decoded by our own decoder", "Colour"},
     {0, "hawks", OPTION_INT, &config.hawks, 0, MAX_HAWKS, NULL, "COUNT",
      "predators hunting the flock (default 0)", "Flock"},
     {0, "spell", OPTION_STRING, &requested_spell, 0, 0, NULL, "TEXT",
@@ -1796,6 +1918,7 @@ static void read_options(int argc, char **argv) {
     char error[160];
     name_the_palettes();
     name_the_presets();
+    name_the_shapes();
     options_status_t status =
         options_parse(OPTIONS, OPTION_COUNT, argc, argv, error, sizeof(error));
 
@@ -1837,6 +1960,17 @@ static void read_options(int argc, char **argv) {
             notch_for_integer(requested_perception, MIN_VISION_RADIUS, MAX_VISION_RADIUS);
     }
     apply_notches();
+    /* Checked here rather than where it is used, so every mode reports a bad
+     * sprite the same way and none of them gets halfway into a run first. */
+    if (sprite_path != NULL) {
+        png_image_t probe = {0, 0, NULL};
+        png_status_t status = load_sprite(&probe);
+        if (status != PNG_OK) {
+            fprintf(stderr, "%s: %s: %s\n", argv[0], sprite_path, png_status_string(status));
+            exit(EXIT_FAILURE);
+        }
+        png_image_free(&probe);
+    }
     requested_spell = read_spell_text(requested_spell);
     /* A screensaver has one job and no panel, and anything at all ends it. */
     if (screensaver) {

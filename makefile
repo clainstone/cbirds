@@ -8,7 +8,7 @@ ASSET     = sprite_png.h
 ASSET_SRC = matrix.png
 MKASSET   = mkasset
 TESTDIR   = tests
-TESTS     = $(TESTDIR)/kitty_graphics_test $(TESTDIR)/options_test \
+TESTS     = $(TESTDIR)/kitty_graphics_test $(TESTDIR)/options_test $(TESTDIR)/png_test \
             $(TESTDIR)/spatial_grid_test $(TESTDIR)/boids_test
 
 .PHONY: all clean run asset test
@@ -38,6 +38,9 @@ $(TESTDIR)/kitty_graphics_test: $(TESTDIR)/kitty_graphics_test.c kitty_graphics.
 
 $(TESTDIR)/options_test: $(TESTDIR)/options_test.c options.c options.h
 	$(CC) $(CFLAGS) $< options.c -o $@
+
+$(TESTDIR)/png_test: $(TESTDIR)/png_test.c png.c png.h
+	$(CC) $(CFLAGS) $< png.c -o $@ $(LDLIBS)
 
 $(TESTDIR)/spatial_grid_test: $(TESTDIR)/spatial_grid_test.c spatial_grid.c spatial_grid.h
 	$(CC) $(CFLAGS) $< spatial_grid.c -o $@ $(LDLIBS)

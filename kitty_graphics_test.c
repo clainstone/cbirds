@@ -90,6 +90,21 @@ static void test_synchronized_update(void) {
     kitty_graphics_destroy(&graphics);
 }
 
+static void test_text_and_clear(void) {
+    static const char expected[] = "\033[2J\033[24;1Hbar\033[12;5H\033[7mx\033[0m";
+    kitty_graphics_t graphics;
+
+    assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
+    assert(kitty_graphics_clear_screen(&graphics) == KITTY_GRAPHICS_OK);
+    /* Rows and columns are zero based on the way in, one based on the wire. */
+    assert(kitty_graphics_write_text(&graphics, 23, 0, "bar") == KITTY_GRAPHICS_OK);
+    /* Escape sequences ride inside the text untouched. */
+    assert(kitty_graphics_write_text(&graphics, 11, 4, "\033[7mx\033[0m") == KITTY_GRAPHICS_OK);
+    assert(graphics.length == sizeof(expected) - 1);
+    assert(memcmp(graphics.buffer, expected, sizeof(expected) - 1) == 0);
+    kitty_graphics_destroy(&graphics);
+}
+
 static void test_flush(void) {
     static const uint8_t png[] = {0};
     int descriptors[2];
@@ -151,6 +166,11 @@ static void test_invalid_arguments(void) {
     assert(kitty_graphics_upload_png(&graphics, 0, NULL, 0) == KITTY_GRAPHICS_ERR_ARGUMENT);
     assert(kitty_graphics_place(&graphics, &placement) == KITTY_GRAPHICS_ERR_ARGUMENT);
     assert(kitty_graphics_delete_placement(&graphics, 0, 0) == KITTY_GRAPHICS_ERR_ARGUMENT);
+    assert(kitty_graphics_write_text(&graphics, -1, 0, "x") == KITTY_GRAPHICS_ERR_ARGUMENT);
+    assert(kitty_graphics_write_text(&graphics, 0, -1, "x") == KITTY_GRAPHICS_ERR_ARGUMENT);
+    assert(kitty_graphics_write_text(&graphics, 0, 0, NULL) == KITTY_GRAPHICS_ERR_ARGUMENT);
+    assert(kitty_graphics_write_text(NULL, 0, 0, "x") == KITTY_GRAPHICS_ERR_ARGUMENT);
+    assert(kitty_graphics_clear_screen(NULL) == KITTY_GRAPHICS_ERR_ARGUMENT);
     kitty_graphics_destroy(&graphics);
 }
 
@@ -159,6 +179,7 @@ int main(void) {
     test_chunked_upload();
     test_placement_and_deletion();
     test_synchronized_update();
+    test_text_and_clear();
     test_flush();
     test_nonblocking_flush_backpressure();
     test_invalid_arguments();

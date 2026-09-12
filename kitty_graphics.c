@@ -192,6 +192,18 @@ kitty_graphics_status_t kitty_graphics_delete_image(kitty_graphics_t *graphics, 
     return append_format(graphics, "\033_Ga=d,d=N,I=%" PRIu32 "\033\\", image_id);
 }
 
+kitty_graphics_status_t kitty_graphics_write_text(kitty_graphics_t *graphics, int row, int column,
+                                                  const char *text) {
+    if (graphics == NULL || graphics->output_fd < 0 || row < 0 || column < 0 || text == NULL)
+        return KITTY_GRAPHICS_ERR_ARGUMENT;
+    return append_format(graphics, "\033[%d;%dH%s", row + 1, column + 1, text);
+}
+
+kitty_graphics_status_t kitty_graphics_clear_screen(kitty_graphics_t *graphics) {
+    if (graphics == NULL || graphics->output_fd < 0) return KITTY_GRAPHICS_ERR_ARGUMENT;
+    return append_bytes(graphics, "\033[2J", sizeof("\033[2J") - 1);
+}
+
 kitty_graphics_status_t kitty_graphics_begin_synchronized_update(kitty_graphics_t *graphics) {
     if (graphics == NULL || graphics->output_fd < 0) return KITTY_GRAPHICS_ERR_ARGUMENT;
     return append_bytes(graphics, "\033[?2026h", sizeof("\033[?2026h") - 1);

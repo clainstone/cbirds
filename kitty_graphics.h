@@ -46,6 +46,16 @@ kitty_graphics_status_t kitty_graphics_delete_placement(kitty_graphics_t *graphi
 kitty_graphics_status_t kitty_graphics_delete_all_placements(kitty_graphics_t *graphics);
 kitty_graphics_status_t kitty_graphics_delete_image(kitty_graphics_t *graphics, uint32_t image_id);
 
+/* Queues terminal text at a zero-based cell position. It shares the buffer with
+ * the graphics commands, so it reaches the screen inside the current
+ * synchronized update and through the same flow-controlled flush. Any escape
+ * sequence the caller needs travels inside text. */
+kitty_graphics_status_t kitty_graphics_write_text(kitty_graphics_t *graphics, int row, int column,
+                                                  const char *text);
+
+/* Erases the whole screen, text included, unlike a placement deletion. */
+kitty_graphics_status_t kitty_graphics_clear_screen(kitty_graphics_t *graphics);
+
 /* Brackets a frame with DEC synchronized-update mode. */
 kitty_graphics_status_t kitty_graphics_begin_synchronized_update(kitty_graphics_t *graphics);
 kitty_graphics_status_t kitty_graphics_end_synchronized_update(kitty_graphics_t *graphics);

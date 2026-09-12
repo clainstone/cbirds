@@ -51,6 +51,7 @@ These simple rules create surprisingly realistic emergent behavior resembling na
 - 📦 **Self Contained**: own PNG decoder, encoder and DEFLATE implementation, no zlib, no libpng
 - ⚡ **High Performance**: Handles 800+ boids at 60 FPS on modern hardware
 - 📐 **Responsive Layout**: Automatic adaptation to terminal resizing
+- 📊 **Emacs Style Mode Line**: the active parameters and the key legend on the bottom row
 - 🎮 **Real-time Control**: Interactive parameter adjustment during runtime
 
 ### Customization
@@ -103,7 +104,7 @@ Everything lives in the repository root, there are no subdirectories:
 |---|---|
 | `boids.c` | simulation and terminal handling |
 | `boids_test.c` | grid-versus-brute-force simulation and input tests |
-| `kitty_graphics.c` / `kitty_graphics.h` | buffered Kitty graphics protocol API |
+| `kitty_graphics.c` / `kitty_graphics.h` | buffered Kitty graphics protocol API, plus the terminal text and erase it shares the buffer with |
 | `kitty_graphics_test.c` | protocol formatting and chunking tests |
 | `spatial_grid.c` / `spatial_grid.h` | fixed-size spatial grid and contiguous cell buckets |
 | `spatial_grid_test.c` | spatial lookup and brute-force equivalence tests |
@@ -193,6 +194,26 @@ While the simulation is running, use these keyboard commands:
 #### Performance
 - `R` / `r` - Increase/decrease frame rate by 5 FPS (limited to 30–120)
 
+#### The Mode Line
+
+The bottom row carries a mode line in the Emacs manner, in reverse video, with
+the live parameters and the keys that change them:
+
+```
+-:--- cbirds  800 boids  60fps  (Boids)  b/B 0.20  s/S 0.005  c/C 0.010  a/A 1.5  p/P 3  q quit
+```
+
+The leading sigil follows the Emacs convention for a modified buffer: `-:---`
+while the four weights sit at their defaults, `-:**-` once any of them is
+touched. Three layouts are used depending on the width, the widest from 100
+columns and the most compact from 44; below 44 columns, or 6 rows, the bar is
+dropped and the flock keeps the whole viewport.
+
+The row is reserved: the flock gives it up along with the sprite height that
+would otherwise spill into it, since a Kitty placement is not clipped to its
+cell. At 24 rows of 16 pixels that costs about 8% of the vertical area, at
+1080p about 4%. Note that `demo.gif` above predates the mode line.
+
 ## Configuration
 
 ### Default Parameters
@@ -258,7 +279,7 @@ The simulation follows this execution flow:
    - Process keyboard input and drain any pending terminal output
    - Copy current state for consistent calculations
    - Rebuild the spatial grid from that immutable snapshot
-   - Queue the current positions for rendering
+   - Queue the current positions for rendering, then the mode line on top
    - Calculate neighbor influences from nearby cells
    - Apply flocking rules and update positions
    - Update rotation frame IDs based on new directions
@@ -310,9 +331,17 @@ Image uploads are Base64 encoded and automatically split into protocol chunks
 of at most 4096 bytes by `kitty_graphics.c`.
 
 As in the original fast renderer, each frame uses one global placement clear
-followed by all current placements. The whole operation is wrapped in DEC
-synchronized-update mode (`CSI ? 2026 h` / `CSI ? 2026 l`), so the terminal
-presents it atomically instead of displaying the empty intermediate state.
+followed by all current placements, and then the mode line. The whole operation
+is wrapped in DEC synchronized-update mode (`CSI ? 2026 h` / `CSI ? 2026 l`), so
+the terminal presents it atomically instead of displaying the empty intermediate
+state.
+
+The mode line travels in the same buffer as the graphics commands, so it shares
+that atomic frame and the flow control below. It is text rather than a placement,
+which means the per frame placement clear does not remove it: a resize instead
+queues an explicit erase (`CSI 2 J`) ahead of the frame, otherwise the bar drawn
+at the previous size would stay stranded mid screen. Redrawing it every frame
+costs about 110 bytes against the 29 KB a frame of 800 boids already spends.
 Default placement and z-index IDs are omitted to keep every command compact;
 `C=1` prevents cursor movement and accidental scrolling.
 

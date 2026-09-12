@@ -47,8 +47,22 @@ enum {
     SPATIAL_CELL_SIZE = 12,
     DEFAULT_VISION_CELLS = 3,
     MIN_VISION_CELLS = 1,
-    MAX_VISION_CELLS = 5
+    MAX_VISION_CELLS = 5,
+    /* Legend widths, in columns: below the narrowest the bar is dropped and the
+     * flock keeps the whole viewport. */
+    LEGEND_NARROW_COLS = 44,
+    LEGEND_MEDIUM_COLS = 74,
+    LEGEND_WIDE_COLS = 100,
+    LEGEND_MIN_ROWS = 6,
+    LEGEND_TEXT_MAX = 256,
+    LEGEND_LINE_MAX = LEGEND_TEXT_MAX + 16
 };
+
+/* Needed in the config initializer, so macros rather than constants. */
+#define DEFAULT_SEPARATION_W 0.005
+#define DEFAULT_ALIGNMENT_W 1.5
+#define DEFAULT_COHESION_W 0.01
+#define DEFAULT_BOUNDARY_W 0.2
 
 static const double BOUNDARY_STEP = 0.02;
 static const double BOUNDARY_MIN = 0.01;
@@ -82,6 +96,7 @@ typedef struct {
 typedef struct {
     int width, height, cols, rows;
     int cell_width, cell_height, turn_x, turn_y, turn_bottom;
+    int legend_row; /* Zero-based row of the legend, negative when there is none. */
 } screen_t;
 
 typedef struct {
@@ -100,12 +115,14 @@ static config_t config = {
     .vision_radius = DEFAULT_VISION_CELLS * SPATIAL_CELL_SIZE,
     .vision_radius_squared =
         DEFAULT_VISION_CELLS * SPATIAL_CELL_SIZE * DEFAULT_VISION_CELLS * SPATIAL_CELL_SIZE,
-    .separation = 0.005,
-    .alignment = 1.5,
-    .cohesion = 0.01,
-    .boundary = 0.2,
+    .separation = DEFAULT_SEPARATION_W,
+    .alignment = DEFAULT_ALIGNMENT_W,
+    .cohesion = DEFAULT_COHESION_W,
+    .boundary = DEFAULT_BOUNDARY_W,
 };
 static screen_t screen;
+/* Placements are cleared every frame, text is not: a resize has to erase. */
+static int screen_changed;
 static struct termios saved_termios;
 static volatile sig_atomic_t terminal_is_raw;
 static volatile sig_atomic_t terminal_restored;
@@ -182,14 +199,28 @@ static void update_turn_distances(void) {
     if (screen.turn_bottom < 1) screen.turn_bottom = 1;
 }
 
-static void update_screen_dimensions(void) {
-    struct winsize size;
-    memset(&size, 0, sizeof(size));
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0) memset(&size, 0, sizeof(size));
-    screen.cols = size.ws_col ? size.ws_col : DEFAULT_COLS;
-    screen.rows = size.ws_row ? size.ws_row : DEFAULT_ROWS;
-    screen.width = size.ws_xpixel;
-    screen.height = size.ws_ypixel;
+/* The legend is text, and a Kitty placement is not clipped to its cell, so the
+ * flock gives up the last row plus the sprite height that would spill into it.
+ * Every later derivation works off the reduced height, which is what keeps the
+ * bands, the grid and the placement bounds consistent with it. */
+static void reserve_legend_row(void) {
+    screen.legend_row = -1;
+    if (screen.rows < LEGEND_MIN_ROWS || screen.cols < LEGEND_NARROW_COLS) return;
+
+    int height = (screen.rows - 1) * screen.cell_height - config.bird_size;
+    if (height < screen.cell_height) return; /* Not enough left to fly in. */
+    screen.legend_row = screen.rows - 1;
+    screen.rows--;
+    screen.height = height;
+}
+
+/* Split out of the ioctl query so the tests drive the real derivation. */
+static void apply_screen_size(int cols, int rows, int pixel_width, int pixel_height) {
+    int previous_cols = screen.cols, previous_rows = screen.rows;
+    screen.cols = cols > 0 ? cols : DEFAULT_COLS;
+    screen.rows = rows > 0 ? rows : DEFAULT_ROWS;
+    screen.width = pixel_width;
+    screen.height = pixel_height;
     if (screen.width <= 0 || screen.height <= 0) {
         screen.width = screen.cols * DEFAULT_CELL_WIDTH;
         screen.height = screen.rows * DEFAULT_CELL_HEIGHT;
@@ -198,7 +229,16 @@ static void update_screen_dimensions(void) {
     screen.cell_height = screen.height / screen.rows;
     if (screen.cell_width < 1) screen.cell_width = 1;
     if (screen.cell_height < 1) screen.cell_height = 1;
+    reserve_legend_row();
     update_turn_distances();
+    if (screen.cols != previous_cols || screen.rows != previous_rows) screen_changed = 1;
+}
+
+static void update_screen_dimensions(void) {
+    struct winsize size;
+    memset(&size, 0, sizeof(size));
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0) memset(&size, 0, sizeof(size));
+    apply_screen_size(size.ws_col, size.ws_row, size.ws_xpixel, size.ws_ypixel);
 }
 
 static void build_rotation_frames(image_frame_t frames[ROTATION_FRAMES]) {
@@ -390,14 +430,63 @@ static int bird_placement(const bird_t *bird, kitty_graphics_placement_t *placem
     return 1;
 }
 
+static int weights_are_default(void) {
+    return config.boundary == DEFAULT_BOUNDARY_W && config.separation == DEFAULT_SEPARATION_W &&
+           config.cohesion == DEFAULT_COHESION_W && config.alignment == DEFAULT_ALIGNMENT_W;
+}
+
+/* An Emacs mode line. The sigil follows the convention for a modified buffer:
+ * dashes while the weights sit at their defaults, stars once one is touched.
+ * Three widths, because truncating in the middle of a field reads as a glitch. */
+static void build_legend(char *line, size_t size) {
+    const char *sigil = weights_are_default() ? "-:---" : "-:**-";
+    char text[LEGEND_TEXT_MAX];
+
+    if (screen.cols >= LEGEND_WIDE_COLS)
+        snprintf(text, sizeof(text),
+                 "%s cbirds  %d boids  %dfps  (Boids)  b/B %.2f  s/S %.3f  c/C %.3f  a/A %.1f  "
+                 "p/P %d  q quit",
+                 sigil, config.birds, config.frame_rate, config.boundary, config.separation,
+                 config.cohesion, config.alignment, config.vision_cells);
+    else if (screen.cols >= LEGEND_MEDIUM_COLS)
+        snprintf(text, sizeof(text),
+                 "%s b/B %.2f  s/S %.3f  c/C %.3f  a/A %.1f  p/P %d  r/R %d  q quit", sigil,
+                 config.boundary, config.separation, config.cohesion, config.alignment,
+                 config.vision_cells, config.frame_rate);
+    else
+        snprintf(text, sizeof(text), "%s b%.2f s%.3f c%.3f a%.1f p%d r%d q", sigil, config.boundary,
+                 config.separation, config.cohesion, config.alignment, config.vision_cells,
+                 config.frame_rate);
+
+    /* Never wider than the viewport: a wrapped mode line would scroll the flock
+     * off the top of the screen. The erase to end of line paints the rest of the
+     * bar in the reversed background, so there is nothing to pad. */
+    if (strlen(text) > (size_t)screen.cols) text[screen.cols] = '\0';
+    snprintf(line, size, "\033[7m\033[K%s\033[0m", text);
+}
+
+static kitty_graphics_status_t queue_legend(kitty_graphics_t *graphics) {
+    char line[LEGEND_LINE_MAX];
+    if (screen.legend_row < 0) return KITTY_GRAPHICS_OK;
+    build_legend(line, sizeof(line));
+    return kitty_graphics_write_text(graphics, screen.legend_row, 0, line);
+}
+
 static kitty_graphics_status_t queue_render_frame(kitty_graphics_t *graphics, const bird_t *birds) {
     kitty_graphics_status_t status = kitty_graphics_begin_synchronized_update(graphics);
+    /* A shrunk viewport leaves the old legend stranded mid screen, and only an
+     * erase removes text: deleting placements does not. */
+    if (status == KITTY_GRAPHICS_OK && screen_changed) {
+        status = kitty_graphics_clear_screen(graphics);
+        if (status == KITTY_GRAPHICS_OK) screen_changed = 0;
+    }
     if (status == KITTY_GRAPHICS_OK) status = kitty_graphics_delete_all_placements(graphics);
     for (int i = 0; status == KITTY_GRAPHICS_OK && i < config.birds; i++) {
         kitty_graphics_placement_t placement;
         if (bird_placement(&birds[i], &placement))
             status = kitty_graphics_place(graphics, &placement);
     }
+    if (status == KITTY_GRAPHICS_OK) status = queue_legend(graphics);
     if (status == KITTY_GRAPHICS_OK) status = kitty_graphics_end_synchronized_update(graphics);
     return status;
 }

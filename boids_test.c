@@ -326,6 +326,34 @@ static void test_legend_sigil_tracks_the_weights(void) {
     assert(strncmp(legend_text(line), "-:---", 5) == 0);
 }
 
+static void test_weights_stop_at_their_ceiling(void) {
+    char keys[INPUT_BUFFER_SIZE + 1];
+
+    reset_test_config();
+    memset(keys, 'B', sizeof(keys) - 1);
+    keys[sizeof(keys) - 1] = '\0';
+    for (int i = 0; i < 5; i++) assert(feed_input(keys) == 1);
+    assert(config.boundary == BOUNDARY_MAX);
+
+    memset(keys, 'A', sizeof(keys) - 1);
+    for (int i = 0; i < 5; i++) assert(feed_input(keys) == 1);
+    assert(config.alignment == ALIGNMENT_MAX);
+
+    memset(keys, 'S', sizeof(keys) - 1);
+    for (int i = 0; i < 5; i++) assert(feed_input(keys) == 1);
+    assert(config.separation == SEPARATION_MAX);
+
+    memset(keys, 'C', sizeof(keys) - 1);
+    for (int i = 0; i < 5; i++) assert(feed_input(keys) == 1);
+    assert(config.cohesion == COHESION_MAX);
+
+    /* The floors still work, and the pair still meets in the middle. */
+    memset(keys, 'b', sizeof(keys) - 1);
+    for (int i = 0; i < 5; i++) assert(feed_input(keys) == 1);
+    assert(config.boundary == BOUNDARY_MIN);
+    reset_test_config();
+}
+
 static void test_vision_controls(void) {
     config.vision_cells = DEFAULT_VISION_CELLS;
     update_vision_radius();
@@ -505,6 +533,7 @@ int main(void) {
     test_boundary_bands_follow_the_viewport();
     test_bottom_band_scales_on_a_short_viewport();
     test_birds_start_spread_inside_the_free_region();
+    test_weights_stop_at_their_ceiling();
     test_vision_controls();
     test_frame_rate_controls();
     test_flicker_free_render_queue();

@@ -45,19 +45,26 @@ enum {
     DEFAULT_SPEED = 40,
     DEFAULT_BIRD_SIZE = 15,
     SPATIAL_CELL_SIZE = 12,
-    DEFAULT_VISION_CELLS = 3,
-    MIN_VISION_CELLS = 1,
-    MAX_VISION_CELLS = 5,
+    /* Perception is tuned as a radius in pixels rather than in whole grid cells,
+     * which is what lets it share the twelve notch travel: the cell scan derives
+     * from it, and the distance test was always the exact radius anyway. Sixty
+     * pixels is the five cell ceiling it had before. */
+    MIN_VISION_RADIUS = 12,
+    MAX_VISION_RADIUS = 60,
+    DEFAULT_VISION_RADIUS = 36,
+    MAX_VISION_CELLS = MAX_VISION_RADIUS / SPATIAL_CELL_SIZE,
     /* The parameter panel, anchored to the top left corner. Its size in cells is
      * fixed: it follows the longest parameter name and the bar, never the
      * terminal. Below the minimum viewport it is dropped and the flock keeps
      * everything; the minimums leave a corridor to the right of the panel and
      * one underneath it. */
-    LEGEND_COLUMNS = 28,
+    LEGEND_COLUMNS = 32,
     LEGEND_ROWS = 10,
-    LEGEND_BAR_CELLS = 8,
+    /* One notch a keypress, so this is also the number of steps every parameter
+     * travels through, from its floor to its ceiling. */
+    LEGEND_BAR_CELLS = 12,
     LEGEND_NAME_WIDTH = 10,
-    LEGEND_MIN_COLS = 40,
+    LEGEND_MIN_COLS = 44,
     LEGEND_MIN_ROWS = 14,
     LEGEND_LINE_MAX = 128,
     SPAWN_ATTEMPTS = 32
@@ -73,22 +80,21 @@ static const double LEGEND_PUSH = 100000.0;
 #define DEFAULT_COHESION_W 0.01
 #define DEFAULT_BOUNDARY_W 0.2
 
-static const double BOUNDARY_STEP = 0.02;
 static const double BOUNDARY_MIN = 0.01;
-static const double SEPARATION_STEP = 0.001;
 static const double SEPARATION_MIN = 0.001;
-static const double COHESION_STEP = 0.002;
 static const double COHESION_MIN = 0.002;
-static const double ALIGNMENT_STEP = 0.1;
 static const double ALIGNMENT_MIN = 0.1;
 
-/* Three times the default each. The weights used to rise without a limit, which
- * left a slider nothing to fill against; this also puts every default at a third
- * of its travel and keeps a keypress worth between two and six cells of bar. */
-static const double BOUNDARY_MAX = 3 * DEFAULT_BOUNDARY_W;
-static const double SEPARATION_MAX = 3 * DEFAULT_SEPARATION_W;
-static const double COHESION_MAX = 3 * DEFAULT_COHESION_W;
-static const double ALIGNMENT_MAX = 3 * DEFAULT_ALIGNMENT_W;
+/* Each ceiling is placed so that the default lands exactly on the fourth of
+ * twelve notches, a third along the bar. There are no step constants any more:
+ * a step is one notch, which is a twelfth of the travel by construction, and
+ * that is what makes a keypress worth exactly one cell of bar. */
+#define DEFAULT_NOTCH 4
+#define NOTCH_CEILING(minimum, default_value) ((minimum) + 3 * ((default_value) - (minimum)))
+static const double BOUNDARY_MAX = NOTCH_CEILING(0.01, DEFAULT_BOUNDARY_W);
+static const double SEPARATION_MAX = NOTCH_CEILING(0.001, DEFAULT_SEPARATION_W);
+static const double COHESION_MAX = NOTCH_CEILING(0.002, DEFAULT_COHESION_W);
+static const double ALIGNMENT_MAX = NOTCH_CEILING(0.1, DEFAULT_ALIGNMENT_W);
 
 #define ALT_SCREEN_ON "\033[?1049h"
 #define ALT_SCREEN_OFF "\033[?1049l"
@@ -121,6 +127,11 @@ typedef struct {
     double speed;
     int vision_cells, vision_radius, vision_radius_squared;
     double separation, alignment, cohesion, boundary;
+    /* Notch positions, zero to LEGEND_BAR_CELLS. These are the state the keys
+     * move; every value above is derived from them, which is what makes one
+     * keypress exactly one notch of bar rather than nearly one. */
+    int boundary_notch, separation_notch, cohesion_notch, alignment_notch;
+    int vision_notch, rate_notch;
 } config_t;
 
 static config_t config = {
@@ -128,14 +139,20 @@ static config_t config = {
     .frame_rate = DEFAULT_FRAME_RATE,
     .speed = DEFAULT_SPEED,
     .bird_size = DEFAULT_BIRD_SIZE,
-    .vision_cells = DEFAULT_VISION_CELLS,
-    .vision_radius = DEFAULT_VISION_CELLS * SPATIAL_CELL_SIZE,
-    .vision_radius_squared =
-        DEFAULT_VISION_CELLS * SPATIAL_CELL_SIZE * DEFAULT_VISION_CELLS * SPATIAL_CELL_SIZE,
+    .vision_cells = DEFAULT_VISION_RADIUS / SPATIAL_CELL_SIZE,
+    .vision_radius = DEFAULT_VISION_RADIUS,
+    .vision_radius_squared = DEFAULT_VISION_RADIUS * DEFAULT_VISION_RADIUS,
     .separation = DEFAULT_SEPARATION_W,
     .alignment = DEFAULT_ALIGNMENT_W,
     .cohesion = DEFAULT_COHESION_W,
     .boundary = DEFAULT_BOUNDARY_W,
+    .boundary_notch = DEFAULT_NOTCH,
+    .separation_notch = DEFAULT_NOTCH,
+    .cohesion_notch = DEFAULT_NOTCH,
+    .alignment_notch = DEFAULT_NOTCH,
+    /* Twelve to sixty pixels in steps of four: thirty six is the sixth notch. */
+    .vision_notch = 6,
+    .rate_notch = DEFAULT_NOTCH,
 };
 static screen_t screen;
 static int legend_enabled = 1; /* Cleared by --no-legend, never at runtime. */
@@ -483,26 +500,17 @@ static int bird_placement(const bird_t *bird, kitty_graphics_placement_t *placem
     return 1;
 }
 
-/* Fraction of a parameter's travel, so a slider empties completely on its floor
- * rather than stopping short of it. */
-static int bar_cells(double value, double minimum, double maximum) {
-    double fraction = (value - minimum) / (maximum - minimum);
-    if (fraction < 0) fraction = 0;
-    if (fraction > 1) fraction = 1;
-    return (int)(fraction * LEGEND_BAR_CELLS + 0.5);
-}
-
 /* One slider row: the name, the bar, and the two keys that move it, the lowering
- * one first because that is the end of the bar it works from. No number: the bar
- * is the readout. */
-static void legend_slider(char *line, size_t size, const char *name, double value, double minimum,
-                          double maximum, char lower, char raise) {
+ * one first because that is the end of the bar it works from. The filled length
+ * is the notch itself, not a value scaled into cells, so a keypress moves the bar
+ * by exactly one cell and nothing rounds. No number: the bar is the readout. */
+static void legend_slider(char *line, size_t size, const char *name, int notch, char lower,
+                          char raise) {
     char bar[LEGEND_BAR_CELLS * 3 + 1];
-    int filled = bar_cells(value, minimum, maximum);
     size_t at = 0;
 
     for (int cell = 0; cell < LEGEND_BAR_CELLS; cell++) {
-        const char *glyph = cell < filled ? "\u2593" : "\u2591";
+        const char *glyph = cell < notch ? "\u2593" : "\u2591";
         memcpy(bar + at, glyph, 3);
         at += 3;
     }
@@ -521,18 +529,12 @@ static void build_legend(char lines[LEGEND_ROWS][LEGEND_LINE_MAX]) {
     for (int i = 0; i < inner; i++, at += 3) memcpy(lines[0] + at, "\u2500", 3);
     memcpy(lines[0] + at, "\u256e", 4);
 
-    legend_slider(lines[1], LEGEND_LINE_MAX, "boundary", config.boundary, BOUNDARY_MIN,
-                  BOUNDARY_MAX, 'b', 'B');
-    legend_slider(lines[2], LEGEND_LINE_MAX, "separation", config.separation, SEPARATION_MIN,
-                  SEPARATION_MAX, 's', 'S');
-    legend_slider(lines[3], LEGEND_LINE_MAX, "cohesion", config.cohesion, COHESION_MIN,
-                  COHESION_MAX, 'c', 'C');
-    legend_slider(lines[4], LEGEND_LINE_MAX, "alignment", config.alignment, ALIGNMENT_MIN,
-                  ALIGNMENT_MAX, 'a', 'A');
-    legend_slider(lines[5], LEGEND_LINE_MAX, "perception", config.vision_cells, MIN_VISION_CELLS,
-                  MAX_VISION_CELLS, 'p', 'P');
-    legend_slider(lines[6], LEGEND_LINE_MAX, "rate", config.frame_rate, MIN_FRAME_RATE,
-                  MAX_FRAME_RATE, 'r', 'R');
+    legend_slider(lines[1], LEGEND_LINE_MAX, "boundary", config.boundary_notch, 'b', 'B');
+    legend_slider(lines[2], LEGEND_LINE_MAX, "separation", config.separation_notch, 's', 'S');
+    legend_slider(lines[3], LEGEND_LINE_MAX, "cohesion", config.cohesion_notch, 'c', 'C');
+    legend_slider(lines[4], LEGEND_LINE_MAX, "alignment", config.alignment_notch, 'a', 'A');
+    legend_slider(lines[5], LEGEND_LINE_MAX, "perception", config.vision_notch, 'p', 'P');
+    legend_slider(lines[6], LEGEND_LINE_MAX, "rate", config.rate_notch, 'r', 'R');
 
     snprintf(lines[7], LEGEND_LINE_MAX, "\u2502 %*s \u2502", inner - 2, "");
     snprintf(lines[8], LEGEND_LINE_MAX, "\u2502 %-*s q%*s \u2502", LEGEND_NAME_WIDTH, "quit",
@@ -598,9 +600,31 @@ static void update_speed(void) {
     config.speed = (double)DEFAULT_SPEED * DEFAULT_FRAME_RATE / config.frame_rate;
 }
 
-static void update_vision_radius(void) {
-    config.vision_radius = config.vision_cells * SPATIAL_CELL_SIZE;
+static double notch_value(int notch, double minimum, double maximum) {
+    return minimum + (maximum - minimum) * notch / LEGEND_BAR_CELLS;
+}
+
+static int notch_integer(int notch, int minimum, int maximum) {
+    return minimum + ((maximum - minimum) * notch + LEGEND_BAR_CELLS / 2) / LEGEND_BAR_CELLS;
+}
+
+/* Derives every tunable from its notch. Called after any key that moves one, so
+ * the values and the bars can never disagree. */
+static void apply_notches(void) {
+    config.boundary = notch_value(config.boundary_notch, BOUNDARY_MIN, BOUNDARY_MAX);
+    config.separation = notch_value(config.separation_notch, SEPARATION_MIN, SEPARATION_MAX);
+    config.cohesion = notch_value(config.cohesion_notch, COHESION_MIN, COHESION_MAX);
+    config.alignment = notch_value(config.alignment_notch, ALIGNMENT_MIN, ALIGNMENT_MAX);
+
+    config.vision_radius = notch_integer(config.vision_notch, MIN_VISION_RADIUS, MAX_VISION_RADIUS);
     config.vision_radius_squared = config.vision_radius * config.vision_radius;
+    /* The block of cells the search sweeps has to cover the radius, so it rounds
+     * up: a radius that is not a whole number of cells still needs the cell it
+     * reaches into. */
+    config.vision_cells = (config.vision_radius + SPATIAL_CELL_SIZE - 1) / SPATIAL_CELL_SIZE;
+
+    config.frame_rate = notch_integer(config.rate_notch, MIN_FRAME_RATE, MAX_FRAME_RATE);
+    update_speed();
 }
 
 static int handle_input(void) {
@@ -610,6 +634,7 @@ static int handle_input(void) {
     ssize_t length = read(STDIN_FILENO, input, sizeof(input));
     for (ssize_t i = 0; i < length; i++) {
         unsigned char key = (unsigned char)input[i];
+        int *notch = NULL, step = 0;
         if (input_state == INPUT_ESCAPE) {
             if (key == '[' || key == 'O')
                 input_state = INPUT_SEQUENCE;
@@ -630,77 +655,60 @@ static int handle_input(void) {
             case 'q':
                 return 0;
             case 'B':
-                if (config.boundary < BOUNDARY_MAX) {
-                    config.boundary += BOUNDARY_STEP;
-                    if (config.boundary > BOUNDARY_MAX) config.boundary = BOUNDARY_MAX;
-                }
+                notch = &config.boundary_notch;
+                step = 1;
                 break;
             case 'b':
-                if (config.boundary > BOUNDARY_MIN) {
-                    config.boundary -= BOUNDARY_STEP;
-                    if (config.boundary < BOUNDARY_MIN) config.boundary = BOUNDARY_MIN;
-                }
+                notch = &config.boundary_notch;
+                step = -1;
                 break;
             case 'S':
-                if (config.separation < SEPARATION_MAX) {
-                    config.separation += SEPARATION_STEP;
-                    if (config.separation > SEPARATION_MAX) config.separation = SEPARATION_MAX;
-                }
+                notch = &config.separation_notch;
+                step = 1;
                 break;
             case 's':
-                if (config.separation > SEPARATION_MIN) {
-                    config.separation -= SEPARATION_STEP;
-                    if (config.separation < SEPARATION_MIN) config.separation = SEPARATION_MIN;
-                }
+                notch = &config.separation_notch;
+                step = -1;
                 break;
             case 'C':
-                if (config.cohesion < COHESION_MAX) {
-                    config.cohesion += COHESION_STEP;
-                    if (config.cohesion > COHESION_MAX) config.cohesion = COHESION_MAX;
-                }
+                notch = &config.cohesion_notch;
+                step = 1;
                 break;
             case 'c':
-                if (config.cohesion > COHESION_MIN) {
-                    config.cohesion -= COHESION_STEP;
-                    if (config.cohesion < COHESION_MIN) config.cohesion = COHESION_MIN;
-                }
+                notch = &config.cohesion_notch;
+                step = -1;
                 break;
             case 'A':
-                if (config.alignment < ALIGNMENT_MAX) {
-                    config.alignment += ALIGNMENT_STEP;
-                    if (config.alignment > ALIGNMENT_MAX) config.alignment = ALIGNMENT_MAX;
-                }
+                notch = &config.alignment_notch;
+                step = 1;
                 break;
             case 'a':
-                if (config.alignment > ALIGNMENT_MIN) {
-                    config.alignment -= ALIGNMENT_STEP;
-                    if (config.alignment < ALIGNMENT_MIN) config.alignment = ALIGNMENT_MIN;
-                }
-                break;
-            case 'R':
-                if (config.frame_rate < MAX_FRAME_RATE) {
-                    config.frame_rate += FRAME_RATE_STEP;
-                    if (config.frame_rate > MAX_FRAME_RATE) config.frame_rate = MAX_FRAME_RATE;
-                    update_speed();
-                }
-                break;
-            case 'r':
-                if (config.frame_rate > MIN_FRAME_RATE) {
-                    config.frame_rate -= FRAME_RATE_STEP;
-                    if (config.frame_rate < MIN_FRAME_RATE) config.frame_rate = MIN_FRAME_RATE;
-                    update_speed();
-                }
+                notch = &config.alignment_notch;
+                step = -1;
                 break;
             case 'P':
-                if (config.vision_cells < MAX_VISION_CELLS) config.vision_cells++;
+                notch = &config.vision_notch;
+                step = 1;
                 break;
             case 'p':
-                if (config.vision_cells > MIN_VISION_CELLS) config.vision_cells--;
+                notch = &config.vision_notch;
+                step = -1;
+                break;
+            case 'R':
+                notch = &config.rate_notch;
+                step = 1;
+                break;
+            case 'r':
+                notch = &config.rate_notch;
+                step = -1;
                 break;
             default:
                 continue;
         }
-        update_vision_radius();
+        *notch += step;
+        if (*notch < 0) *notch = 0;
+        if (*notch > LEGEND_BAR_CELLS) *notch = LEGEND_BAR_CELLS;
+        apply_notches();
     }
     return 1;
 }
@@ -721,7 +729,7 @@ static void usage(const char *program) {
     fprintf(stderr,
             "Usage: %s [-n BIRDS] [-f FPS] [-s SIZE] [--no-legend]\n"
             "  -n NUMBER    number of boids (default 800, max %d)\n"
-            "  -f FPS       frame rate (default %d, from %d to %d)\n"
+            "  -f FPS       frame rate (default %d, from %d to %d, snapped to a step)\n"
             "  -s SIZE      bird size in pixels (default %d, from %d to %d)\n"
             "  --no-legend  hide the parameter panel, the flock keeps the corner\n"
             "  -h           show this help\n",
@@ -769,8 +777,12 @@ static void read_options(int argc, char **argv) {
                         MAX_FRAME_RATE);
                 exit(EXIT_FAILURE);
             }
-            config.frame_rate = (int)value;
-            update_speed();
+            /* Snapped to the nearest notch: the notch is the state the keys
+             * move, so a frame rate off that grid could not be one. */
+            config.rate_notch = (int)(((value - MIN_FRAME_RATE) * LEGEND_BAR_CELLS +
+                                       (MAX_FRAME_RATE - MIN_FRAME_RATE) / 2) /
+                                      (MAX_FRAME_RATE - MIN_FRAME_RATE));
+            apply_notches();
         } else {
             if (value < MIN_BIRD_SIZE || value > MAX_BIRD_SIZE) {
                 fprintf(stderr, "Bird size must be between %d and %d\n", MIN_BIRD_SIZE,

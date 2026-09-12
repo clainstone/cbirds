@@ -60,13 +60,13 @@ static void reset_test_config(void) {
     config.birds = 800;
     config.frame_rate = DEFAULT_FRAME_RATE;
     config.bird_size = DEFAULT_BIRD_SIZE;
-    config.vision_cells = DEFAULT_VISION_CELLS;
-    config.separation = DEFAULT_SEPARATION_W;
-    config.alignment = DEFAULT_ALIGNMENT_W;
-    config.cohesion = DEFAULT_COHESION_W;
-    config.boundary = DEFAULT_BOUNDARY_W;
-    update_speed();
-    update_vision_radius();
+    config.boundary_notch = DEFAULT_NOTCH;
+    config.separation_notch = DEFAULT_NOTCH;
+    config.cohesion_notch = DEFAULT_NOTCH;
+    config.alignment_notch = DEFAULT_NOTCH;
+    config.vision_notch = 6;
+    config.rate_notch = DEFAULT_NOTCH;
+    apply_notches();
 }
 
 /* The panel is drawn with multi byte glyphs, so its width is a count of cells,
@@ -128,9 +128,8 @@ static void test_engine_matches_brute_force(void) {
     assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRD_COUNT) == SPATIAL_GRID_OK);
     assert(spatial_grid_build(&grid, BIRD_COUNT, read_bird_position, snapshot) == SPATIAL_GRID_OK);
 
-    for (config.vision_cells = MIN_VISION_CELLS; config.vision_cells <= MAX_VISION_CELLS;
-         config.vision_cells++) {
-        update_vision_radius();
+    for (config.vision_notch = 0; config.vision_notch <= LEGEND_BAR_CELLS; config.vision_notch++) {
+        apply_notches();
         for (int i = 0; i < BIRD_COUNT; i++) {
             double expected = brute_force_flock_direction(snapshot, i);
             double actual = flock_direction(snapshot, &grid, i);
@@ -138,8 +137,8 @@ static void test_engine_matches_brute_force(void) {
         }
     }
 
-    config.vision_cells = DEFAULT_VISION_CELLS;
-    update_vision_radius();
+    config.vision_notch = 6;
+    apply_notches();
     memcpy(optimized, snapshot, sizeof(snapshot));
     memcpy(reference, snapshot, sizeof(snapshot));
     update_birds(optimized, snapshot, &grid);
@@ -287,77 +286,128 @@ static void test_legend_panel_layout(void) {
         for (const char *c = lines[row]; *c; c++) assert(!(*c >= '0' && *c <= '9'));
 }
 
-static void test_legend_bars_span_their_travel(void) {
-    char lines[LEGEND_ROWS][LEGEND_LINE_MAX];
-
-    reset_test_config();
-    apply_screen_size(80, 24, 80 * 8, 24 * 16);
-    assert(bar_cells(BOUNDARY_MIN, BOUNDARY_MIN, BOUNDARY_MAX) == 0);
-    assert(bar_cells(BOUNDARY_MAX, BOUNDARY_MIN, BOUNDARY_MAX) == LEGEND_BAR_CELLS);
-    assert(bar_cells(ALIGNMENT_MIN, ALIGNMENT_MIN, ALIGNMENT_MAX) == 0);
-    assert(bar_cells(ALIGNMENT_MAX, ALIGNMENT_MIN, ALIGNMENT_MAX) == LEGEND_BAR_CELLS);
-    /* Out of range cannot overflow the bar either way. */
-    assert(bar_cells(-1, BOUNDARY_MIN, BOUNDARY_MAX) == 0);
-    assert(bar_cells(99, BOUNDARY_MIN, BOUNDARY_MAX) == LEGEND_BAR_CELLS);
-
-    /* Monotone, and every default sits partway along its travel. */
-    int previous = -1;
-    for (double v = BOUNDARY_MIN; v <= BOUNDARY_MAX; v += BOUNDARY_STEP / 4) {
-        int cells = bar_cells(v, BOUNDARY_MIN, BOUNDARY_MAX);
-        assert(cells >= previous);
-        previous = cells;
-    }
-    assert(bar_cells(DEFAULT_BOUNDARY_W, BOUNDARY_MIN, BOUNDARY_MAX) > 0);
-    assert(bar_cells(DEFAULT_BOUNDARY_W, BOUNDARY_MIN, BOUNDARY_MAX) < LEGEND_BAR_CELLS);
-
-    /* A single keypress has to move the bar, which is what the ceilings buy:
-     * the coarsest parameter must not need more than six presses per cell. */
-    static const struct {
-        double step, min, max;
-    } travel[] = {{BOUNDARY_STEP, BOUNDARY_MIN, BOUNDARY_MAX},
-                  {SEPARATION_STEP, SEPARATION_MIN, SEPARATION_MAX},
-                  {COHESION_STEP, COHESION_MIN, COHESION_MAX},
-                  {ALIGNMENT_STEP, ALIGNMENT_MIN, ALIGNMENT_MAX}};
-    for (size_t i = 0; i < sizeof(travel) / sizeof(*travel); i++) {
-        double presses_per_cell =
-            (travel[i].max - travel[i].min) / travel[i].step / LEGEND_BAR_CELLS;
-        assert(presses_per_cell <= 6.0);
-    }
-
-    /* The rendered bar follows the value. */
-    config.boundary = BOUNDARY_MIN;
-    build_legend(lines);
-    assert(strstr(lines[1], "\u2593") == NULL); /* Nothing filled on the floor. */
-    config.boundary = BOUNDARY_MAX;
-    build_legend(lines);
-    assert(strstr(lines[1], "\u2591") == NULL); /* Nothing empty on the ceiling. */
+/* Counts the filled cells of one slider row as it is actually drawn, which is
+ * what the eye sees and therefore what the requirement is about. */
+static int filled_cells(const char *line) {
+    int filled = 0;
+    for (const char *c = line; (c = strstr(c, "\u2593")) != NULL; c += 3) filled++;
+    return filled;
 }
 
-static void test_weights_stop_at_their_ceiling(void) {
-    char keys[INPUT_BUFFER_SIZE + 1];
+/* The requirement: one keypress moves the bar by exactly one cell, for every
+ * parameter, everywhere along its travel. */
+static void test_one_keypress_is_one_cell(void) {
+    char lines[LEGEND_ROWS][LEGEND_LINE_MAX];
+    static const struct {
+        int row;
+        char raise, lower;
+    } sliders[] = {{1, 'B', 'b'}, {2, 'S', 's'}, {3, 'C', 'c'},
+                   {4, 'A', 'a'}, {5, 'P', 'p'}, {6, 'R', 'r'}};
 
+    apply_screen_size(80, 24, 80 * 8, 24 * 16);
+    for (size_t i = 0; i < sizeof(sliders) / sizeof(*sliders); i++) {
+        char key[2] = {sliders[i].lower, '\0'};
+        reset_test_config();
+
+        /* Down to the floor, then one cell at a time all the way up. */
+        for (int n = 0; n <= LEGEND_BAR_CELLS; n++) assert(feed_input(key) == 1);
+        build_legend(lines);
+        assert(filled_cells(lines[sliders[i].row]) == 0);
+
+        key[0] = sliders[i].raise;
+        for (int expected = 1; expected <= LEGEND_BAR_CELLS; expected++) {
+            assert(feed_input(key) == 1);
+            build_legend(lines);
+            assert(filled_cells(lines[sliders[i].row]) == expected);
+        }
+        /* And the ceiling holds. */
+        assert(feed_input(key) == 1);
+        build_legend(lines);
+        assert(filled_cells(lines[sliders[i].row]) == LEGEND_BAR_CELLS);
+
+        /* Back down the same way, one cell a press. */
+        key[0] = sliders[i].lower;
+        for (int expected = LEGEND_BAR_CELLS - 1; expected >= 0; expected--) {
+            assert(feed_input(key) == 1);
+            build_legend(lines);
+            assert(filled_cells(lines[sliders[i].row]) == expected);
+        }
+        assert(feed_input(key) == 1);
+        build_legend(lines);
+        assert(filled_cells(lines[sliders[i].row]) == 0);
+    }
     reset_test_config();
-    memset(keys, 'B', sizeof(keys) - 1);
-    keys[sizeof(keys) - 1] = '\0';
-    for (int i = 0; i < 5; i++) assert(feed_input(keys) == 1);
-    assert(config.boundary == BOUNDARY_MAX);
+}
 
-    memset(keys, 'A', sizeof(keys) - 1);
-    for (int i = 0; i < 5; i++) assert(feed_input(keys) == 1);
-    assert(config.alignment == ALIGNMENT_MAX);
+/* The bar is 1.5 times the eight cells it started at, and every notch of it is
+ * reachable: the value a notch stands for is derived from the notch, so the two
+ * cannot drift apart. */
+static void test_bar_spans_the_whole_travel(void) {
+    reset_test_config();
+    assert(LEGEND_BAR_CELLS == 12);
 
-    memset(keys, 'S', sizeof(keys) - 1);
-    for (int i = 0; i < 5; i++) assert(feed_input(keys) == 1);
-    assert(config.separation == SEPARATION_MAX);
+    for (int n = 0; n <= LEGEND_BAR_CELLS; n++) {
+        config.boundary_notch = config.separation_notch = config.cohesion_notch =
+            config.alignment_notch = config.vision_notch = config.rate_notch = n;
+        apply_notches();
+        if (n == 0) {
+            assert(config.boundary == BOUNDARY_MIN);
+            assert(config.separation == SEPARATION_MIN);
+            assert(config.cohesion == COHESION_MIN);
+            assert(config.alignment == ALIGNMENT_MIN);
+            assert(config.vision_radius == MIN_VISION_RADIUS);
+            assert(config.frame_rate == MIN_FRAME_RATE);
+        }
+        if (n == LEGEND_BAR_CELLS) {
+            assert(fabs(config.boundary - BOUNDARY_MAX) < 1e-12);
+            assert(fabs(config.alignment - ALIGNMENT_MAX) < 1e-12);
+            assert(config.vision_radius == MAX_VISION_RADIUS);
+            assert(config.frame_rate == MAX_FRAME_RATE);
+        }
+        /* The scan has to reach as far as the radius does. */
+        assert(config.vision_cells * SPATIAL_CELL_SIZE >= config.vision_radius);
+        assert((config.vision_cells - 1) * SPATIAL_CELL_SIZE < config.vision_radius);
+        assert(config.vision_cells <= MAX_VISION_CELLS);
+    }
 
-    memset(keys, 'C', sizeof(keys) - 1);
-    for (int i = 0; i < 5; i++) assert(feed_input(keys) == 1);
-    assert(config.cohesion == COHESION_MAX);
+    /* Each default sits on the fourth notch, so no press is ever a fraction of a
+     * cell. To within what a double can carry: the ceilings are placed to make
+     * the fourth notch the default, and the arithmetic that gets there is not
+     * bit exact for decimals a binary float cannot hold. */
+    reset_test_config();
+    assert(fabs(config.boundary - DEFAULT_BOUNDARY_W) < 1e-12);
+    assert(fabs(config.separation - DEFAULT_SEPARATION_W) < 1e-12);
+    assert(fabs(config.cohesion - DEFAULT_COHESION_W) < 1e-12);
+    assert(fabs(config.alignment - DEFAULT_ALIGNMENT_W) < 1e-12);
+    assert(config.boundary_notch == DEFAULT_NOTCH);
+    assert(config.alignment_notch == DEFAULT_NOTCH);
+    /* The two integer parameters land exactly, being integers. */
+    assert(config.vision_radius == DEFAULT_VISION_RADIUS);
+    assert(config.frame_rate == DEFAULT_FRAME_RATE);
+}
 
-    /* The floors still work, and the pair still meets in the middle. */
-    memset(keys, 'b', sizeof(keys) - 1);
-    for (int i = 0; i < 5; i++) assert(feed_input(keys) == 1);
-    assert(config.boundary == BOUNDARY_MIN);
+static void test_weights_stop_at_their_bounds(void) {
+    char keys[INPUT_BUFFER_SIZE + 1];
+    static const struct {
+        char raise, lower;
+        const double *ceiling, *floor;
+        const double *value;
+    } weights[] = {{'B', 'b', &BOUNDARY_MAX, &BOUNDARY_MIN, &config.boundary},
+                   {'S', 's', &SEPARATION_MAX, &SEPARATION_MIN, &config.separation},
+                   {'C', 'c', &COHESION_MAX, &COHESION_MIN, &config.cohesion},
+                   {'A', 'a', &ALIGNMENT_MAX, &ALIGNMENT_MIN, &config.alignment}};
+
+    keys[INPUT_BUFFER_SIZE] = '\0';
+    for (size_t i = 0; i < sizeof(weights) / sizeof(*weights); i++) {
+        reset_test_config();
+        memset(keys, weights[i].raise, INPUT_BUFFER_SIZE);
+        assert(feed_input(keys) == 1);
+        assert(fabs(*weights[i].value - *weights[i].ceiling) < 1e-12);
+
+        memset(keys, weights[i].lower, INPUT_BUFFER_SIZE);
+        assert(feed_input(keys) == 1);
+        assert(fabs(*weights[i].value - *weights[i].floor) < 1e-12);
+    }
     reset_test_config();
 }
 
@@ -494,43 +544,51 @@ static void test_birds_start_clear_of_the_panel(void) {
 }
 
 static void test_vision_controls(void) {
-    config.vision_cells = DEFAULT_VISION_CELLS;
-    update_vision_radius();
-    assert(config.vision_radius == 36);
-    assert(config.vision_radius_squared == 1296);
+    reset_test_config();
+    assert(config.vision_radius == DEFAULT_VISION_RADIUS);
+    assert(config.vision_radius_squared == DEFAULT_VISION_RADIUS * DEFAULT_VISION_RADIUS);
+    assert(config.vision_cells == 3);
 
+    /* One notch is four pixels of radius, a third of a grid cell, which the scan
+     * has to round up to reach. */
     assert(feed_input("P") == 1);
+    assert(config.vision_notch == 7);
+    assert(config.vision_radius == 40);
+    assert(config.vision_radius_squared == 1600);
     assert(config.vision_cells == 4);
-    assert(config.vision_radius == 48);
-    assert(config.vision_radius_squared == 2304);
 
-    config.vision_cells = MAX_VISION_CELLS;
-    update_vision_radius();
-    assert(feed_input("PP") == 1);
-    assert(config.vision_cells == MAX_VISION_CELLS);
-    assert(config.vision_radius == MAX_VISION_CELLS * SPATIAL_CELL_SIZE);
+    char keys[INPUT_BUFFER_SIZE + 1];
+    memset(keys, 'P', INPUT_BUFFER_SIZE);
+    keys[INPUT_BUFFER_SIZE] = '\0';
+    assert(feed_input(keys) == 1);
+    assert(config.vision_notch == LEGEND_BAR_CELLS);
+    assert(config.vision_radius == MAX_VISION_RADIUS);
+    assert(config.vision_cells == MAX_VISION_CELLS); /* The five cell ceiling. */
 
-    config.vision_cells = MIN_VISION_CELLS;
-    update_vision_radius();
-    assert(feed_input("pp") == 1);
-    assert(config.vision_cells == MIN_VISION_CELLS);
-    assert(config.vision_radius == MIN_VISION_CELLS * SPATIAL_CELL_SIZE);
+    memset(keys, 'p', INPUT_BUFFER_SIZE);
+    assert(feed_input(keys) == 1);
+    assert(config.vision_notch == 0);
+    assert(config.vision_radius == MIN_VISION_RADIUS);
+    assert(config.vision_cells == 1);
     assert(feed_input("q") == 0);
+    reset_test_config();
 }
 
 static void test_frame_rate_controls(void) {
     char keys[INPUT_BUFFER_SIZE + 1];
 
-    config.frame_rate = DEFAULT_FRAME_RATE;
-    update_speed();
+    reset_test_config();
+    assert(config.frame_rate == DEFAULT_FRAME_RATE);
     memset(keys, 'R', INPUT_BUFFER_SIZE);
     keys[INPUT_BUFFER_SIZE] = '\0';
     assert(feed_input(keys) == 1);
+    assert(config.rate_notch == LEGEND_BAR_CELLS);
     assert(config.frame_rate == MAX_FRAME_RATE);
     assert(config.speed == 20.0);
 
     memset(keys, 'r', INPUT_BUFFER_SIZE);
     assert(feed_input(keys) == 1);
+    assert(config.rate_notch == 0);
     assert(config.frame_rate == MIN_FRAME_RATE);
     assert(config.speed == 80.0);
 
@@ -539,8 +597,14 @@ static void test_frame_rate_controls(void) {
     assert(feed_input(keys) == 0);
     assert(config.frame_rate == MAX_FRAME_RATE);
 
-    config.frame_rate = DEFAULT_FRAME_RATE;
-    update_speed();
+    /* Every notch of the rate is a whole number of frames per second, even
+     * though a twelfth of its range is not. */
+    for (int n = 0; n <= LEGEND_BAR_CELLS; n++) {
+        config.rate_notch = n;
+        apply_notches();
+        assert(config.frame_rate >= MIN_FRAME_RATE && config.frame_rate <= MAX_FRAME_RATE);
+    }
+    reset_test_config();
 }
 
 static void clear_graphics_buffer(kitty_graphics_t *graphics) {
@@ -707,8 +771,9 @@ int main(void) {
     test_frame_rate_controls();
     test_flicker_free_render_queue();
     test_legend_panel_layout();
-    test_legend_bars_span_their_travel();
-    test_weights_stop_at_their_ceiling();
+    test_bar_spans_the_whole_travel();
+    test_one_keypress_is_one_cell();
+    test_weights_stop_at_their_bounds();
     test_legend_repels_towards_the_nearer_way_out();
     test_legend_push_overrules_the_flock();
     test_no_bird_ever_reaches_the_panel();

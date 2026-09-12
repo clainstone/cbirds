@@ -70,6 +70,11 @@ static void reset_test_config(void) {
     config.alignment_notch = DEFAULT_NOTCH;
     config.vision_notch = 6;
     config.rate_notch = DEFAULT_NOTCH;
+    config.palette = 0;
+    config.colour_by = COLOUR_BY_HEADING;
+    config.mouse_mode = MOUSE_FLEE;
+    config.mouse_reach = DEFAULT_MOUSE_REACH;
+    config.flocks = 1;
     apply_notches();
 }
 
@@ -593,6 +598,72 @@ static void test_birds_start_clear_of_the_panel(void) {
 }
 
 /* Two flocks share the space without sharing a heading. */
+static void test_the_pointer_moves_the_flock(void) {
+    reset_test_config();
+    legend_enabled = 0;
+    apply_screen_size(200, 50, 200 * 8, 50 * 16);
+    mouse.present = 1;
+    mouse.x = 800;
+    mouse.y = 400;
+
+    /* A bird to the right of the pointer flees further right, and is drawn
+     * towards it in follow. Straight along the line between them either way. */
+    const bird_t east = {.x = 800 + 40, .y = 400};
+    config.mouse_mode = MOUSE_FLEE;
+    vector_t away = pointer_vector(&east);
+    assert(away.x > 0 && fabs(away.y) < 1e-12);
+    config.mouse_mode = MOUSE_FOLLOW;
+    vector_t towards = pointer_vector(&east);
+    assert(towards.x < 0 && fabs(towards.y) < 1e-12);
+    assert(fabs(towards.x + away.x) < 1e-12); /* Exactly opposite. */
+
+    /* It falls off with distance and stops at its reach, so the flock bends
+     * around the pointer and closes behind it rather than bouncing off. */
+    config.mouse_mode = MOUSE_FLEE;
+    const bird_t near = {.x = 800 + 10, .y = 400};
+    const bird_t far = {.x = 800 + 100, .y = 400};
+    const bird_t beyond = {.x = 800 + config.mouse_reach + 1, .y = 400};
+    assert(pointer_vector(&near).x > pointer_vector(&far).x);
+    assert(pointer_vector(&beyond).x == 0 && pointer_vector(&beyond).y == 0);
+
+    /* Off means off, and so does never having seen the pointer. */
+    config.mouse_mode = MOUSE_OFF;
+    assert(pointer_vector(&east).x == 0);
+    config.mouse_mode = MOUSE_FLEE;
+    mouse.present = 0;
+    assert(pointer_vector(&east).x == 0);
+    mouse.present = 1;
+
+    /* cat holds still for most of its cycle and then pounces harder than flee. */
+    config.mouse_mode = MOUSE_CAT;
+    clock_state.seconds = 1.0;
+    assert(pointer_vector(&east).x == 0); /* Stalking. */
+    clock_state.seconds = CAT_STALK + 0.1;
+    double pounce = pointer_vector(&east).x;
+    config.mouse_mode = MOUSE_FLEE;
+    assert(pounce > pointer_vector(&east).x * 2);
+
+    /* And it overrules a flock that wants to go the other way. */
+    enum { BIRD_COUNT = 30 };
+    bird_t birds[BIRD_COUNT];
+    spatial_grid_t grid;
+    config.birds = BIRD_COUNT;
+    config.mouse_mode = MOUSE_FLEE;
+    for (int i = 0; i < BIRD_COUNT; i++) birds[i] = (bird_t){.x = 840, .y = 400, .direction = M_PI};
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRD_COUNT) == SPATIAL_GRID_OK);
+    assert(spatial_grid_build(&grid, BIRD_COUNT, read_bird_position, birds) == SPATIAL_GRID_OK);
+    assert(cos(flock_direction(birds, &grid, 0, NULL)) > 0); /* Away, not with them. */
+    config.mouse_mode = MOUSE_OFF;
+    assert(cos(flock_direction(birds, &grid, 0, NULL)) < 0); /* With them again. */
+    spatial_grid_destroy(&grid);
+
+    mouse.present = 0;
+    clock_state.seconds = 0;
+    legend_enabled = 1;
+    reset_test_config();
+}
+
 static void test_shade_follows_the_chosen_mode(void) {
     reset_test_config();
     config.palette = palette_named("ember");
@@ -974,6 +1045,7 @@ int main(void) {
     test_boundary_bands_follow_the_viewport();
     test_bottom_band_scales_on_a_short_viewport();
     test_birds_start_spread_inside_the_free_region();
+    test_the_pointer_moves_the_flock();
     test_shade_follows_the_chosen_mode();
     test_theme_colours_are_parsed();
     test_flocks_do_not_align_with_each_other();

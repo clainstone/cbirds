@@ -141,7 +141,7 @@ static void test_engine_matches_brute_force(void) {
             apply_notches();
             for (int i = 0; i < BIRD_COUNT; i++) {
                 double expected = brute_force_flock_direction(snapshot, i);
-                double actual = flock_direction(snapshot, &grid, i);
+                double actual = flock_direction(snapshot, &grid, i, NULL);
                 assert(angle_difference(expected, actual) < 1e-11);
             }
         }
@@ -525,13 +525,13 @@ static void test_legend_push_overrules_the_flock(void) {
     assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRD_COUNT) == SPATIAL_GRID_OK);
     assert(spatial_grid_build(&grid, BIRD_COUNT, read_bird_position, birds) == SPATIAL_GRID_OK);
 
-    double with_panel = flock_direction(birds, &grid, 0);
+    double with_panel = flock_direction(birds, &grid, 0, NULL);
     assert(cos(with_panel) > 0.999); /* Straight out to the right. */
 
     /* The same flock without the panel turns it the other way, which is what
      * makes this a statement about the push and not about the neighbours. */
     screen.legend_width = screen.legend_height = 0;
-    double without_panel = flock_direction(birds, &grid, 0);
+    double without_panel = flock_direction(birds, &grid, 0, NULL);
     assert(cos(without_panel) < 0);
     spatial_grid_destroy(&grid);
 }
@@ -593,6 +593,54 @@ static void test_birds_start_clear_of_the_panel(void) {
 }
 
 /* Two flocks share the space without sharing a heading. */
+static void test_shade_follows_the_chosen_mode(void) {
+    reset_test_config();
+    config.palette = palette_named("ember");
+    int shades = palette_shades();
+    assert(shades == 5);
+
+    /* Heading: every shade of the ramp is reachable, and the mapping climbs
+     * with the angle, so neighbours that agree on a heading agree on a colour. */
+    config.colour_by = COLOUR_BY_HEADING;
+    int seen[8] = {0};
+    int previous = -1;
+    for (int step = 0; step < 360; step++) {
+        bird_t bird = {.direction = step * M_PI / 180.0};
+        int shade = shade_for(&bird, 0);
+        assert(shade >= 0 && shade < shades);
+        assert(shade >= previous); /* Monotone round the circle. */
+        previous = shade;
+        seen[shade] = 1;
+    }
+    for (int i = 0; i < shades; i++) assert(seen[i]);
+
+    /* Density: an empty sky is the near end, a crowd the far end. */
+    config.colour_by = COLOUR_BY_DENSITY;
+    bird_t alone = {0};
+    assert(shade_for(&alone, 0) == 0);
+    assert(shade_for(&alone, 100) == shades - 1);
+    assert(shade_for(&alone, 4) > 0 && shade_for(&alone, 4) < shades - 1);
+
+    /* Flock: a colour per flock, which is what makes two of them legible. */
+    config.colour_by = COLOUR_BY_FLOCK;
+    for (int f = 0; f < MAX_FLOCKS; f++) {
+        bird_t bird = {.flock = f};
+        assert(shade_for(&bird, 0) == f % shades);
+    }
+
+    /* Fixed: whatever it was given at birth, left alone. */
+    config.colour_by = COLOUR_BY_FIXED;
+    bird_t painted = {.shade = 3};
+    assert(shade_for(&painted, 50) == 3);
+
+    /* A palette with one shade has nothing to choose, whatever the mode. */
+    config.palette = palette_named("original");
+    config.colour_by = COLOUR_BY_HEADING;
+    bird_t any = {.direction = 2.0};
+    assert(shade_for(&any, 7) == 0);
+    reset_test_config();
+}
+
 static void test_theme_colours_are_parsed(void) {
     uint8_t rgb[3];
 
@@ -647,12 +695,12 @@ static void test_flocks_do_not_align_with_each_other(void) {
     assert(spatial_grid_build(&grid, BIRD_COUNT, read_bird_position, birds) == SPATIAL_GRID_OK);
 
     /* Not its flock, so it holds its own heading however many of them there are. */
-    assert(flock_direction(birds, &grid, 0) == 0.0);
+    assert(flock_direction(birds, &grid, 0, NULL) == 0.0);
 
     /* Put them all in one flock and the same crowd turns it right around. */
     config.flocks = 1;
     for (int i = 0; i < BIRD_COUNT; i++) birds[i].flock = 0;
-    assert(angle_difference(flock_direction(birds, &grid, 0), M_PI) < 1e-12);
+    assert(angle_difference(flock_direction(birds, &grid, 0, NULL), M_PI) < 1e-12);
 
     spatial_grid_destroy(&grid);
     legend_enabled = 1;
@@ -926,6 +974,7 @@ int main(void) {
     test_boundary_bands_follow_the_viewport();
     test_bottom_band_scales_on_a_short_viewport();
     test_birds_start_spread_inside_the_free_region();
+    test_shade_follows_the_chosen_mode();
     test_theme_colours_are_parsed();
     test_flocks_do_not_align_with_each_other();
     test_mouse_reports_are_parsed();

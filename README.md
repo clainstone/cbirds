@@ -98,20 +98,25 @@ Cbirds requires a terminal that supports the **Kitty Graphics Protocol**:
 
 ## Project Layout
 
-Everything lives in the repository root, there are no subdirectories:
+The sources sit in the repository root, the tests in `tests/`:
 
 | File | |
 |---|---|
 | `boids.c` | simulation and terminal handling |
-| `boids_test.c` | grid-versus-brute-force simulation and input tests |
 | `kitty_graphics.c` / `kitty_graphics.h` | buffered Kitty graphics protocol API, plus the terminal text and erase it shares the buffer with |
-| `kitty_graphics_test.c` | protocol formatting and chunking tests |
 | `spatial_grid.c` / `spatial_grid.h` | fixed-size spatial grid and contiguous cell buckets |
-| `spatial_grid_test.c` | spatial lookup and brute-force equivalence tests |
 | `png.c` / `png.h` | the PNG library (decode, encode, rotate, resize, tint) |
 | `sprite_png.h` | the bird PNG, generated, compiled into the binary |
 | `mkasset.c` | regenerates that header from `matrix.png` |
 | `matrix.png` | the original artwork |
+| `tests/boids_test.c` | panel, obstacle, grid-versus-brute-force and input tests |
+| `tests/kitty_graphics_test.c` | protocol formatting and chunking tests |
+| `tests/spatial_grid_test.c` | spatial lookup and brute-force equivalence tests |
+
+Each test reaches its subject with a `../` include and nothing else, so it needs
+no search path and builds from wherever it is invoked. `tests/boids_test.c`
+includes `boids.c` whole, with `main` renamed out of the way, which is what lets
+it drive the real static functions rather than a copy of them.
 
 ## Installation
 

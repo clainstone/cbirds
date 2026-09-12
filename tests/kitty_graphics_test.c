@@ -1,4 +1,4 @@
-#include "kitty_graphics.h"
+#include "../kitty_graphics.h"
 
 #include <assert.h>
 #include <errno.h>

@@ -1,5 +1,5 @@
 #define main cbirds_application_main
-#include "boids.c"
+#include "../boids.c"
 #undef main
 
 #include <assert.h>

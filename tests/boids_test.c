@@ -1829,6 +1829,82 @@ static void test_a_text_terminal_gets_the_flock_in_braille(void) {
     reset_test_config();
 }
 
+/* A terminal that draws pixels but not Kitty's gets a picture a frame: sixel
+ * where it answers for it, iTerm2's inline PNG where it says it is iTerm2. Both
+ * are capped at thirty frames a second, which is what a picture a frame costs. */
+static void test_a_sixel_or_iterm_terminal_gets_a_picture_a_frame(void) {
+    kitty_graphics_t graphics;
+    bird_t birds[2];
+
+    reset_test_config();
+    legend_enabled = 0;
+    config.palette = palette_named("ice");
+    config.birds = 2;
+    config.rate_notch = LEGEND_BAR_CELLS; /* Asked for 120. */
+    apply_screen_size(40, 12, 320, 192);
+    birds[0] = (bird_t){.x = 60, .y = 60, .direction = 1.0};
+    birds[1] = (bird_t){.x = 200, .y = 100, .direction = 4.0};
+
+    render_mode = RENDER_SIXEL;
+    apply_notches();
+    assert(config.frame_rate == PICTURE_FRAME_RATE_MAX); /* Capped, and the step with it. */
+    double per_second = (double)DEFAULT_SPEED * DEFAULT_FRAME_RATE / PICTURE_FRAME_RATE_MAX;
+    double by_screen = screen.height / 10.0; /* The small screen's own cap. */
+    assert(fabs(config.speed - (per_second < by_screen ? per_second : by_screen)) < 1e-9);
+    assert(prepare_picture_renderer());
+    /* The palette is the ground, each tint and its half blend, and the hawk. */
+    assert(picture_colours == 1 + 2 * palette_shades() + 1);
+    assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
+    assert(queue_render_frame(&graphics, birds) == KITTY_GRAPHICS_OK);
+    assert(strstr(graphics.buffer, "\033[H\033P0;1;0q\"1;1;320;192") != NULL);
+    assert(strstr(graphics.buffer, "\033_G") == NULL);
+    assert(strstr(graphics.buffer, "\033\\") != NULL); /* The string terminator. */
+    /* Small: a dozen colours and a nearly empty sky, not a quantiser's 256. */
+    assert(graphics.length < 20000);
+    kitty_graphics_destroy(&graphics);
+    sixel_destroy(&picture_sixel);
+
+    render_mode = RENDER_ITERM;
+    apply_notches();
+    assert(config.frame_rate == PICTURE_FRAME_RATE_MAX);
+    assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
+    assert(queue_render_frame(&graphics, birds) == KITTY_GRAPHICS_OK);
+    const char *osc = strstr(graphics.buffer, "\033]1337;File=inline=1;width=320px;height=192px;");
+    assert(osc != NULL);
+    assert(strstr(graphics.buffer, "\033_G") == NULL);
+    /* And the payload is a PNG of the screen: decode the base64 and then the PNG. */
+    const char *payload = strchr(osc, ':') + 1;
+    const char *end = strchr(payload, '\a');
+    assert(end != NULL);
+    size_t encoded_length = (size_t)(end - payload);
+    uint8_t *png = malloc(encoded_length);
+    size_t png_length = 0;
+    uint32_t accumulator = 0;
+    int bits = 0;
+    for (size_t i = 0; i < encoded_length; i++) {
+        const char *at = strchr(BASE64, payload[i]);
+        if (payload[i] == '=' || at == NULL) break;
+        accumulator = (accumulator << 6) | (uint32_t)(at - BASE64);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            png[png_length++] = (uint8_t)(accumulator >> bits);
+        }
+    }
+    png_image_t picture = {0, 0, NULL};
+    assert(png_decode(png, png_length, &picture) == PNG_OK);
+    assert(picture.width == 320 && picture.height == 192);
+    png_image_free(&picture);
+    free(png);
+    kitty_graphics_destroy(&graphics);
+
+    png_image_free(&text_canvas);
+    free_sprites(text_sprites);
+    render_mode = RENDER_KITTY;
+    legend_enabled = 1;
+    reset_test_config();
+}
+
 /* A GIF has no panel in it, so it must not have a hole where one would be — and
  * it is drawn without a terminal, so the palette that asks the terminal what
  * colours it uses has to fall back to one that has colours in it. */
@@ -2297,6 +2373,7 @@ int main(void) {
     test_each_flock_flies_at_its_own_pace();
     test_the_matrix_is_the_only_thing_that_rains();
     test_a_text_terminal_gets_the_flock_in_braille();
+    test_a_sixel_or_iterm_terminal_gets_a_picture_a_frame();
     test_recording_gives_the_whole_frame_to_the_flock();
     test_flocks_keep_to_their_own_side_of_the_sky();
     test_flocks_do_not_align_with_each_other();

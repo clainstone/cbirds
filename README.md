@@ -53,7 +53,8 @@ cbirds --color ember      # or pick a ramp
 <div align="center"><img src="docs/hero.png" alt="The flock spelling its own name" width="90%"></div>
 
 And in a terminal with no graphics protocol at all — Alacritty, GNOME Terminal,
-Terminal.app, over ssh, inside tmux — the same flock, in braille:
+Terminal.app, over ssh, inside tmux — the same flock, in braille. xterm, foot and
+iTerm2 get real pixels by their own protocols; nothing is left out.
 
 <div align="center"><img src="docs/braille.png" alt="The same flock drawn in braille, for a terminal with no graphics protocol" width="90%"></div>
 
@@ -206,9 +207,14 @@ it rather than circle it, and a bird inside the panel's turn zone, whose push is
 a constraint rather than a force — the proof that the panel is unreachable
 assumes a bird can turn away at once.
 
-**The other terminals.** A terminal without a graphics protocol gets the frame
-rendered to pixels exactly as it is for a recording, and the pixels read back as
-cells: eight braille dots a cell, lit where a quarter or more of the dot's patch
+**The other terminals.** A terminal that draws pixels but not Kitty's gets a
+picture a frame: sixel, encoded against a palette of what is actually in the
+frame — the ground, each tint of the ramp and its half blend for the edges, the
+hawk — so a frame is a dozen colours and tens of kilobytes rather than a
+quantiser's two hundred and fifty six; or, for iTerm2, a PNG through the same
+encoder the snapshots use. Both are capped at thirty frames a second, which is
+what a picture a frame costs. A terminal without any graphics protocol gets the
+frame rendered to the same pixels and the pixels read back as cells: eight braille dots a cell, lit where a quarter or more of the dot's patch
 is bird, each cell in the colour of whatever bird is in it — or two half blocks a
 cell, coarser and with colour on every pixel. Only the cells that changed since
 the last frame are sent, one cursor move per run of them and a colour only when
@@ -294,14 +300,19 @@ sky.
 
 ## Requirements
 
-Any terminal that can show colour. Under **Kitty**, **WezTerm**, **Ghostty** or
-recent **Konsole** the flock is real sprites, drawn with the Kitty graphics
-protocol. Everywhere else — Alacritty, GNOME Terminal, Terminal.app, tmux, an
-SSH session, xterm — it is the same flock in braille, and you do not have to
-ask: cbirds asks the terminal whether it can draw, before taking the screen, and
-picks. `--render kitty`, `--render braille` or `--render blocks` overrules it.
+Any terminal that can show colour. cbirds asks the terminal what it can draw,
+before taking the screen, and picks the best of it:
 
-Build needs GCC 7+ or Clang 10+ and `make`. `make test` runs seven suites.
+| the terminal | what it gets |
+|---|---|
+| **Kitty**, **WezTerm**, **Ghostty**, recent **Konsole** | sprites, over the Kitty graphics protocol |
+| **xterm**, **foot**, **mlterm**, **contour**, **mintty**, **Windows Terminal** | a picture a frame, in sixel |
+| **iTerm2** | a picture a frame, as an inline PNG |
+| everything else — Alacritty, GNOME Terminal, Terminal.app, tmux, ssh | the same flock in braille, eight dots a cell |
+
+`--render kitty|sixel|iterm|braille|blocks` overrules the choice.
+
+Build needs GCC 7+ or Clang 10+ and `make`. `make test` runs eight suites.
 
 ## Layout
 

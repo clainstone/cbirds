@@ -12,6 +12,8 @@ gmon.out
 perf.data*
 core
 core.*
+.shot.png
+snapshot*.png
 
 # Local tools, captures, editor and OS noise
 .claude/

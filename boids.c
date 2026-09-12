@@ -47,6 +47,11 @@ enum {
     INTRO_SECONDS = 3,
     MAX_HAWKS = 8,
     HAWK_REACH = 180,
+    /* A GIF's delay is in hundredths of a second, so the rates it can express are
+     * 100/1, 100/2, 100/3 and so on. Viewers also clamp anything under two
+     * hundredths up to a tenth of a second, which puts the real ceiling at fifty:
+     * sixty is simply not a rate a GIF has. */
+    MAX_RECORD_FPS = 50,
     AUTOPILOT_PERIOD = 4, /* Seconds between one slider moving and the next. */
     AUTOPILOT_YIELD = 3,  /* Seconds it keeps its hands off after a keypress. */
     OUTRO_FRAMES = 40,
@@ -1307,8 +1312,8 @@ static int show_stats;
 static int bench_frames;
 static const char *snapshot_path;
 static const char *record_path;
-static int record_every = 2;
-static int record_delay = 4;
+static int record_fps = 25;
+static int record_seconds = 6;
 static int record_columns = 100;
 static int record_rows = 30;
 
@@ -1651,10 +1656,10 @@ static const option_t OPTIONS[] = {
      "write the last frame as a PNG, with our own encoder", "Output", 0},
     {0, "record", NULL, OPTION_STRING, &record_path, 0, 0, NULL, "FILE",
      "record an animated GIF with no terminal, and quit", "Output", 0},
-    {0, "record-every", NULL, OPTION_INT, &record_every, 1, 60, NULL, "N",
-     "record one frame in N (default 2)", "Output", 0},
-    {0, "record-delay", NULL, OPTION_INT, &record_delay, 1, 100, NULL, "CS",
-     "hundredths of a second a frame (default 4)", "Output", 0},
+    {0, "record-fps", NULL, OPTION_INT, &record_fps, 2, 120, NULL, "RATE",
+     "frames a second in the GIF, 50 is the ceiling (default 25)", "Output", 0},
+    {0, "record-seconds", NULL, OPTION_INT, &record_seconds, 1, 120, NULL, "SECONDS",
+     "how long the GIF runs (default 6)", "Output", 0},
     {0, "record-size", NULL, OPTION_INT, &record_columns, 40, 400, NULL, "COLUMNS",
      "the width to record at, in cells (default 100)", "Output", 0},
     {0, "record-rows", NULL, OPTION_INT, &record_rows, 14, 120, NULL, "ROWS",
@@ -2205,6 +2210,31 @@ static long elapsed_microseconds(const struct timespec *start, const struct time
  * its length counted, which is exactly what a real frame would put on the wire.
  */
 /*
+ * Hundredths of a second a frame, for a rate asked for in frames a second.
+ *
+ * A GIF carries its delay as whole hundredths, so the only rates it has are
+ * 100/1, 100/2, 100/3 and so on, and viewers clamp anything under two hundredths
+ * up to a tenth of a second. Fifty is therefore the ceiling and sixty is not a
+ * rate a GIF has at all: whatever is asked for is rounded to one it does.
+ */
+static int record_delay_for(int fps) {
+    int best = 100 / MAX_RECORD_FPS;
+    double error = -1;
+    /* Chosen by the error in the rate, not by rounding the delay: the two are not
+     * the same, because the rate is a hundred over the delay. Rounding gives 50
+     * for 41 frames a second where 33 is nearer to it. */
+    for (int delay = 100 / MAX_RECORD_FPS; delay <= 100; delay++) {
+        double mistake = 100.0 / delay - fps;
+        if (mistake < 0) mistake = -mistake;
+        if (error < 0 || mistake < error) {
+            error = mistake;
+            best = delay;
+        }
+    }
+    return best;
+}
+
+/*
  * Recording.
  *
  * Headless, like the benchmark, and for the same reason: the demo in the README
@@ -2220,7 +2250,21 @@ static int run_recording(void) {
     gif_writer_t *gif = NULL;
     size_t bytes = 0;
     int written = 0;
-    int total = frame_limit > 0 ? frame_limit : 300;
+    /* The delay is whole hundredths, so the rate asked for is rounded to one the
+     * format can carry and the rate actually achieved is reported rather than
+     * claimed. Every simulated frame is recorded, and the simulation steps at the
+     * recording rate, so the motion in the GIF runs at life speed. */
+    int delay = record_delay_for(record_fps);
+    /* The rate a hundredth-of-a-second delay really gives, which is not always a
+     * whole number: a delay of 17 plays at 5.88 a second, not 5. */
+    double actual_fps = 100.0 / delay;
+    /* Counted on that rate, so --record-seconds means the seconds it lasts rather
+     * than the seconds it was meant to. */
+    int total = (int)(actual_fps * record_seconds + 0.5);
+
+    /* Same formula as update_speed, at the recording rate instead of the display
+     * one, so a bird covers the same ground per second whatever the rate is. */
+    config.speed = (double)DEFAULT_SPEED * DEFAULT_FRAME_RATE / actual_fps;
 
     apply_screen_size(record_columns, record_rows, record_columns * DEFAULT_CELL_WIDTH,
                       record_rows * DEFAULT_CELL_HEIGHT);
@@ -2233,8 +2277,7 @@ static int run_recording(void) {
     }
     if (png_image_alloc(&canvas, screen.width, screen.height) != PNG_OK) return EXIT_FAILURE;
 
-    gif_status_t gif_status =
-        gif_open(&gif, record_path, screen.width, screen.height, record_delay);
+    gif_status_t gif_status = gif_open(&gif, record_path, screen.width, screen.height, delay);
     if (gif_status != GIF_OK) {
         fprintf(stderr, "%s: %s: %s\n", program_name, record_path, gif_status_string(gif_status));
         return EXIT_FAILURE;
@@ -2253,7 +2296,7 @@ static int run_recording(void) {
         /* The clock the features read has to advance, or nothing that animates
          * on its own terms would animate at all. */
         clock_state.frame = frame;
-        clock_state.seconds = (double)frame / config.frame_rate;
+        clock_state.seconds = (double)frame / actual_fps;
         if (spell.writing && spell.until >= 0 && clock_state.seconds >= spell.until) spell_clear();
         maybe_tell_the_time();
         maybe_drift();
@@ -2265,7 +2308,6 @@ static int run_recording(void) {
         update_birds(birds, snapshot, &grid);
         for (int i = 0; i < config.birds; i++) birds[i].frame = direction_frame(birds[i].direction);
 
-        if (frame % record_every != 0) continue;
         compose(&canvas, frames, birds);
         gif_status = gif_add_frame(gif, &canvas);
     }
@@ -2282,8 +2324,15 @@ static int run_recording(void) {
         fprintf(stderr, "%s: %s: %s\n", program_name, record_path, gif_status_string(gif_status));
         return EXIT_FAILURE;
     }
-    printf("%s: %d frames, %dx%d, %.1f KB\n", record_path, written, screen.width, screen.height,
-           (double)bytes / 1024.0);
+    printf("%s: %d frames, %dx%d, %.4g fps, %.1fs, %.1f KB\n", record_path, written, screen.width,
+           screen.height, actual_fps, written / actual_fps, (double)bytes / 1024.0);
+    if (delay != record_delay_for(record_fps) || (int)(actual_fps + 0.5) != record_fps)
+        fprintf(stderr,
+                "%s: asked for %d fps, recorded at %.4g. A GIF's delay between frames is\n"
+                "whole hundredths of a second, so the only rates it has are 100/1, 100/2,\n"
+                "100/3 and so on, and viewers clamp anything under two hundredths up to a\n"
+                "tenth. %.4g is the nearest rate this format can actually carry.\n",
+                program_name, record_fps, actual_fps, actual_fps);
     return EXIT_SUCCESS;
 }
 

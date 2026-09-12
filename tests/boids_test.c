@@ -1608,20 +1608,27 @@ static void test_shade_follows_the_chosen_mode(void) {
     int shades = palette_shades();
     assert(shades == 5);
 
-    /* Heading: every shade of the ramp is reachable, and the mapping climbs
-     * with the angle, so neighbours that agree on a heading agree on a colour. */
+    /* Heading: every shade of the ramp is reachable, and the colour runs smoothly
+     * with the angle — up to the half turn and back down again, because a heading
+     * is a circle and a ramp is a line. Laid straight on to it there was a seam at
+     * due east where one degree of turn crossed the whole palette, and the flock
+     * came out salted with speckle that no turn of it explained. */
     config.colour_by = COLOUR_BY_HEADING;
     int seen[8] = {0};
-    int previous = -1;
+    int previous = shade_for(&(bird_t){.direction = 0}, 0);
     for (int step = 0; step < 360; step++) {
         bird_t bird = {.direction = step * M_PI / 180.0};
         int shade = shade_for(&bird, 0);
         assert(shade >= 0 && shade < shades);
-        assert(shade >= previous); /* Monotone round the circle. */
+        assert(abs(shade - previous) <= 1); /* No jump anywhere, seam included. */
         previous = shade;
         seen[shade] = 1;
     }
     for (int i = 0; i < shades; i++) assert(seen[i]);
+    /* And it climbs to the half turn and comes back, rather than wrapping. */
+    assert(shade_for(&(bird_t){.direction = 0}, 0) == 0);
+    assert(shade_for(&(bird_t){.direction = M_PI}, 0) == shades - 1);
+    assert(shade_for(&(bird_t){.direction = 2 * M_PI - 0.001}, 0) == 0);
 
     /* Density: an empty sky is the near end, a crowd the far end. */
     config.colour_by = COLOUR_BY_DENSITY;

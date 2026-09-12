@@ -1851,7 +1851,15 @@ static int shade_for(const bird_t *bird, int crowd) {
         case COLOUR_BY_HEADING: {
             double turns =
                 normalized_angle(sin(bird->direction), cos(bird->direction)) / (2 * M_PI);
-            int shade = (int)(turns * shades);
+            /* Folded at the half turn, because a heading is a circle and a ramp is
+             * a line: laid straight on to it, two birds a degree apart either side
+             * of due east got the two ends of the palette, and the flock came out
+             * salted with dark speckle that no turn of it explained. Folded, the
+             * two ways round meet in the middle and the colour runs smoothly with
+             * the heading; opposite headings share a shade, which nobody can see,
+             * and the seam, which everybody could, is gone. */
+            double folded = turns < 0.5 ? turns * 2 : (1 - turns) * 2;
+            int shade = (int)(folded * shades);
             return shade >= shades ? shades - 1 : shade;
         }
         case COLOUR_BY_DENSITY: {

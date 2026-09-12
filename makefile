@@ -2,8 +2,8 @@ CC        = gcc
 CFLAGS    = -Wall -Wextra -O3 -g
 LDLIBS    = -lm
 TARGET    = cbirds
-SRC       = boids.c kitty_graphics.c options.c png.c spatial_grid.c
-HDR       = kitty_graphics.h options.h png.h spatial_grid.h sprite_png.h
+SRC       = boids.c font.c kitty_graphics.c options.c png.c spatial_grid.c
+HDR       = font.h kitty_graphics.h options.h png.h spatial_grid.h sprite_png.h
 ASSET     = sprite_png.h
 ASSET_SRC = matrix.png
 MKASSET   = mkasset
@@ -43,7 +43,7 @@ $(TESTDIR)/spatial_grid_test: $(TESTDIR)/spatial_grid_test.c spatial_grid.c spat
 	$(CC) $(CFLAGS) $< spatial_grid.c -o $@ $(LDLIBS)
 
 $(TESTDIR)/boids_test: $(TESTDIR)/boids_test.c $(SRC) $(HDR)
-	$(CC) $(CFLAGS) $< kitty_graphics.c options.c png.c spatial_grid.c -o $@ $(LDLIBS)
+	$(CC) $(CFLAGS) $< font.c kitty_graphics.c options.c png.c spatial_grid.c -o $@ $(LDLIBS)
 
 clean:
 	rm -f $(TARGET) $(MKASSET) $(TESTS) *.o *~

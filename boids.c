@@ -16,6 +16,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "font.h"
 #include "kitty_graphics.h"
 #include "options.h"
 #include "png.h"
@@ -41,6 +42,7 @@ enum {
      * a flock of eight hundred is what says "moving" in a still frame. */
     TRAIL_EVERY = 16,
     TRAIL_LENGTH = 4,
+    INTRO_SECONDS = 3,
     FRAME_ANGLE = 360 / ROTATION_FRAMES,
     SPRITE_SUPERSAMPLE = 8,
     SPRITE_WORK_MAX = 256,
@@ -671,6 +673,85 @@ static int legend_repels(const bird_t *bird, vector_t *boundary) {
 
 /* Spread over the region no turn band covers, so no bird starts by fleeing an
  * edge and the flock does not begin stacked on a single point. */
+/*
+ * The flock writes.
+ *
+ * A target per lit cell of the text, laid out in the rectangle the panel leaves
+ * free, and a bird per target round robin so a cell with several birds on it
+ * reads as a thick stroke. While it is writing, a bird steers at its target and
+ * moves the smaller of its speed and the distance left, which is what lets it
+ * land exactly instead of orbiting: the letters come out crisp and then breathe,
+ * because the flocking terms are still there underneath.
+ *
+ * Targets never fall inside the panel's turn zone, because the force that keeps
+ * birds off the panel is unanswerable and a target in there could never be
+ * reached.
+ */
+enum { SPELL_MAX_TARGETS = 2048 };
+
+static struct {
+    int count;
+    double x[SPELL_MAX_TARGETS];
+    double y[SPELL_MAX_TARGETS];
+    double until; /* Seconds on the clock at which to let go; negative is never. */
+    int writing;
+} spell;
+
+static void spell_clear(void) {
+    spell.count = 0;
+    spell.writing = 0;
+}
+
+/* Lays the text out and returns how many targets it made, zero if it will not
+ * fit or the text has nothing to draw. */
+static int spell_layout(const char *text) {
+    double pad = config.bird_size * 2.0;
+    double left = screen.legend_width > 0 ? screen.legend_width + config.speed + pad : pad;
+    double top = pad, right = screen.width - pad, bottom = screen.height - pad;
+    int columns = font_text_width(text);
+
+    spell_clear();
+    if (columns <= 0 || right - left < columns || bottom - top < FONT_HEIGHT) return 0;
+
+    /* One cell is as large as both dimensions allow, so the text fills the space
+     * it has without being stretched out of shape. */
+    double cell = (right - left) / columns;
+    double by_height = (bottom - top) / FONT_HEIGHT;
+    if (by_height < cell) cell = by_height;
+
+    double width = columns * cell, height = FONT_HEIGHT * cell;
+    double origin_x = left + (right - left - width) / 2;
+    double origin_y = top + (bottom - top - height) / 2;
+
+    int column = 0;
+    for (const char *c = text; *c != '\0'; c++) {
+        const char *glyph = font_glyph(*c);
+        if (glyph == NULL) continue;
+        for (int row = 0; row < FONT_HEIGHT; row++) {
+            for (int x = 0; x < FONT_WIDTH; x++) {
+                if (glyph[row * FONT_WIDTH + x] != '#') continue;
+                if (spell.count >= SPELL_MAX_TARGETS) break;
+                double px = origin_x + (column + x + 0.5) * cell;
+                double py = origin_y + (row + 0.5) * cell;
+                if (legend_turn_zone(px, py)) continue;
+                spell.x[spell.count] = px;
+                spell.y[spell.count] = py;
+                spell.count++;
+            }
+        }
+        column += FONT_ADVANCE;
+    }
+    spell.writing = spell.count > 0;
+    return spell.count;
+}
+
+static int spell_target_of(int index, double *x, double *y) {
+    if (!spell.writing || spell.count == 0) return 0;
+    *x = spell.x[index % spell.count];
+    *y = spell.y[index % spell.count];
+    return 1;
+}
+
 /* One bird, so that growing the flock at runtime places only the new ones. */
 static void place_one_bird(bird_t *bird, int index) {
     double min_x = screen.turn_x, max_x = screen.width - screen.turn_x;
@@ -774,6 +855,15 @@ static void read_bird_position(const void *context, int index, double *x, double
 static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, int target_index,
                               int *crowd) {
     const bird_t *target = &birds[target_index];
+    double want_x, want_y;
+    /* Writing overrules flocking while it lasts: a bird with a target steers at
+     * it and nothing else, which is what makes a letter a letter. */
+    if (spell_target_of(target_index, &want_x, &want_y)) {
+        double to_x = want_x - target->x, to_y = want_y - target->y;
+        if (crowd != NULL) *crowd = 0;
+        if (to_x * to_x + to_y * to_y > 1e-9) return normalized_angle(to_y, to_x);
+        return target->direction;
+    }
     vector_t separation = {0, 0}, alignment = {0, 0}, cohesion = {0, 0};
     vector_t boundary = boundary_vector(target);
     vector_t pointer = pointer_vector(target);
@@ -882,8 +972,17 @@ static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_gr
         int crowd = 0;
         double direction = flock_direction(snapshot, grid, i, &crowd);
         birds[i].direction = direction;
-        birds[i].x += config.speed * cos(direction);
-        birds[i].y += config.speed * sin(direction);
+        /* Never past the target: the last step is the distance left, which is
+         * what makes a letter crisp instead of a cloud orbiting one. */
+        double step = config.speed;
+        double want_x, want_y;
+        if (spell_target_of(i, &want_x, &want_y)) {
+            double dx = want_x - birds[i].x, dy = want_y - birds[i].y;
+            double remaining = sqrt(dx * dx + dy * dy);
+            if (remaining < step) step = remaining;
+        }
+        birds[i].x += step * cos(direction);
+        birds[i].y += step * sin(direction);
         if (config.wrap) wrap_position(&birds[i]);
         birds[i].shade = shade_for(&birds[i], crowd);
         if (config.trails && i % TRAIL_EVERY == 0) {
@@ -1088,6 +1187,10 @@ static void apply_notches(void) {
 }
 
 static int requested_frame_rate = DEFAULT_FRAME_RATE;
+static const char *requested_spell;
+static int spell_hold = 6;
+static int show_intro = 1;
+static char spell_buffer[256];
 static int requested_perception = DEFAULT_VISION_RADIUS;
 static int requested_seed = -1;
 static int requested_preset = -1;
@@ -1147,6 +1250,12 @@ static const option_t OPTIONS[] = {
      "murmuration, swarm, school, storm, calm", "Flock"},
     {0, "seed", OPTION_INT, &requested_seed, 0, 2147483647, NULL, "N",
      "the same seed gives the same flock", "Flock"},
+    {0, "spell", OPTION_STRING, &requested_spell, 0, 0, NULL, "TEXT",
+     "the flock writes TEXT, then lets go; - reads stdin", "World"},
+    {0, "spell-hold", OPTION_INT, &spell_hold, 0, 600, NULL, "SECONDS",
+     "how long it holds the writing (default 6, 0 forever)", "World"},
+    {0, "intro", OPTION_FLAG, &show_intro, 0, 0, NULL, NULL,
+     "open by writing the name, on by default", "World"},
     {0, "boundary", OPTION_INT, &config.boundary_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
      "how hard the edges push back, 0 to 12 (default 4)", "Sliders"},
     {0, "separation", OPTION_INT, &config.separation_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
@@ -1368,6 +1477,32 @@ static void usage(FILE *out, const char *program) {
                   OPTIONS, OPTION_COUNT);
 }
 
+/* "-" means stdin, so that fortune | cbirds --spell - works. Read before raw
+ * mode, because after it a pipe and a terminal are told apart differently. */
+static const char *read_spell_text(const char *given) {
+    if (given == NULL || strcmp(given, "-") != 0) return given;
+
+    size_t at = 0;
+    int c;
+    while (at + 1 < sizeof(spell_buffer) && (c = getchar()) != EOF) {
+        if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+        spell_buffer[at++] = (char)c;
+    }
+    while (at > 0 && spell_buffer[at - 1] == ' ') at--;
+    spell_buffer[at] = '\0';
+
+    /* stdin was the pipe, and the keyboard still has to work afterwards: this is
+     * what makes `fortune | cbirds --spell -` more than a nice idea. If there is
+     * no controlling terminal to go back to, raw mode will say so in a moment. */
+    if (!isatty(STDIN_FILENO)) {
+        if (freopen("/dev/tty", "r", stdin) == NULL) {
+            fprintf(stderr, "cbirds: read the text from stdin but found no terminal to run in\n");
+            exit(EXIT_FAILURE);
+        }
+    }
+    return at > 0 ? spell_buffer : NULL;
+}
+
 static void read_options(int argc, char **argv) {
     char error[160];
     name_the_palettes();
@@ -1413,6 +1548,7 @@ static void read_options(int argc, char **argv) {
             notch_for_integer(requested_perception, MIN_VISION_RADIUS, MAX_VISION_RADIUS);
     }
     apply_notches();
+    requested_spell = read_spell_text(requested_spell);
 }
 
 static long elapsed_microseconds(const struct timespec *start, const struct timespec *end) {
@@ -1480,6 +1616,13 @@ int main(int argc, char **argv) {
     write_all("\x1b[J", sizeof("\x1b[J") - 1);
     update_screen_dimensions();
     initialize_birds(birds);
+    /* An explicit text wins over the intro: someone who asked for a word does
+     * not want to be told the program's name first. */
+    if (requested_spell != NULL) {
+        if (spell_layout(requested_spell)) spell.until = spell_hold > 0 ? (double)spell_hold : -1.0;
+    } else if (show_intro && spell_layout("CBIRDS")) {
+        spell.until = INTRO_SECONDS;
+    }
     graphics_status = upload_rotation_frames(&graphics, frames, palette_shades());
     free_rotation_frames(frames, palette_shades());
     if (graphics_status != KITTY_GRAPHICS_OK) {
@@ -1500,6 +1643,9 @@ int main(int argc, char **argv) {
         clock_state.frame++;
         clock_state.seconds = (double)(frame_start.tv_sec - started.tv_sec) +
                               (double)(frame_start.tv_nsec - started.tv_nsec) / 1e9;
+        /* Writing lets go when its hold is up, and the flock takes over again
+         * from wherever the letters left it, which is the nicest part to watch. */
+        if (spell.writing && spell.until >= 0 && clock_state.seconds >= spell.until) spell_clear();
         update_screen_dimensions();
         grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, config.birds);
         if (grid_status != SPATIAL_GRID_OK) {

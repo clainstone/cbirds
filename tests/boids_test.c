@@ -248,6 +248,14 @@ static int feed_input(const char *keys) {
     return result;
 }
 
+/* Counts the filled cells of one slider row as it is actually drawn, which is
+ * what the eye sees and therefore what the requirement is about. */
+static int filled_cells(const char *line) {
+    int filled = 0;
+    for (const char *c = line; (c = strstr(c, "\u2593")) != NULL; c += 3) filled++;
+    return filled;
+}
+
 static void test_legend_panel_layout(void) {
     char lines[LEGEND_ROWS][LEGEND_LINE_MAX];
 
@@ -281,17 +289,46 @@ static void test_legend_panel_layout(void) {
     for (int row = 0; row < LEGEND_ROWS; row++)
         for (int i = 0; i < 6; i++) assert(strstr(lines[row], reversed[i]) == NULL);
 
-    /* And no numeric value anywhere in the panel. */
-    for (int row = 0; row < LEGEND_ROWS; row++)
-        for (const char *c = lines[row]; *c; c++) assert(!(*c >= '0' && *c <= '9'));
+    /* Each slider states its value beside its bar, right aligned in a column of
+     * its own so the numbers stack. */
+    static const char *values[] = {"0.20", "0.005", "0.010", "1.50", "36px", "60"};
+    for (int i = 0; i < 6; i++) assert(strstr(lines[1 + i], values[i]) != NULL);
 }
 
-/* Counts the filled cells of one slider row as it is actually drawn, which is
- * what the eye sees and therefore what the requirement is about. */
-static int filled_cells(const char *line) {
-    int filled = 0;
-    for (const char *c = line; (c = strstr(c, "\u2593")) != NULL; c += 3) filled++;
-    return filled;
+static void test_legend_values_follow_their_notch(void) {
+    char lines[LEGEND_ROWS][LEGEND_LINE_MAX];
+    static const char *floors[] = {"0.01", "0.001", "0.002", "0.10", "12px", "30"};
+    static const char *ceilings[] = {"0.58", "0.013", "0.026", "4.30", "60px", "120"};
+
+    reset_test_config();
+    apply_screen_size(80, 24, 80 * 8, 24 * 16);
+
+    config.boundary_notch = config.separation_notch = config.cohesion_notch =
+        config.alignment_notch = config.vision_notch = config.rate_notch = 0;
+    apply_notches();
+    build_legend(lines);
+    for (int i = 0; i < 6; i++) {
+        assert(strstr(lines[1 + i], floors[i]) != NULL);
+        assert(filled_cells(lines[1 + i]) == 0);
+    }
+
+    config.boundary_notch = config.separation_notch = config.cohesion_notch =
+        config.alignment_notch = config.vision_notch = config.rate_notch = LEGEND_BAR_CELLS;
+    apply_notches();
+    build_legend(lines);
+    for (int i = 0; i < 6; i++) {
+        assert(strstr(lines[1 + i], ceilings[i]) != NULL);
+        assert(filled_cells(lines[1 + i]) == LEGEND_BAR_CELLS);
+    }
+
+    /* A press moves the number and the bar together, by construction: both come
+     * off the same notch. */
+    reset_test_config();
+    assert(feed_input("B") == 1);
+    build_legend(lines);
+    assert(filled_cells(lines[1]) == 5);
+    assert(strstr(lines[1], "0.25") != NULL);
+    reset_test_config();
 }
 
 /* The requirement: one keypress moves the bar by exactly one cell, for every
@@ -530,7 +567,7 @@ static void test_birds_start_clear_of_the_panel(void) {
 
     srand(20260912u);
     /* A roomy viewport, and one where the panel covers most of the free region. */
-    static const int sizes[][2] = {{200, 50}, {80, 24}, {44, 15}};
+    static const int sizes[][2] = {{200, 50}, {80, 24}, {50, 15}};
     for (size_t i = 0; i < sizeof(sizes) / sizeof(*sizes); i++) {
         reset_test_config();
         apply_screen_size(sizes[i][0], sizes[i][1], sizes[i][0] * 8, sizes[i][1] * 16);
@@ -771,6 +808,7 @@ int main(void) {
     test_frame_rate_controls();
     test_flicker_free_render_queue();
     test_legend_panel_layout();
+    test_legend_values_follow_their_notch();
     test_bar_spans_the_whole_travel();
     test_one_keypress_is_one_cell();
     test_weights_stop_at_their_bounds();

@@ -52,6 +52,11 @@ cbirds --color ember      # or pick a ramp
 
 <div align="center"><img src="docs/hero.png" alt="The flock spelling its own name" width="90%"></div>
 
+And in a terminal with no graphics protocol at all — Alacritty, GNOME Terminal,
+Terminal.app, over ssh, inside tmux — the same flock, in braille:
+
+<div align="center"><img src="docs/braille.png" alt="The same flock drawn in braille, for a terminal with no graphics protocol" width="90%"></div>
+
 ```bash
 cbirds --preset murmuration --trails    # the starling look, with tails
 cbirds --turning 0                      # long, lazy banking turns
@@ -201,6 +206,18 @@ it rather than circle it, and a bird inside the panel's turn zone, whose push is
 a constraint rather than a force — the proof that the panel is unreachable
 assumes a bird can turn away at once.
 
+**The other terminals.** A terminal without a graphics protocol gets the frame
+rendered to pixels exactly as it is for a recording, and the pixels read back as
+cells: eight braille dots a cell, lit where a quarter or more of the dot's patch
+is bird, each cell in the colour of whatever bird is in it — or two half blocks a
+cell, coarser and with colour on every pixel. Only the cells that changed since
+the last frame are sent, one cursor move per run of them and a colour only when
+it differs from the one already set, so a full flock at sixty frames a second
+costs a text terminal about as much as it costs Kitty. Nothing paints the
+background: an empty cell is the terminal's own, so the flock wears the theme.
+Terminals without 24 bit colour get the nearest of the 256 colour cube. The
+parameter panel is text either way, and the cells leave its corner alone.
+
 **The edges.** A band a third of the screen wide on each side, in which the push
 inwards grows with the square of how deep into it a bird has gone, so a bird that
 brushes the edge is nudged and a bird that is leaving is turned. Past the screen
@@ -277,26 +294,21 @@ sky.
 
 ## Requirements
 
-A terminal that speaks the Kitty graphics protocol: **Kitty**, **WezTerm**,
-**Ghostty**, recent **Konsole**. Alacritty and GNOME Terminal cannot show it.
+Any terminal that can show colour. Under **Kitty**, **WezTerm**, **Ghostty** or
+recent **Konsole** the flock is real sprites, drawn with the Kitty graphics
+protocol. Everywhere else — Alacritty, GNOME Terminal, Terminal.app, tmux, an
+SSH session, xterm — it is the same flock in braille, and you do not have to
+ask: cbirds asks the terminal whether it can draw, before taking the screen, and
+picks. `--render kitty`, `--render braille` or `--render blocks` overrules it.
 
-You will not get a black screen finding out. cbirds asks the terminal whether it
-can draw, before taking the screen, and says so plainly if it cannot:
-
-```
-$ cbirds
-cbirds draws with the Kitty graphics protocol, and this terminal did not
-answer for it. Kitty, WezTerm, Ghostty and recent Konsole all do.
-Run it under one of those, or pass --force to try anyway.
-```
-
-Build needs GCC 7+ or Clang 10+ and `make`. `make test` runs six suites.
+Build needs GCC 7+ or Clang 10+ and `make`. `make test` runs seven suites.
 
 ## Layout
 
 | | |
 |---|---|
 | `boids.c` | the simulation, the panel, the terminal |
+| `cells.c` `cells.h` | the frame as braille or half blocks, diffed against the last one |
 | `options.c` `options.h` | the option table that drives both the parser and `--help` |
 | `kitty_graphics.c` `.h` | the buffered protocol, with flow control |
 | `spatial_grid.c` `.h` | the uniform grid and its contiguous cell buckets |

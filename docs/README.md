@@ -24,6 +24,10 @@ make
          --hawks 2 --no-intro --no-panel
 ./cbirds --snapshot docs/flocks.png      --frames 200 -n 600  --color ember \
          --flocks 3 --seed 3 --no-intro --no-panel
+# The braille one is what a terminal with no graphics protocol shows: under
+# --render braille a snapshot is a picture of the dots, not of the pixels.
+./cbirds --snapshot docs/braille.png     --frames 240 -n 700  --color ember \
+         --hawks 2 --seed 5 --render braille --no-intro --no-panel
 ```
 
 Fifty frames a second is the ceiling, and the reason is the format rather than
@@ -39,4 +43,5 @@ is the compromise. It was a sixth of this before the edges were fixed, when most
 of the flock was outside the frame and the encoder had nothing to store.
 
 `--record` needs no terminal at all. The `--snapshot` runs do, because they
-photograph a live frame; run them in Kitty, WezTerm or Ghostty.
+photograph a live frame; any terminal will do, and the picture is of whatever
+that terminal was shown — sprites under Kitty, dots or blocks anywhere else.

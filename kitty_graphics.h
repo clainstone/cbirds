@@ -53,6 +53,11 @@ kitty_graphics_status_t kitty_graphics_delete_image(kitty_graphics_t *graphics, 
 kitty_graphics_status_t kitty_graphics_write_text(kitty_graphics_t *graphics, int row, int column,
                                                   const char *text);
 
+/* Queues bytes as they are: escape text some other renderer has already built.
+ * The buffer is the one output sink, whatever is being drawn with. */
+kitty_graphics_status_t kitty_graphics_write_raw(kitty_graphics_t *graphics, const char *bytes,
+                                                 size_t length);
+
 /* Brackets a frame with DEC synchronized-update mode. */
 kitty_graphics_status_t kitty_graphics_begin_synchronized_update(kitty_graphics_t *graphics);
 kitty_graphics_status_t kitty_graphics_end_synchronized_update(kitty_graphics_t *graphics);

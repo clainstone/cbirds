@@ -16,6 +16,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "cells.h"
 #include "font.h"
 #include "gif.h"
 #include "kitty_graphics.h"
@@ -269,7 +270,29 @@ static config_t config = {
 static screen_t screen;
 static int legend_enabled = 1; /* Cleared by --no-legend, never at runtime. */
 static int mouse_enabled = 1;  /* Cleared by --no-mouse, never at runtime. */
-static int force_graphics;     /* Set by --force: skip the protocol probe. */
+/*
+ * How the frame reaches the screen.
+ *
+ * Kitty's graphics protocol draws real sprites, and is asked for first. A
+ * terminal that does not answer for it gets the same flock as text: the frame
+ * is rendered to pixels exactly as it is for a recording, and the pixels are
+ * read back as braille — eight dots a cell, the finest thing text can do — or
+ * as half blocks, two a cell, each cell in the colour of the bird in it. So
+ * every terminal that can show colour gets a flock; the only question is how
+ * fine.
+ */
+typedef enum {
+    RENDER_AUTO = 0, /* Kitty if the terminal answers for it, braille if not. */
+    RENDER_KITTY,
+    RENDER_BRAILLE,
+    RENDER_BLOCKS,
+} render_mode_t;
+static const char *const RENDER_NAMES[] = {"auto", "kitty", "braille", "blocks", NULL};
+static int render_mode = RENDER_AUTO;
+
+static int drawing_with_text(void) {
+    return render_mode == RENDER_BRAILLE || render_mode == RENDER_BLOCKS;
+}
 
 /* Where the pointer is, in pixels, and whether it has ever been seen. The
  * terminal reports cells, so the position is the middle of the cell it names:
@@ -2044,7 +2067,10 @@ static kitty_graphics_status_t queue_legend(kitty_graphics_t *graphics) {
     return KITTY_GRAPHICS_OK;
 }
 
+static kitty_graphics_status_t queue_text_frame(kitty_graphics_t *graphics, const bird_t *birds);
+
 static kitty_graphics_status_t queue_render_frame(kitty_graphics_t *graphics, const bird_t *birds) {
+    if (drawing_with_text()) return queue_text_frame(graphics, birds);
     kitty_graphics_status_t status = kitty_graphics_begin_synchronized_update(graphics);
     if (status == KITTY_GRAPHICS_OK) status = kitty_graphics_delete_all_placements(graphics);
     if (config.trails && palette_shades() > 1) {
@@ -2079,6 +2105,67 @@ static kitty_graphics_status_t queue_render_frame(kitty_graphics_t *graphics, co
         }
     }
     if (status == KITTY_GRAPHICS_OK) status = queue_legend(graphics);
+    if (status == KITTY_GRAPHICS_OK) status = kitty_graphics_end_synchronized_update(graphics);
+    return status;
+}
+
+/*
+ * The text renderer's own state: the sprites as pixels, a canvas the size of
+ * the screen, and the grid of cells that is diffed against the last frame.
+ */
+static png_status_t rasterise_sprites(png_image_t *frames);
+static void compose_onto(png_image_t *canvas, const png_image_t *frames, const bird_t *birds,
+                         int with_ground);
+
+static png_image_t text_sprites[ROTATION_FRAMES * (MAX_PALETTE_SHADES + 1)];
+static png_image_t text_canvas;
+static cells_t text_cells;
+static int text_legend_was_drawn;
+
+/* Whether the terminal can take a 24 bit colour. COLORTERM is the convention,
+ * and nearly every terminal that can sets it; one that cannot gets the nearest
+ * of the 256 colour cube, which is coarser and still a flock. */
+static int terminal_has_truecolor(void) {
+    const char *colorterm = getenv("COLORTERM");
+    if (colorterm == NULL) return 0;
+    return strcmp(colorterm, "truecolor") == 0 || strcmp(colorterm, "24bit") == 0;
+}
+
+static int prepare_text_renderer(void) {
+    if (rasterise_sprites(text_sprites) != PNG_OK) return 0;
+    if (cells_init(&text_cells, terminal_has_truecolor()) != CELLS_OK) return 0;
+    return 1;
+}
+
+/* Sized to the screen, and resized with it. */
+static int text_renderer_fits_the_screen(void) {
+    if (text_canvas.width != screen.width || text_canvas.height != screen.height) {
+        png_image_free(&text_canvas);
+        if (png_image_alloc(&text_canvas, screen.width, screen.height) != PNG_OK) return 0;
+    }
+    return cells_resize(&text_cells, screen.cols, screen.rows) == CELLS_OK;
+}
+
+static kitty_graphics_status_t queue_text_frame(kitty_graphics_t *graphics, const bird_t *birds) {
+    if (!text_renderer_fits_the_screen()) return KITTY_GRAPHICS_ERR_MEMORY;
+    kitty_graphics_status_t status = kitty_graphics_begin_synchronized_update(graphics);
+    /* The panel first, so that when it is switched off the rows it erases are
+     * redrawn by the cells that follow in the same frame, and when it is on the
+     * cells leave its corner alone rather than drawing over its text. */
+    if (status == KITTY_GRAPHICS_OK) status = queue_legend(graphics);
+    if (legend_drawn != text_legend_was_drawn) {
+        cells_invalidate(&text_cells);
+        text_legend_was_drawn = legend_drawn;
+    }
+    cells_keep_out_of(&text_cells, legend_drawn ? LEGEND_COLUMNS : 0,
+                      legend_drawn ? LEGEND_ROWS : 0);
+
+    compose_onto(&text_canvas, text_sprites, birds, 0);
+    cells_read(&text_cells, render_mode == RENDER_BLOCKS ? CELLS_BLOCKS : CELLS_BRAILLE,
+               &text_canvas, screen.cell_width, screen.cell_height);
+    if (cells_emit(&text_cells) != CELLS_OK) return KITTY_GRAPHICS_ERR_MEMORY;
+    if (status == KITTY_GRAPHICS_OK)
+        status = kitty_graphics_write_raw(graphics, text_cells.text, text_cells.length);
     if (status == KITTY_GRAPHICS_OK) status = kitty_graphics_end_synchronized_update(graphics);
     return status;
 }
@@ -2288,8 +2375,8 @@ static const option_t OPTIONS[] = {
     {0, "record-size", NULL, OPTION_STRING, &requested_record_size, 0, 0, NULL, "COLSxROWS",
      "the size to record at, in cells (default 96x26)", "Output", 0},
 
-    {0, "force", NULL, OPTION_FLAG, &force_graphics, 0, 0, NULL, NULL,
-     "draw without asking the terminal whether it can", "General", 0},
+    {0, "render", NULL, OPTION_ENUM, &render_mode, 0, 0, RENDER_NAMES, "HOW",
+     "kitty, braille or blocks; auto asks the terminal (default auto)", "Look", 1},
 };
 enum { OPTION_COUNT = sizeof(OPTIONS) / sizeof(*OPTIONS) };
 
@@ -2675,10 +2762,15 @@ static void fill_ground(png_image_t *canvas) {
 }
 
 /* The same order the live renderer places in: tails, then the flock, then the
- * hawks over the top. */
-static void compose(png_image_t *canvas, const png_image_t *frames, const bird_t *birds) {
+ * hawks over the top. On a ground for a picture; on nothing at all for a text
+ * terminal, whose own background is the sky and whose cells must not paint it. */
+static void compose_onto(png_image_t *canvas, const png_image_t *frames, const bird_t *birds,
+                         int with_ground) {
     int shades = palette_shades();
-    fill_ground(canvas);
+    if (with_ground)
+        fill_ground(canvas);
+    else
+        memset(canvas->pixels, 0, (size_t)canvas->width * (size_t)canvas->height * 4);
 
     if (config.trails && shades > 1) {
         for (int i = 0; i < config.birds; i += TRAIL_EVERY)
@@ -2706,17 +2798,29 @@ static void compose(png_image_t *canvas, const png_image_t *frames, const bird_t
     }
 }
 
+/* A picture of what is on the screen. Under Kitty that is the sprites on a
+ * ground; on a text terminal it is the dots or the blocks, painted the way the
+ * terminal shows them, because a snapshot of the pixels the cells were read from
+ * would be a picture of something nobody saw. */
 static int write_snapshot(const char *path, const bird_t *birds) {
     png_image_t canvas = {0, 0, NULL};
     static png_image_t frames[ROTATION_FRAMES * (MAX_PALETTE_SHADES + 1)];
     uint8_t *encoded = NULL;
     size_t encoded_length = 0;
     int written = 0;
+    static const uint8_t ground[3] = {18, 18, 24};
 
-    png_status_t status = rasterise_sprites(frames);
-    if (status == PNG_OK) status = png_image_alloc(&canvas, screen.width, screen.height);
+    png_status_t status = PNG_OK;
+    if (drawing_with_text()) {
+        if (cells_paint(&text_cells, render_mode == RENDER_BLOCKS ? CELLS_BLOCKS : CELLS_BRAILLE,
+                        &canvas, screen.cell_width, screen.cell_height, ground) != CELLS_OK)
+            status = PNG_ERR_MEMORY;
+    } else {
+        status = rasterise_sprites(frames);
+        if (status == PNG_OK) status = png_image_alloc(&canvas, screen.width, screen.height);
+        if (status == PNG_OK) compose_onto(&canvas, frames, birds, 1);
+    }
     if (status == PNG_OK) {
-        compose(&canvas, frames, birds);
         status = png_encode(&canvas, &encoded, &encoded_length);
     }
     free_sprites(frames);
@@ -2991,7 +3095,7 @@ static int run_recording(void) {
         update_birds(birds, snapshot, &grid);
         for (int i = 0; i < config.birds; i++) birds[i].frame = direction_frame(birds[i].direction);
 
-        compose(&canvas, frames, birds);
+        compose_onto(&canvas, frames, birds, 1);
         gif_status = gif_add_frame(gif, &canvas);
     }
 
@@ -3089,14 +3193,10 @@ int main(int argc, char **argv) {
         perror("Can't enable raw mode");
         exit(EXIT_FAILURE);
     }
-    if (!force_graphics && !terminal_speaks_graphics()) {
-        restore_terminal();
-        fprintf(stderr,
-                "cbirds draws with the Kitty graphics protocol, and this terminal did not\n"
-                "answer for it. Kitty, WezTerm, Ghostty and recent Konsole all do.\n"
-                "Run it under one of those, or pass --force to try anyway.\n");
-        exit(EXIT_FAILURE);
-    }
+    /* Kitty's protocol if the terminal answers for it, and the same flock in
+     * braille if it does not: there is no terminal this refuses to run in. */
+    if (render_mode == RENDER_AUTO)
+        render_mode = terminal_speaks_graphics() ? RENDER_KITTY : RENDER_BRAILLE;
     if (palette_follows_the_theme() && !learn_the_theme()) config.palette = FALLBACK_PALETTE;
 
     spatial_grid_status_t grid_status = spatial_grid_init(&grid, SPATIAL_CELL_SIZE);
@@ -3115,10 +3215,19 @@ int main(int argc, char **argv) {
                 spatial_grid_status_string(grid_status));
         exit(EXIT_FAILURE);
     }
-    build_rotation_frames(frames, palette_shades(), config.bird_size, 0);
-    /* A hawk has to read as a bigger bird at a glance, so it gets its own set at
-     * twice the size, one shade, uploaded straight after the flock's. */
-    build_rotation_frames(frames + palette_shades() * ROTATION_FRAMES, 1, hawk_sprite_size(), 1);
+    if (drawing_with_text()) {
+        /* The sprites stay pixels, to be read back as cells every frame. */
+        if (!prepare_text_renderer()) {
+            fprintf(stderr, "%s: cannot build the sprites to draw with\n", program_name);
+            exit(EXIT_FAILURE);
+        }
+    } else {
+        build_rotation_frames(frames, palette_shades(), config.bird_size, 0);
+        /* A hawk has to read as a bigger bird at a glance, so it gets its own set
+         * at twice the size, one shade, uploaded straight after the flock's. */
+        build_rotation_frames(frames + palette_shades() * ROTATION_FRAMES, 1, hawk_sprite_size(),
+                              1);
+    }
     hawk_sets_built = 1;
 
     bird_t *birds = calloc((size_t)config.birds, sizeof(*birds));
@@ -3146,13 +3255,15 @@ int main(int argc, char **argv) {
     } else if (show_intro && spell_layout("CBIRDS")) {
         spell.until = INTRO_SECONDS;
     }
-    int sprite_sets = palette_shades() + 1;
-    graphics_status = upload_rotation_frames(&graphics, frames, sprite_sets);
-    free_rotation_frames(frames, sprite_sets);
-    if (graphics_status != KITTY_GRAPHICS_OK) {
-        fprintf(stderr, "Cannot upload Kitty graphics: %s\n",
-                kitty_graphics_status_string(graphics_status));
-        exit(EXIT_FAILURE);
+    if (!drawing_with_text()) {
+        int sprite_sets = palette_shades() + 1;
+        graphics_status = upload_rotation_frames(&graphics, frames, sprite_sets);
+        free_rotation_frames(frames, sprite_sets);
+        if (graphics_status != KITTY_GRAPHICS_OK) {
+            fprintf(stderr, "Cannot upload Kitty graphics: %s\n",
+                    kitty_graphics_status_string(graphics_status));
+            exit(EXIT_FAILURE);
+        }
     }
 
     struct timespec started;

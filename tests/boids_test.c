@@ -1755,6 +1755,80 @@ static void test_the_matrix_is_the_only_thing_that_rains(void) {
     reset_test_config();
 }
 
+/* A terminal with no graphics protocol gets the same flock as text: braille by
+ * default, half blocks on request, and never a Kitty command. */
+static void test_a_text_terminal_gets_the_flock_in_braille(void) {
+    kitty_graphics_t graphics;
+    bird_t birds[3];
+
+    reset_test_config();
+    legend_enabled = 0;
+    config.palette = palette_named("ember");
+    config.birds = 3;
+    config.hawks = 1;
+    apply_screen_size(60, 20, 480, 320);
+    birds[0] = (bird_t){.x = 100, .y = 100, .direction = 0.3};
+    birds[1] = (bird_t){.x = 200, .y = 150, .direction = 2.0};
+    birds[2] = (bird_t){.x = 300, .y = 200, .direction = 4.0};
+    place_hawks();
+
+    render_mode = RENDER_BRAILLE;
+    assert(drawing_with_text());
+    assert(prepare_text_renderer());
+    assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
+    assert(queue_render_frame(&graphics, birds) == KITTY_GRAPHICS_OK);
+
+    /* Synchronised, coloured, in braille, and not one graphics command. */
+    assert(strstr(graphics.buffer, "\033[?2026h") == graphics.buffer);
+    assert(strstr(graphics.buffer, "\033_G") == NULL);
+    assert(strstr(graphics.buffer, "\033[38;2;") != NULL ||
+           strstr(graphics.buffer, "\033[38;5;") != NULL);
+    int braille = 0;
+    for (const unsigned char *c = (const unsigned char *)graphics.buffer; *c; c++)
+        if (c[0] == 0xE2 && (c[1] & 0xFC) == 0xA0) braille++; /* U+2800..U+28FF. */
+    assert(braille >= 3);                                     /* At least a dot cell per bird. */
+    assert(strstr(graphics.buffer, "\033[2J") == NULL);       /* The rule holds here too. */
+
+    /* The same frame again is nothing but the brackets: only changes are sent. */
+    size_t first = graphics.length;
+    graphics.length = 0;
+    assert(queue_render_frame(&graphics, birds) == KITTY_GRAPHICS_OK);
+    assert(graphics.length < first / 4);
+
+    /* Half blocks on request. */
+    render_mode = RENDER_BLOCKS;
+    graphics.length = 0;
+    cells_invalidate(&text_cells);
+    assert(queue_render_frame(&graphics, birds) == KITTY_GRAPHICS_OK);
+    assert(strstr(graphics.buffer, "\xe2\x96\x80") != NULL ||
+           strstr(graphics.buffer, "\xe2\x96\x84") != NULL); /* U+2580 or U+2584. */
+
+    /* And a snapshot under either is a picture of the cells, the size of the
+     * screen, not of the pixels they were read from. */
+    char path[] = "/tmp/cbirds_text_snapshot.png";
+    assert(write_snapshot(path, birds));
+    FILE *file = fopen(path, "rb");
+    assert(file != NULL);
+    static uint8_t bytes[1 << 20];
+    size_t length = fread(bytes, 1, sizeof(bytes), file);
+    fclose(file);
+    remove(path);
+    png_image_t picture = {0, 0, NULL};
+    assert(png_decode(bytes, length, &picture) == PNG_OK);
+    assert(picture.width == screen.cols * screen.cell_width);
+    assert(picture.height == screen.rows * screen.cell_height);
+    png_image_free(&picture);
+
+    kitty_graphics_destroy(&graphics);
+    cells_destroy(&text_cells);
+    png_image_free(&text_canvas);
+    free_sprites(text_sprites);
+    render_mode = RENDER_KITTY;
+    config.hawks = 0;
+    legend_enabled = 1;
+    reset_test_config();
+}
+
 /* A GIF has no panel in it, so it must not have a hole where one would be — and
  * it is drawn without a terminal, so the palette that asks the terminal what
  * colours it uses has to fall back to one that has colours in it. */
@@ -2222,6 +2296,7 @@ int main(void) {
     test_theme_colours_are_parsed();
     test_each_flock_flies_at_its_own_pace();
     test_the_matrix_is_the_only_thing_that_rains();
+    test_a_text_terminal_gets_the_flock_in_braille();
     test_recording_gives_the_whole_frame_to_the_flock();
     test_flocks_keep_to_their_own_side_of_the_sky();
     test_flocks_do_not_align_with_each_other();

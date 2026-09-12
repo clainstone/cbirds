@@ -131,8 +131,10 @@ static const double HAWK_SPEED = 0.90;
 /* Sharper than a bird's bank, because a raptor is more agile, but a limit all the
  * same: without one it turned forty degrees a frame and read as a glitch. A fifth
  * of a radian looked calm and never caught anything: the turning circle was wider
- * than the flock, so every miss became a long trip to a wall and back. */
-static const double HAWK_TURN = 0.5;
+ * than the flock, so every miss became a long trip to a wall and back. Half a
+ * radian still only landed one chase in eight; at a whole one it lands half of
+ * them, and the wall is reached a third as often. */
+static const double HAWK_TURN = 1.0;
 /* That is per frame at sixty a second. At any other rate it has to be rescaled or
  * the hawk is a different animal: half a radian a frame is 1718 degrees a second
  * at sixty and 3437 at a hundred and twenty. */
@@ -519,39 +521,66 @@ static int saturation_of(const uint8_t rgb[3]) {
     return high - low;
 }
 
-/* Five steps from the accent to the background, so the ramp ends where the screen
- * does and the far end of the flock reads as distance. Divided by four rather
- * than six: over six the last step stopped two thirds of the way along, and the
- * five shades sat so close together that three flocks in the terminal's own
- * colours were three brightnesses of one colour and could not be told apart. */
+/* The relative luminance the WCAG contrast ratio is built on. Used to keep the
+ * flock off the terminal's own background, which is the one colour a bird must
+ * never be. */
+static double luminance_of(const uint8_t rgb[3]) {
+    double channel[3];
+    for (int c = 0; c < 3; c++) {
+        double v = rgb[c] / 255.0;
+        channel[c] = v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
+    }
+    return 0.2126 * channel[0] + 0.7152 * channel[1] + 0.0722 * channel[2];
+}
+
+static double contrast_between(const uint8_t a[3], const uint8_t b[3]) {
+    double high = luminance_of(a), low = luminance_of(b);
+    if (high < low) {
+        double swap = high;
+        high = low;
+        low = swap;
+    }
+    return (high + 0.05) / (low + 0.05);
+}
+
+/* Five steps from the accent towards the background, stopping well short of it.
+ * Over four steps the last shade *was* the background, byte for byte: a fifth of
+ * the flock was painted in the colour of the sky and simply did not exist, and
+ * with three flocks up a whole flock went missing. Over seven, the far end still
+ * reads as distance and the worst case across the common colour schemes keeps a
+ * contrast of 1.8 against the ground instead of 1.0. */
 static void ramp_between(const uint8_t from[3], const uint8_t to[3]) {
     for (int i = 0; i < 5; i++)
         for (int c = 0; c < 3; c++)
-            theme_tints[i][c] = (uint8_t)(from[c] + (to[c] - from[c]) * i / 4);
+            theme_tints[i][c] = (uint8_t)(from[c] + (to[c] - from[c]) * i / 7);
 }
 
 static int learn_the_theme(void) {
     uint8_t accent[3] = {0, 0, 0}, background[3] = {0, 0, 0};
-    int best = -1;
+    double best = -1;
 
+    /* The background first, because the accent is chosen against it. */
+    if (!ask_colour("\033]11;?\033\\", background)) {
+        /* No background: fade towards black, which is the common case. */
+        background[0] = background[1] = background[2] = 0;
+    }
     /* Entries one to six are the terminal's own reds through cyans, which is
-     * where a colour scheme keeps its character. */
+     * where a colour scheme keeps its character. The most saturated of them is
+     * not always the one to take: on stock xterm that is pure blue on black,
+     * which is both the dimmest colour on the screen and the ugliest. Saturation
+     * times contrast picks the colour with character that can also be seen. */
     for (int entry = 1; entry <= 6; entry++) {
         char request[32];
         uint8_t rgb[3];
         snprintf(request, sizeof(request), "\033]4;%d;?\033\\", entry);
         if (!ask_colour(request, rgb)) continue;
-        int saturation = saturation_of(rgb);
-        if (saturation > best) {
-            best = saturation;
+        double score = saturation_of(rgb) * contrast_between(rgb, background);
+        if (score > best) {
+            best = score;
             memcpy(accent, rgb, sizeof(accent));
         }
     }
     if (best < 0) return 0;
-    if (!ask_colour("\033]11;?\033\\", background)) {
-        /* No background either: fade towards black, which is the common case. */
-        background[0] = background[1] = background[2] = 0;
-    }
     ramp_between(accent, background);
     theme_is_known = 1;
     return 1;
@@ -582,6 +611,10 @@ static const uint8_t ACID_TINTS[][3] = {
 static const uint8_t MATRIX_TINTS[][3] = {
     {198, 255, 198}, {120, 246, 120}, {54, 210, 70}, {26, 150, 48}, {12, 92, 30},
 };
+/* What the embedded sprite is actually painted, for the palettes that leave it
+ * alone: a hawk still has to stand off that. */
+static const uint8_t SPRITE_OWN_COLOUR[3] = {237, 28, 36};
+
 static const uint8_t PAPER_TINTS[][3] = {
     {248, 246, 240}, {206, 202, 192}, {158, 154, 146}, {104, 102, 98}, {48, 48, 46},
 };
@@ -629,16 +662,56 @@ static int palette_shades(void) {
     return palette()->shades;
 }
 
-/* A hawk is not one of the flock's shades. It gets one colour whatever the palette
- * is, because what has to read instantly is that this one is different.
+/* A hawk is not one of the flock's shades. What has to read instantly is that
+ * this one is different.
  *
  * It used to be a dark silhouette, which is what a hawk looks like against the
  * sky and what nothing looks like against a black terminal: barely a twentieth of
- * a stop above the background, invisible in every recording. So it is scarlet
- * instead, five times the background's brightness, and no palette's ramp goes
- * anywhere near it. */
+ * a stop above the background, invisible in every recording. Scarlet fixed that
+ * everywhere except the warm ramps, where scarlet is just another ember — against
+ * ember the contrast was 1.16, which is no contrast at all. So there are two
+ * colours and the palette picks: whichever of them stands furthest from the
+ * nearest thing the flock is wearing. */
+static const uint8_t HAWK_COLOURS[][3] = {
+    {255, 60, 72},   /* Scarlet, for every cold or grey ramp. */
+    {255, 246, 210}, /* A hot near-white, against a single dark colour. */
+    {96, 226, 255},  /* And an electric cyan, for the ramps that are already fire. */
+};
+enum { HAWK_COLOUR_COUNT = sizeof(HAWK_COLOURS) / sizeof(*HAWK_COLOURS) };
+
+/* How far apart two colours look, which is not how far apart their brightnesses
+ * are: scarlet and pale ice blue are a stone's throw apart by luminance and could
+ * not be more different to look at. The usual weighted RGB distance, good enough
+ * for choosing between two candidates. */
+static double colour_distance(const uint8_t a[3], const uint8_t b[3]) {
+    double mean_red = (a[0] + b[0]) / 2.0;
+    double dr = a[0] - b[0], dg = a[1] - b[1], db = a[2] - b[2];
+    return sqrt((2 + mean_red / 256) * dr * dr + 4 * dg * dg +
+                (2 + (255 - mean_red) / 256) * db * db);
+}
+
+static const uint8_t *hawk_colour(void) {
+    const palette_t *chosen = palette();
+    int best = 0;
+    double best_gap = -1;
+    for (int candidate = 0; candidate < HAWK_COLOUR_COUNT; candidate++) {
+        double gap = 1e9;
+        for (int shade = 0; shade < chosen->shades; shade++) {
+            const uint8_t *tint = chosen->tints != NULL ? chosen->tints[shade] : SPRITE_OWN_COLOUR;
+            double against = colour_distance(HAWK_COLOURS[candidate], tint);
+            if (against < gap) gap = against;
+        }
+        if (gap > best_gap) {
+            best_gap = gap;
+            best = candidate;
+        }
+    }
+    return HAWK_COLOURS[best];
+}
+
 static void hawk_tint(png_image_t *image) {
-    png_tint(image, 255, 60, 72, PNG_TINT_REPLACE);
+    const uint8_t *colour = hawk_colour();
+    png_tint(image, colour[0], colour[1], colour[2], PNG_TINT_REPLACE);
 }
 
 /* Shade zero of a tinted palette is still a tint: the list is the whole ramp. */
@@ -1120,6 +1193,23 @@ static double distance_to_bird(const bird_t *birds, const hawk_t *hawk, int bird
     return sqrt(dx * dx + dy * dy);
 }
 
+/* How near the hawk will pass its bird over the whole of this frame's travel, not
+ * merely where it stands now. At forty pixels a frame a hawk can pass clean
+ * through a bird between one frame and the next; the nearest point of the segment
+ * it is about to fly is what it actually reaches. */
+static double reach_along_the_step(const bird_t *birds, const hawk_t *hawk, int bird) {
+    double step = config.speed * HAWK_DIVE_SPEED;
+    double dx = birds[bird].x - hawk->x, dy = birds[bird].y - hawk->y;
+    double along = dx * cos(hawk->direction) + dy * sin(hawk->direction);
+    if (along < 0) along = 0;
+    if (along > step) along = step;
+    double near_x = hawk->x + along * cos(hawk->direction);
+    double near_y = hawk->y + along * sin(hawk->direction);
+    dx = birds[bird].x - near_x;
+    dy = birds[bird].y - near_y;
+    return sqrt(dx * dx + dy * dy);
+}
+
 /* Pick, or keep. A hawk holds on to its bird for HAWK_COMMITMENT frames whatever
  * else wanders past, and only when that runs out will it trade up, and then only
  * for a bird a clear quarter closer than the one it is on. Without the hold it
@@ -1170,9 +1260,10 @@ static double hawk_turning_radius(void) {
 /* And how far off it has to see a wall: a whole diameter, not a radius. A radius
  * is the bare minimum to turn ninety degrees, and since the push starts at
  * nothing at the band's edge the hawk was always committed before the push was
- * worth anything — it reflected off the glass about once a second. */
+ * worth anything — it reflected off the glass about once a second. Three gives it
+ * room to lean out of the turn instead of hauling on it. */
 static double hawk_wall_band(void) {
-    return hawk_turning_radius() * 2;
+    return hawk_turning_radius() * 3;
 }
 
 /* A wall, seen a turning circle ahead. Without this the hawk flew into the edge
@@ -1262,19 +1353,19 @@ static void hunt(const bird_t *birds) {
             /* A pass is being among them, not catching the one it set out after:
              * the bird it chose is fleeing, so what it actually flies through is
              * whichever birds are there when it arrives. */
-            /* Within one step, or within a silhouette: at these speeds a hawk
-             * covers more ground in a frame than a bird is wide, so a threshold of
-             * a couple of sprites alone let it jump clean over the flock without
-             * ever registering that it had arrived. */
+            /* How near it has to get: two silhouettes, and no wider. Widening it
+             * to a frame's travel made the strike distance depend on the frame
+             * rate — six times as many strikes at --fps 30 as at 60 — so instead
+             * the whole of this frame's travel is tested below, which is the same
+             * thing without the arithmetic depending on how fast the clock runs. */
             double arrived = config.bird_size * 2;
-            if (arrived < config.speed) arrived = config.speed;
             /* Its own bird, and only its own bird. Counting whatever else it
              * happened to pass close to ended nine chases in ten before they were
              * chases: the strike fired the frame the dive began, sixty pixels from
              * the bird it had chosen, and the commitment, the lead and the dive
              * were all dead letters. */
             int struck = hawk->prey >= 0 && hawk->prey < config.birds &&
-                         distance_to_bird(birds, hawk, hawk->prey) < arrived;
+                         reach_along_the_step(birds, hawk, hawk->prey) < arrived;
             if (struck) {
                 hawk->prey = -1;
                 hawk->commitment = 0;
@@ -1899,10 +1990,16 @@ static void build_legend(char lines[LEGEND_ROWS][LEGEND_LINE_MAX]) {
     snprintf(value, sizeof(value), "%d", config.frame_rate);
     legend_slider(lines[6], LEGEND_LINE_MAX, "rate", config.rate_notch, value, 'r', 'R');
 
-    if (show_stats)
-        snprintf(lines[7], LEGEND_LINE_MAX, "\u2502 %-*s %5.1fms %4.0fK %3.0f \u2502",
-                 LEGEND_NAME_WIDTH, "frame", stats.frame_ms, stats.bytes / 1024.0, stats.rate);
-    else
+    if (show_stats) {
+        /* Built as text and then padded to the same inner width as every other
+         * row: written straight into the row it came out four cells short and the
+         * panel had a notch in its right hand side. The units are on the numbers,
+         * because 2.1 30 60 is three numbers and not a sentence. */
+        char measured[LEGEND_LINE_MAX / 2];
+        snprintf(measured, sizeof(measured), "%-*s %5.1fms %5.0fKB %3.0ffps", LEGEND_NAME_WIDTH,
+                 "frame", stats.frame_ms, stats.bytes / 1024.0, stats.rate);
+        snprintf(lines[7], LEGEND_LINE_MAX, "\u2502 %-*s \u2502", inner - 2, measured);
+    } else
         snprintf(lines[7], LEGEND_LINE_MAX, "\u2502 %*s \u2502", inner - 2, "");
     snprintf(lines[8], LEGEND_LINE_MAX, "\u2502 %-*s q%*s \u2502", LEGEND_NAME_WIDTH, "quit",
              inner - LEGEND_NAME_WIDTH - 4, "");
@@ -1979,19 +2076,22 @@ static kitty_graphics_status_t queue_render_frame(kitty_graphics_t *graphics, co
     return status;
 }
 
+/* Move first, then draw, and move both the flock and the hawks before drawing
+ * either. Drawing first meant the frame on the screen held the birds from before
+ * the step and the hawks from after it — a hawk a whole step, forty pixels, ahead
+ * of the hole it had just made, which is not what the recorder drew and not what
+ * the physics said. Paused still draws and still reads keys, so the panel answers
+ * and the sliders can be explored on a still frame; a step grants one frame of
+ * motion and then stands still again. */
 static kitty_graphics_status_t render_frame(kitty_graphics_t *graphics, bird_t *birds,
                                             const bird_t *snapshot, const spatial_grid_t *grid) {
-    kitty_graphics_status_t status = queue_render_frame(graphics, birds);
-    if (status != KITTY_GRAPHICS_OK) return status;
-
-    /* Paused still draws and still reads keys, so the panel answers and the
-     * sliders can be explored on a still frame. A step grants one frame of
-     * motion and then stands still again. */
-    if (paused && !step_once) return KITTY_GRAPHICS_OK;
-    step_once = 0;
-    update_birds(birds, snapshot, grid);
-    for (int i = 0; i < config.birds; i++) birds[i].frame = direction_frame(birds[i].direction);
-    return KITTY_GRAPHICS_OK;
+    if (!paused || step_once) {
+        step_once = 0;
+        hunt(snapshot);
+        update_birds(birds, snapshot, grid);
+        for (int i = 0; i < config.birds; i++) birds[i].frame = direction_frame(birds[i].direction);
+    }
+    return queue_render_frame(graphics, birds);
 }
 
 static void update_speed(void) {
@@ -2829,6 +2929,14 @@ static int record_delay_for(int fps) {
  * to be. Every frame is simulated, every --record-every'th is composited and
  * handed to the GIF writer.
  */
+/* Headless there is no terminal to ask what colours it uses, so the palette that
+ * follows the terminal has nothing in it: black birds on a black ground, which is
+ * what `cbirds --record flock.gif` — the example in the help — recorded. Both the
+ * modes that never open a terminal fall back to the shipped ramp. */
+static void settle_the_palette_without_a_terminal(void) {
+    if (palette_follows_the_theme()) config.palette = FALLBACK_PALETTE;
+}
+
 static int run_recording(void) {
     static png_image_t frames[ROTATION_FRAMES * (MAX_PALETTE_SHADES + 1)];
     png_image_t canvas = {0, 0, NULL};
@@ -2840,6 +2948,7 @@ static int run_recording(void) {
      * format can carry and the rate actually achieved is reported rather than
      * claimed. Every simulated frame is recorded, and the simulation steps at the
      * recording rate, so the motion in the GIF runs at life speed. */
+    settle_the_palette_without_a_terminal();
     int delay = record_delay_for(record_fps);
     /* The rate a hundredth-of-a-second delay really gives, which is not always a
      * whole number: a delay of 17 plays at 5.88 a second, not 5. */
@@ -2932,6 +3041,7 @@ static int run_benchmark(void) {
     spatial_grid_t grid;
     struct timespec start, finish;
 
+    settle_the_palette_without_a_terminal();
     apply_screen_size(200, 50, 1600, 800);
     if (spatial_grid_init(&grid, SPATIAL_CELL_SIZE) != SPATIAL_GRID_OK) return EXIT_FAILURE;
     if (spatial_grid_prepare(&grid, screen.width, screen.height, config.birds) != SPATIAL_GRID_OK)
@@ -3130,7 +3240,6 @@ int main(int argc, char **argv) {
                 birds[i].frame = direction_frame(birds[i].direction);
             }
         }
-        if (!paused || step_once) hunt(snapshot);
         graphics_status = leaving ? queue_render_frame(&graphics, birds)
                                   : render_frame(&graphics, birds, snapshot, &grid);
         if (graphics_status != KITTY_GRAPHICS_OK) {

@@ -25,6 +25,7 @@
 enum {
     ROTATION_FRAMES = 90,
     MAX_PALETTE_SHADES = 8,
+    MAX_FLOCKS = 5,
     FRAME_ANGLE = 360 / ROTATION_FRAMES,
     SPRITE_SUPERSAMPLE = 8,
     SPRITE_WORK_MAX = 256,
@@ -117,6 +118,7 @@ typedef struct {
     double x, y, direction;
     int frame;
     int shade; /* Index into the palette, and half of the image id. */
+    int flock; /* Which flock it reads: separation ignores this, the rest does not. */
 } bird_t;
 
 typedef struct {
@@ -131,7 +133,7 @@ typedef struct {
 } screen_t;
 
 typedef struct {
-    int birds, frame_rate, bird_size, palette;
+    int birds, frame_rate, bird_size, palette, flocks;
     double speed;
     int vision_cells, vision_radius, vision_radius_squared;
     double separation, alignment, cohesion, boundary;
@@ -148,6 +150,7 @@ static config_t config = {
     .speed = DEFAULT_SPEED,
     .bird_size = DEFAULT_BIRD_SIZE,
     .palette = 0,
+    .flocks = 1,
     .vision_cells = DEFAULT_VISION_RADIUS / SPATIAL_CELL_SIZE,
     .vision_radius = DEFAULT_VISION_RADIUS,
     .vision_radius_squared = DEFAULT_VISION_RADIUS * DEFAULT_VISION_RADIUS,
@@ -174,6 +177,14 @@ static struct {
     int present;
     double x, y;
 } mouse;
+
+/* A monotonic clock for everything that animates on its own: the frame counter
+ * for anything that wants to act every so many frames, the seconds for anything
+ * that has to look the same whatever the frame rate. */
+static struct {
+    long frame;
+    double seconds;
+} clock_state;
 /* Whether the panel is currently on screen. The panel is anchored at the origin
  * and constant in cells, so it never leaves text behind by moving: the only row
  * ever needing an erase is one it occupied before being switched off. Clearing
@@ -486,7 +497,13 @@ static void initialize_birds(bird_t *birds) {
         }
         bird->direction = 2 * M_PI * random_unit();
         bird->frame = direction_frame(bird->direction);
-        bird->shade = (int)(random_unit() * palette_shades()) % palette_shades();
+        /* Flocks are handed out round robin so they come out even, and when there
+         * is more than one the palette follows them: a colour per flock is what
+         * makes two of them legible as two. */
+        bird->flock = i % config.flocks;
+        bird->shade = config.flocks > 1
+                          ? bird->flock % palette_shades()
+                          : (int)(random_unit() * palette_shades()) % palette_shades();
     }
 }
 
@@ -519,7 +536,7 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
     const bird_t *target = &birds[target_index];
     vector_t separation = {0, 0}, alignment = {0, 0}, cohesion = {0, 0};
     vector_t boundary = boundary_vector(target);
-    int neighbors = 0;
+    int neighbors = 0, kin = 0;
     int center_x, center_y;
     spatial_grid_cell_for_position(grid, target->x, target->y, &center_x, &center_y);
     int min_x = center_x - config.vision_cells;
@@ -540,21 +557,30 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
                 const bird_t *other = &birds[i];
                 double dx = target->x - other->x, dy = target->y - other->y;
                 if (dx * dx + dy * dy >= config.vision_radius_squared) continue;
+                /* Separation is physical and applies to every bird in reach.
+                 * Alignment and cohesion are social, and a bird only reads its
+                 * own flock: two flocks pass through each other, swirl, and
+                 * refuse to merge. With one flock every neighbour is kin and the
+                 * arithmetic is exactly what it was. */
                 separation.x += dx;
                 separation.y += dy;
+                neighbors++;
+                if (other->flock != target->flock) continue;
                 alignment.x += cos(other->direction);
                 alignment.y += sin(other->direction);
                 cohesion.x += other->x;
                 cohesion.y += other->y;
-                neighbors++;
+                kin++;
             }
         }
     }
     if (neighbors) {
-        alignment.x /= neighbors;
-        alignment.y /= neighbors;
-        cohesion.x = cohesion.x / neighbors - target->x;
-        cohesion.y = cohesion.y / neighbors - target->y;
+        if (kin) {
+            alignment.x /= kin;
+            alignment.y /= kin;
+            cohesion.x = cohesion.x / kin - target->x;
+            cohesion.y = cohesion.y / kin - target->y;
+        }
         double x = separation.x * config.separation + alignment.x * config.alignment +
                    cohesion.x * config.cohesion + boundary.x * config.boundary;
         double y = separation.y * config.separation + alignment.y * config.alignment +
@@ -877,6 +903,8 @@ static const option_t OPTIONS[] = {
      "how many boids to fly (default 800)", "Flock"},
     {'s', "size", OPTION_INT, &config.bird_size, MIN_BIRD_SIZE, MAX_BIRD_SIZE, NULL, "PIXELS",
      "sprite size in pixels (default 15)", "Flock"},
+    {'k', "flocks", OPTION_INT, &config.flocks, 1, MAX_FLOCKS, NULL, "COUNT",
+     "split into this many flocks that will not merge (default 1)", "Flock"},
     {'c', "palette", OPTION_ENUM, &config.palette, 0, 0, PALETTE_NAMES, "NAME",
      "colour the flock: original, ember, ice, acid, paper", "Flock"},
     {'f', "fps", OPTION_INT, &requested_frame_rate, MIN_FRAME_RATE, MAX_FRAME_RATE, NULL, "RATE",
@@ -983,12 +1011,17 @@ int main(int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
 
+    struct timespec started;
+    clock_gettime(CLOCK_MONOTONIC, &started);
     int running = 1;
     while (running) {
         running = handle_input();
         if (!running) break;
 
         clock_gettime(CLOCK_MONOTONIC, &frame_start);
+        clock_state.frame++;
+        clock_state.seconds = (double)(frame_start.tv_sec - started.tv_sec) +
+                              (double)(frame_start.tv_nsec - started.tv_nsec) / 1e9;
         update_screen_dimensions();
         grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, config.birds);
         if (grid_status != SPATIAL_GRID_OK) {

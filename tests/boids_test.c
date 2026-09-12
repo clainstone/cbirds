@@ -610,6 +610,35 @@ static void test_birds_start_clear_of_the_panel(void) {
 }
 
 /* Two flocks share the space without sharing a heading. */
+static void test_the_recording_rate_is_one_a_gif_has(void) {
+    /* A GIF's delay is whole hundredths, so the rates it can carry are 100/n. The
+     * rate asked for is rounded to one of those, never faked. */
+    assert(record_delay_for(50) == 2);
+    assert(record_delay_for(25) == 4);
+    assert(record_delay_for(20) == 5);
+    assert(record_delay_for(10) == 10);
+    assert(record_delay_for(2) == 50);
+
+    /* Sixty is not a rate a GIF has: it comes back as the ceiling. */
+    assert(record_delay_for(60) == 2);
+    assert(record_delay_for(120) == 2);
+    assert(100 / record_delay_for(60) == MAX_RECORD_FPS);
+
+    /* Nothing ever asks a viewer for a delay it would clamp. */
+    for (int fps = 2; fps <= 120; fps++) {
+        int delay = record_delay_for(fps);
+        assert(delay >= 2);
+        assert(100 / delay <= MAX_RECORD_FPS);
+        /* And it is the nearest rate the format has, compared as rates rather
+         * than as delays: no other legal delay is closer to what was asked. */
+        double got = 100.0 / delay;
+        for (int other = 2; other <= 100; other++) {
+            double mine = fabs(got - fps), theirs = fabs(100.0 / other - fps);
+            assert(mine <= theirs + 1e-9);
+        }
+    }
+}
+
 static void test_birds_bank_rather_than_snap(void) {
     reset_test_config();
     config.turning_notch = DEFAULT_TURNING_NOTCH;
@@ -1423,6 +1452,7 @@ int main(void) {
     test_boundary_bands_follow_the_viewport();
     test_bottom_band_scales_on_a_short_viewport();
     test_birds_start_spread_inside_the_free_region();
+    test_the_recording_rate_is_one_a_gif_has();
     test_birds_bank_rather_than_snap();
     test_the_konami_code();
     test_wind_leans_the_flock();

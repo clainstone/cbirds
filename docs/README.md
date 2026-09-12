@@ -7,8 +7,8 @@ encoders. Nothing outside this repository touched them. To regenerate:
 make
 
 # The animation at the top: a band of birds, its own name, then a murmuration.
-./cbirds --record docs/demo.gif --record-size 120 --record-rows 32 \
-         --record-every 4 --record-delay 5 --frames 400 \
+./cbirds --record docs/demo.gif --record-fps 50 --record-seconds 6 \
+         --record-size 104 --record-rows 28 \
          -n 900 --color ember --trails --spell CBIRDS --spell-hold 2 \
          --seed 11 --preset murmuration
 
@@ -21,6 +21,12 @@ make
 ./cbirds --snapshot docs/hawks.png       --frames 300 -n 800  --color acid \
          --hawks 2 --no-intro
 ```
+
+Fifty frames a second is the ceiling, and the reason is the format rather than
+the program: a GIF carries the delay between frames as whole hundredths of a
+second, so the only rates it has are 100/1, 100/2, 100/3 and so on, and viewers
+clamp anything under two hundredths up to a tenth. Ask for 60 and you get 50,
+and cbirds says so rather than pretending.
 
 `--record` needs no terminal at all. The `--snapshot` runs do, because they
 photograph a live frame; run them in Kitty, WezTerm or Ghostty.

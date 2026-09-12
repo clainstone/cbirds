@@ -12,8 +12,8 @@
 ![cbirds recording itself](docs/demo.gif)
 
 *That is a terminal. Those are PNG sprites. It wrote its own name, and then
-recorded this GIF of itself — the LZW encoder is in `gif.c`, and one command
-regenerates it.*
+recorded this GIF of itself at 50 frames a second — the LZW encoder is in
+`gif.c`, and one command regenerates it.*
 
 </div>
 
@@ -151,10 +151,13 @@ clearing deletes them, and every later placement would point at an image that no
 longer exists. A test asserts that no frame ever carries a screen erase.
 
 **The recording.** `--record` runs headless — no terminal, no frame budget, and
-deterministic given `--seed` — composites every few frames into one canvas and
-writes an animated GIF: global colour table chosen from the frames themselves,
-LZW, Netscape looping. The demo at the top of this file was made by the command
-in `docs/README.md`, in four tenths of a second, and nothing outside this
+deterministic given `--seed` — composites every frame into one canvas and writes
+an animated GIF: global colour table chosen from the frames themselves, LZW,
+Netscape looping. `--record-fps` and `--record-seconds` say what you want; fifty
+a second is the ceiling, because a GIF's delay is whole hundredths and viewers
+clamp anything under two of them. Ask for sixty and you get fifty, and it tells
+you why instead of pretending. The demo at the top of this file is 300 frames at
+50 fps, made by the command in `docs/README.md`, and nothing outside this
 repository touched it. The test reads a recording back with a GIF parser written
 separately from the writer, because an encoder checked against its own
 assumptions is not checked.

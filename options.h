@@ -13,7 +13,11 @@
 #include <stdio.h>
 
 typedef enum {
-    OPTION_FLAG,   /* No argument, sets its int target to 1. */
+    OPTION_FLAG, /* No argument, sets its int target to 1. */
+    /* No argument, clears its int target: the off switch for something that is on
+     * by default. Named for what it does — "no-panel" — so the help lists the form
+     * that has an effect rather than the form that cannot have one. */
+    OPTION_OFF,
     OPTION_INT,    /* Bounded integer. */
     OPTION_DOUBLE, /* Bounded double. */
     OPTION_ENUM,   /* One of names[], the index goes into the int target. */

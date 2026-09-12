@@ -8,7 +8,7 @@ make
 
 # The animation at the top: a band of birds, its own name, then a murmuration.
 ./cbirds --record docs/demo.gif --record-fps 50 --record-seconds 5 \
-         --record-columns 96 --record-rows 26 \
+         --record-size 96x26 \
          -n 700 -s 13 --color ember --trails --spell CBIRDS --spell-hold 2 \
          --seed 11 --preset murmuration
 

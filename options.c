@@ -73,8 +73,8 @@ static const option_t *find_short(const option_t *table, size_t count, char shor
 /* Long names read better in messages, so errors quote those even for -n. */
 static options_status_t assign(const option_t *option, const char *text, char *error,
                                size_t error_size) {
-    if (option->kind == OPTION_FLAG) {
-        *(int *)option->target = 1;
+    if (option->kind == OPTION_FLAG || option->kind == OPTION_OFF) {
+        *(int *)option->target = option->kind == OPTION_FLAG;
         return OPTIONS_OK;
     }
     if (option->kind == OPTION_STRING) {
@@ -183,12 +183,12 @@ options_status_t options_parse(const option_t *table, size_t count, int argc, ch
                     fail(error, error_size, "unknown option '--%.*s'", (int)length, name);
                 return OPTIONS_ERROR;
             }
-            if (option->kind == OPTION_FLAG) {
+            if (option->kind == OPTION_FLAG || option->kind == OPTION_OFF) {
                 if (equals) {
                     fail(error, error_size, "--%s takes no value", option->name);
                     return OPTIONS_ERROR;
                 }
-                *(int *)option->target = 1;
+                *(int *)option->target = option->kind == OPTION_FLAG;
                 continue;
             }
             const char *text = equals ? equals + 1 : (++i < argc ? argv[i] : NULL);
@@ -214,8 +214,8 @@ options_status_t options_parse(const option_t *table, size_t count, int argc, ch
                 fail(error, error_size, "unknown option '-%c'", *c);
                 return OPTIONS_ERROR;
             }
-            if (option->kind == OPTION_FLAG) {
-                *(int *)option->target = 1;
+            if (option->kind == OPTION_FLAG || option->kind == OPTION_OFF) {
+                *(int *)option->target = option->kind == OPTION_FLAG;
                 continue;
             }
             const char *text = c[1] != '\0' ? c + 1 : (++i < argc ? argv[i] : NULL);
@@ -236,7 +236,7 @@ options_status_t options_parse(const option_t *table, size_t count, int argc, ch
  * dashes, the name, and the metavar with its space. */
 static size_t option_width(const option_t *option) {
     size_t width = 2 + 4 + 2 + strlen(option->name);
-    if (option->kind != OPTION_FLAG && option->metavar != NULL)
+    if (option->kind != OPTION_FLAG && option->kind != OPTION_OFF && option->metavar != NULL)
         width += 1 + strlen(option->metavar);
     return width;
 }
@@ -278,8 +278,10 @@ void options_usage(FILE *out, const char *program, const char *tagline,
         }
         if (option == NULL) break;
 
-        render_option(out, column, option->shorthand, option->name,
-                      option->kind == OPTION_FLAG ? NULL : option->metavar, option->help);
+        render_option(
+            out, column, option->shorthand, option->name,
+            option->kind == OPTION_FLAG || option->kind == OPTION_OFF ? NULL : option->metavar,
+            option->help);
     }
     if (everything) {
         render_option(out, column, 'h', "help", NULL, "the one screen help");
@@ -316,7 +318,7 @@ int options_completion(FILE *out, const char *shell, const char *program, const 
         fprintf(out, "#compdef %s\n_arguments \\\n", program);
         for (size_t i = 0; i < count; i++)
             fprintf(out, "  '--%s[%s]%s' \\\n", table[i].name, table[i].help,
-                    table[i].kind == OPTION_FLAG ? "" : ":value:");
+                    table[i].kind == OPTION_FLAG || table[i].kind == OPTION_OFF ? "" : ":value:");
         fprintf(out, "  '--help[every option, grouped]' \\\n  '--version[show the version]'\n");
         return 1;
     }
@@ -324,7 +326,7 @@ int options_completion(FILE *out, const char *shell, const char *program, const 
         for (size_t i = 0; i < count; i++) {
             fprintf(out, "complete -c %s -l %s", program, table[i].name);
             if (table[i].shorthand) fprintf(out, " -s %c", table[i].shorthand);
-            if (table[i].kind != OPTION_FLAG) fprintf(out, " -r");
+            if (table[i].kind != OPTION_FLAG && table[i].kind != OPTION_OFF) fprintf(out, " -r");
             if (table[i].kind == OPTION_ENUM && table[i].names != NULL) {
                 fprintf(out, " -a \"");
                 for (int k = 0; table[i].names[k] != NULL; k++)

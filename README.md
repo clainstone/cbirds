@@ -60,7 +60,7 @@ cbirds --flocks 3 --color ice           # three flocks, each keeping to its own
 cbirds --clock                          # the flock is the time
 cbirds --screensaver                    # for a terminal left open
 cbirds --matrix                         # it is raining birds
-cbirds --shape fish --wrap              # or a school, off one edge and onto the other
+cbirds --shape dot --color ice          # or something that is not a bird at all
 ```
 
 <table>
@@ -95,13 +95,18 @@ is derived from it, so the number and the bar cannot disagree.
 ╭────────────────────────────────────╮
 │ boundary   ▓▓▓▓░░░░░░░░  0.20  b/B │
 │ separation ▓▓▓▓░░░░░░░░ 0.005  s/S │
-│ cohesion   ▓▓▓▓░░░░░░░░ 0.010  c/C │
 │ alignment  ▓▓▓▓░░░░░░░░  1.50  a/A │
+│ turning    ▓▓▓▓▓▓▓▓░░░░   70°  t/T │
 │ perception ▓▓▓▓▓▓░░░░░░  36px  p/P │
 │ rate       ▓▓▓▓░░░░░░░░    60  r/R │
-│                                    │
+│ frame        0.6ms    31KB  60fps  │
 │ quit       q                       │
 ╰────────────────────────────────────╯
+
+Every slider on it has a pair of keys, and every pair of keys is on it: the
+banking used to be adjustable with nothing on the screen to say what had changed,
+which is how somebody could turn it down to nothing and be left looking at an
+empty sky.
 ```
 
 The flock cannot fly through it. The panel's rectangle carries an edge force of
@@ -118,12 +123,11 @@ edges of what was left.
 
 | key | | key | |
 |---|---|---|---|
-| `b`/`B` `s`/`S` `c`/`C` `a`/`A` `p`/`P` `r`/`R` | one notch down / up | `h` | hide the panel |
+| `b`/`B` `s`/`S` `a`/`A` `t`/`T` `p`/`P` `r`/`R` | one notch down / up | `h` | hide the panel |
 | `space` | pause | `.` | one frame |
 | `0` | back to the defaults | `Tab` | next preset |
 | `+`/`-` | more or fewer birds | `k`/`K` | summon or dismiss a hawk |
-| `e` | trails | `w` | wrap |
-| `M` | cycle the pointer's mode | `L` | cycle what picks a colour |
+| `e` | trails | `M` | cycle the pointer's mode |
 | `q` | quit, with a fly-away | | |
 
 There is also the Konami code. It is in `--help`, under **Oddities**, because an
@@ -132,7 +136,7 @@ easter egg nobody finds is wasted.
 ## Options
 
 `cbirds -h` is one screen of the dozen that matter. `cbirds --help` is all
-forty, grouped. Both come off the same table that drives the parser, so they
+thirty-eight, grouped. Both come off the same table that drives the parser, so they
 cannot drift apart, and `--completion bash|zsh|fish` walks it too.
 
 It accepts what people actually type: `-n 800`, `-n800`, `--birds 800`,
@@ -203,16 +207,18 @@ brushes the edge is nudged and a bird that is leaving is turned. Past the screen
 itself the boundary slider stops having a vote: the push is the same at notch
 zero as at notch twelve, which is what makes a soft boundary mean *turns late*
 rather than *leaves*. Before this the band pushed with a fixed unit vector and
-the flocking terms outvoted it: on the calm preset 94% of the flock was off the
-screen at any moment, parked out there for good. It is now 9%, all of it birds
-brushing the edge and coming straight back — no bird is out of frame for more
-than seven frames, a ninth of a second. At the default it is 1%.
+the flocking terms outvoted it: on the softest preset 94% of the flock was off
+the screen at any moment, parked out there for good. It is now a few per cent, all
+of it birds brushing the edge and coming straight back — no bird is out of frame
+for more than seven frames, a ninth of a second.
 
 **The flocking.** Separation, alignment and cohesion, from the same immutable
-snapshot for every bird, so the order they are updated in cannot matter. Flocks
-are social, not physical: separation applies to every bird in reach, alignment
-and cohesion only to your own flock, which is why two flocks can pass through
-each other and come out as two. That alone will not make three flocks legible as
+snapshot for every bird, so the order they are updated in cannot matter. Two of
+the three are sliders; cohesion is not, because dragging it from end to end moved
+the flock's own measure of itself by a twentieth, and a control nobody can see
+working is a control that should not be there. Flocks are social, not physical:
+separation applies to every bird in reach, alignment and cohesion only to your own
+flock, which is why two flocks can pass through each other and come out as two. That alone will not make three flocks legible as
 three, because flocking is local — a bird sees sixty pixels at most — and nothing
 in the three rules holds a flock together across a whole screen. So each flock is
 also leashed to its own centre of gravity, and the centres shove each other
@@ -255,10 +261,10 @@ check them rather than take them on trust. Ryzen-class laptop, 1600×800 viewpor
 
 | birds | CPU per frame | ceiling | bytes per frame |
 |---|---|---|---|
-| 400 | 0.247 ms | 4041 fps | 15.8 KB |
-| 800 | 0.535 ms | 1870 fps | 30.8 KB |
-| 2000 | 1.679 ms | 596 fps | 75.7 KB |
-| 4096 | 4.562 ms | 219 fps | 153.7 KB |
+| 400 | 0.255 ms | 3920 fps | 15.8 KB |
+| 800 | 0.548 ms | 1825 fps | 30.8 KB |
+| 2000 | 1.741 ms | 574 fps | 75.7 KB |
+| 4096 | 4.541 ms | 220 fps | 153.9 KB |
 
 The simulation is not the bottleneck and has not been since the spatial grid
 landed. The limit is terminal bandwidth: 1.9 MB/s at the default, 9.4 MB/s at
@@ -313,13 +319,23 @@ is the road to twenty thousand birds: composite into one RGBA canvas — the
 `--snapshot` path already does exactly this — compress it, and send it as a
 single `a=T`. The flocking update is trivially parallel thanks to the snapshot.
 
-**More sprites.** `--sprite FILE` takes any PNG through the project's own
-decoder, and `--shape` draws five of them from triangles. A sixth is a pull
-request with one function in it.
+**More sprites.** `--sprite FILE` takes any PNG through the project's own decoder
+and leaves its colours alone, and `--shape` draws three more from triangles. A
+fourth is a pull request with one function in it.
 
 **The ideas not taken.** Music reactivity, obstacles the flock must fly around,
 perching along the bottom edge, V formations, a config file, tmux passthrough.
 Fifty were proposed and twenty were built; the rest are listed in `plan.md`.
+
+**And the ones taken back out.** Four testers went over every combination of
+flags. Eight of them turned out to be controls nobody could see working, modes
+that were duplicates of other modes, or settings that only made the flock worse:
+a cohesion slider that moved nothing, a wind that did not do the one thing it was
+for, a wrap that converged the whole flock onto one heading in two seconds and
+left it there, two palettes that could not be read on the terminals people use, a
+pointer mode that was inert five sixths of the time, and a `--color-by` whose four
+modes were one good one, one broken one and two duplicates. Forty-six flags became
+thirty-eight, and every one of those is a setting somebody might want.
 
 ## License
 

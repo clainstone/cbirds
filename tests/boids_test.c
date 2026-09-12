@@ -593,6 +593,37 @@ static void test_birds_start_clear_of_the_panel(void) {
 }
 
 /* Two flocks share the space without sharing a heading. */
+static void test_theme_colours_are_parsed(void) {
+    uint8_t rgb[3];
+
+    /* Four hex digits a channel is the usual answer. */
+    assert(parse_osc_colour("\033]4;1;rgb:cc24/1d1d/1f1f\033\\", rgb));
+    assert(rgb[0] == 0xcc && rgb[1] == 0x1d && rgb[2] == 0x1f);
+
+    /* Some terminals send two, and the same parse has to cope. */
+    assert(parse_osc_colour("\033]11;rgb:12/34/56\033\\", rgb));
+    assert(rgb[0] == 0x12 && rgb[1] == 0x34 && rgb[2] == 0x56);
+
+    /* Anything else is simply not an answer. */
+    assert(!parse_osc_colour("", rgb));
+    assert(!parse_osc_colour("\033]4;1;?\033\\", rgb));
+    assert(!parse_osc_colour("rgb:", rgb));
+    assert(!parse_osc_colour("rgb:zz/zz/zz", rgb));
+
+    /* The accent is the most saturated answer, so grey never wins. */
+    static const uint8_t grey[3] = {128, 128, 128};
+    static const uint8_t red[3] = {204, 29, 31};
+    assert(saturation_of(grey) == 0);
+    assert(saturation_of(red) > saturation_of(grey));
+
+    /* The ramp starts at the accent and heads for the background. */
+    static const uint8_t ground[3] = {18, 18, 24};
+    ramp_between(red, ground);
+    assert(theme_tints[0][0] == red[0] && theme_tints[0][1] == red[1]);
+    assert(theme_tints[4][0] < theme_tints[0][0]); /* Fading that way. */
+    for (int i = 1; i < 5; i++) assert(theme_tints[i][0] <= theme_tints[i - 1][0]);
+}
+
 static void test_flocks_do_not_align_with_each_other(void) {
     enum { BIRD_COUNT = 40 };
     bird_t birds[BIRD_COUNT];
@@ -895,6 +926,7 @@ int main(void) {
     test_boundary_bands_follow_the_viewport();
     test_bottom_band_scales_on_a_short_viewport();
     test_birds_start_spread_inside_the_free_region();
+    test_theme_colours_are_parsed();
     test_flocks_do_not_align_with_each_other();
     test_mouse_reports_are_parsed();
     test_vision_controls();

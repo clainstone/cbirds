@@ -373,6 +373,84 @@ static void update_screen_dimensions(void) {
 }
 
 /*
+ * The terminal's own colours, asked for rather than guessed.
+ *
+ * OSC 4 names a palette entry, OSC 10 and 11 the foreground and background. The
+ * answer comes back as rgb:RRRR/GGGG/BBBB, four hex digits a channel, and a
+ * terminal that does not implement the query simply says nothing. A ramp is then
+ * built between the most saturated answer and the background, which is what
+ * makes a screenshot match the poster's own setup: the single thing that decides
+ * whether a terminal toy looks native or looks imported.
+ */
+static uint8_t theme_tints[5][3];
+static int theme_is_known;
+
+static int parse_osc_colour(const char *reply, uint8_t rgb[3]) {
+    const char *at = strstr(reply, "rgb:");
+    unsigned r, g, b;
+    if (at == NULL) return 0;
+    if (sscanf(at + 4, "%4x/%4x/%4x", &r, &g, &b) != 3) return 0;
+    /* Four hex digits a channel is the usual answer, but some terminals send
+     * two; scale whichever came back down to a byte. */
+    const char *slash = strchr(at + 4, '/');
+    int digits = slash ? (int)(slash - (at + 4)) : 4;
+    int shift = digits >= 4 ? 8 : 0;
+    rgb[0] = (uint8_t)(r >> shift);
+    rgb[1] = (uint8_t)(g >> shift);
+    rgb[2] = (uint8_t)(b >> shift);
+    return 1;
+}
+
+static int ask_colour(const char *request, uint8_t rgb[3]) {
+    char reply[128];
+    if (terminal_query(request, strlen(request), reply, sizeof(reply), 60) == 0) return 0;
+    return parse_osc_colour(reply, rgb);
+}
+
+static int saturation_of(const uint8_t rgb[3]) {
+    int high = rgb[0] > rgb[1] ? rgb[0] : rgb[1];
+    int low = rgb[0] < rgb[1] ? rgb[0] : rgb[1];
+    if (rgb[2] > high) high = rgb[2];
+    if (rgb[2] < low) low = rgb[2];
+    return high - low;
+}
+
+/* Five steps from the accent to the background, so the ramp ends where the
+ * screen does and the far end of the flock reads as distance. */
+static void ramp_between(const uint8_t from[3], const uint8_t to[3]) {
+    for (int i = 0; i < 5; i++)
+        for (int c = 0; c < 3; c++)
+            theme_tints[i][c] = (uint8_t)(from[c] + (to[c] - from[c]) * i / 6);
+}
+
+static int learn_the_theme(void) {
+    uint8_t accent[3] = {0, 0, 0}, background[3] = {0, 0, 0};
+    int best = -1;
+
+    /* Entries one to six are the terminal's own reds through cyans, which is
+     * where a colour scheme keeps its character. */
+    for (int entry = 1; entry <= 6; entry++) {
+        char request[32];
+        uint8_t rgb[3];
+        snprintf(request, sizeof(request), "\033]4;%d;?\033\\", entry);
+        if (!ask_colour(request, rgb)) continue;
+        int saturation = saturation_of(rgb);
+        if (saturation > best) {
+            best = saturation;
+            memcpy(accent, rgb, sizeof(accent));
+        }
+    }
+    if (best < 0) return 0;
+    if (!ask_colour("\033]11;?\033\\", background)) {
+        /* No background either: fade towards black, which is the common case. */
+        background[0] = background[1] = background[2] = 0;
+    }
+    ramp_between(accent, background);
+    theme_is_known = 1;
+    return 1;
+}
+
+/*
  * A palette is a list of tints applied to the one embedded sprite. The first
  * entry of every palette is the sprite untouched, so a bird with no shade of
  * its own looks exactly as it always did.
@@ -399,6 +477,8 @@ static const uint8_t PAPER_TINTS[][3] = {
 };
 
 static const palette_t PALETTES[] = {
+    {"theme", "the terminal's own colours, asked for at startup", 5,
+     (const uint8_t (*)[3])theme_tints, PNG_TINT_REPLACE},
     {"original", "the sprite as it was drawn", 1, NULL, PNG_TINT_MULTIPLY},
     {"ember", "embers, pale gold to deep red", 5, EMBER_TINTS, PNG_TINT_REPLACE},
     {"ice", "ice, white through to deep blue", 5, ICE_TINTS, PNG_TINT_REPLACE},
@@ -408,6 +488,20 @@ static const palette_t PALETTES[] = {
 enum { PALETTE_COUNT = sizeof(PALETTES) / sizeof(*PALETTES) };
 
 static const char *PALETTE_NAMES[PALETTE_COUNT + 1];
+
+/* Named rather than numbered: the table's order is a presentation choice and
+ * should not be load bearing. */
+static int palette_named(const char *name) {
+    for (int i = 0; i < PALETTE_COUNT; i++)
+        if (strcmp(PALETTES[i].name, name) == 0) return i;
+    return 0;
+}
+
+static int palette_follows_the_theme(void) {
+    return strcmp(PALETTES[config.palette].name, "theme") == 0;
+}
+
+#define FALLBACK_PALETTE palette_named("ember")
 
 static void name_the_palettes(void) {
     for (int i = 0; i < PALETTE_COUNT; i++) PALETTE_NAMES[i] = PALETTES[i].name;
@@ -973,7 +1067,7 @@ static const option_t OPTIONS[] = {
     {'k', "flocks", OPTION_INT, &config.flocks, 1, MAX_FLOCKS, NULL, "COUNT",
      "split into this many flocks that will not merge (default 1)", "Flock"},
     {'c', "palette", OPTION_ENUM, &config.palette, 0, 0, PALETTE_NAMES, "NAME",
-     "colour the flock: original, ember, ice, acid, paper", "Flock"},
+     "colour the flock: theme, original, ember, ice, acid, paper", "Flock"},
     {'f', "fps", OPTION_INT, &requested_frame_rate, MIN_FRAME_RATE, MAX_FRAME_RATE, NULL, "RATE",
      "frames a second, snapped to a notch (default 60)", "Display"},
     {'l', "legend", OPTION_FLAG, &legend_enabled, 0, 0, NULL, NULL,
@@ -1034,6 +1128,26 @@ int main(int argc, char **argv) {
     spatial_grid_t grid;
     struct timespec frame_start, frame_end;
     read_options(argc, argv);
+    install_signal_handlers();
+    atexit(restore_terminal);
+
+    /* The terminal is asked its questions before anything is built for it: can
+     * you draw this at all, and what colours do you use? The sprites are then
+     * built once, in the answers. */
+    if (enter_terminal() < 0) {
+        perror("Can't enable raw mode");
+        exit(EXIT_FAILURE);
+    }
+    if (!force_graphics && !terminal_speaks_graphics()) {
+        restore_terminal();
+        fprintf(stderr,
+                "cbirds draws with the Kitty graphics protocol, and this terminal did not\n"
+                "answer for it. Kitty, WezTerm, Ghostty and recent Konsole all do.\n"
+                "Run it under one of those, or pass --force to try anyway.\n");
+        exit(EXIT_FAILURE);
+    }
+    if (palette_follows_the_theme() && !learn_the_theme()) config.palette = FALLBACK_PALETTE;
+
     spatial_grid_status_t grid_status = spatial_grid_init(&grid, SPATIAL_CELL_SIZE);
     if (grid_status != SPATIAL_GRID_OK) {
         fprintf(stderr, "Cannot initialize spatial grid: %s\n",
@@ -1063,22 +1177,6 @@ int main(int argc, char **argv) {
         exit(EXIT_FAILURE);
     }
 
-    install_signal_handlers();
-    atexit(restore_terminal);
-    if (enter_terminal() < 0) {
-        perror("Can't enable raw mode");
-        exit(EXIT_FAILURE);
-    }
-    /* Asked before the screen is taken, so the answer can be a sentence on the
-     * user's own prompt rather than a black rectangle they have to kill. */
-    if (!force_graphics && !terminal_speaks_graphics()) {
-        restore_terminal();
-        fprintf(stderr,
-                "cbirds draws with the Kitty graphics protocol, and this terminal did not\n"
-                "answer for it. Kitty, WezTerm, Ghostty and recent Konsole all do.\n"
-                "Run it under one of those, or pass --force to try anyway.\n");
-        exit(EXIT_FAILURE);
-    }
     enter_alt_screen();
     write_all("\x1b[J", sizeof("\x1b[J") - 1);
     update_screen_dimensions();

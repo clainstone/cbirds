@@ -1,4 +1,4 @@
-#include "spatial_grid.h"
+#include "../spatial_grid.h"
 
 #include <assert.h>
 #include <math.h>

@@ -598,6 +598,69 @@ static void test_birds_start_clear_of_the_panel(void) {
 }
 
 /* Two flocks share the space without sharing a heading. */
+static void test_autopilot_wanders_and_yields(void) {
+    reset_test_config();
+    autopilot = 0;
+    screensaver = 0;
+    idle_seconds = 60;
+    last_key_at = 0;
+    clock_state.seconds = 0;
+
+    /* Left alone it does nothing, because nothing has idled yet. */
+    assert(!flying_itself());
+    /* And after the idle time it takes over. */
+    clock_state.seconds = 61;
+    assert(flying_itself());
+    /* Asked for, it takes over at once; switched off, never. */
+    clock_state.seconds = 0;
+    autopilot = 1;
+    assert(flying_itself());
+    autopilot = 0;
+    idle_seconds = 0;
+    clock_state.seconds = 10000;
+    assert(!flying_itself());
+
+    /* A drift moves exactly one notch, and stays inside the bar. */
+    idle_seconds = 60;
+    autopilot = 1;
+    srand(7);
+    for (int step = 0; step < 400; step++) {
+        int before[] = {config.boundary_notch, config.separation_notch, config.cohesion_notch,
+                        config.alignment_notch, config.vision_notch};
+        drift_a_slider();
+        int after[] = {config.boundary_notch, config.separation_notch, config.cohesion_notch,
+                       config.alignment_notch, config.vision_notch};
+        int moved = 0;
+        for (size_t i = 0; i < sizeof(before) / sizeof(*before); i++) {
+            assert(after[i] >= 0 && after[i] <= LEGEND_BAR_CELLS);
+            if (after[i] != before[i]) {
+                assert(after[i] - before[i] == 1 || before[i] - after[i] == 1);
+                moved++;
+            }
+        }
+        assert(moved == 1); /* One slider at a time, so a change reads as one. */
+    }
+
+    /* It keeps its hands off for a moment after a keypress: a slider the user is
+     * holding is worse to fight over than one left alone. */
+    clock_state.seconds = 100;
+    last_key_at = 100;
+    last_drift_at = 0;
+    int held = config.boundary_notch;
+    maybe_drift();
+    assert(config.boundary_notch == held);
+    clock_state.seconds = 100 + AUTOPILOT_YIELD + AUTOPILOT_PERIOD;
+    maybe_drift();
+    assert(last_drift_at == clock_state.seconds); /* And then it does move one. */
+
+    autopilot = 0;
+    idle_seconds = 60;
+    clock_state.seconds = 0;
+    last_key_at = 0;
+    last_drift_at = 0;
+    reset_test_config();
+}
+
 static void test_hawks_hunt_and_the_flock_flees(void) {
     enum { BIRD_COUNT = 20 };
     bird_t birds[BIRD_COUNT];
@@ -1211,6 +1274,7 @@ int main(void) {
     test_boundary_bands_follow_the_viewport();
     test_bottom_band_scales_on_a_short_viewport();
     test_birds_start_spread_inside_the_free_region();
+    test_autopilot_wanders_and_yields();
     test_hawks_hunt_and_the_flock_flees();
     test_the_flock_can_be_laid_out_as_text();
     test_presets_set_every_notch();

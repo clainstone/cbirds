@@ -45,6 +45,9 @@ enum {
     INTRO_SECONDS = 3,
     MAX_HAWKS = 8,
     HAWK_REACH = 180,
+    AUTOPILOT_PERIOD = 4, /* Seconds between one slider moving and the next. */
+    AUTOPILOT_YIELD = 3,  /* Seconds it keeps its hands off after a keypress. */
+    OUTRO_FRAMES = 40,
     FRAME_ANGLE = 360 / ROTATION_FRAMES,
     SPRITE_SUPERSAMPLE = 8,
     SPRITE_WORK_MAX = 256,
@@ -1282,6 +1285,12 @@ static int requested_frame_rate = DEFAULT_FRAME_RATE;
 static const char *requested_spell;
 static int spell_hold = 6;
 static int show_intro = 1;
+static int show_outro = 1;
+static int autopilot;
+static int idle_seconds = 60;
+static int screensaver;
+static int clock_mode;
+static int frame_limit;
 static char spell_buffer[256];
 static int requested_perception = DEFAULT_VISION_RADIUS;
 static int requested_seed = -1;
@@ -1348,8 +1357,20 @@ static const option_t OPTIONS[] = {
      "the flock writes TEXT, then lets go; - reads stdin", "World"},
     {0, "spell-hold", OPTION_INT, &spell_hold, 0, 600, NULL, "SECONDS",
      "how long it holds the writing (default 6, 0 forever)", "World"},
+    {0, "clock", OPTION_FLAG, &clock_mode, 0, 0, NULL, NULL,
+     "the flock is the time, re-formed on the minute", "World"},
     {0, "intro", OPTION_FLAG, &show_intro, 0, 0, NULL, NULL,
-     "open by writing the name, on by default", "World"},
+     "open by writing the name, on by default", "Modes"},
+    {0, "outro", OPTION_FLAG, &show_outro, 0, 0, NULL, NULL,
+     "fly away on q instead of vanishing, on by default", "Modes"},
+    {'a', "auto", OPTION_FLAG, &autopilot, 0, 0, NULL, NULL, "the sliders wander by themselves",
+     "Modes"},
+    {0, "idle", OPTION_INT, &idle_seconds, 0, 3600, NULL, "SECONDS",
+     "autopilot after this long untouched (default 60, 0 off)", "Modes"},
+    {0, "screensaver", OPTION_FLAG, &screensaver, 0, 0, NULL, NULL,
+     "no panel, autopilot, any key or movement quits", "Modes"},
+    {0, "frames", OPTION_INT, &frame_limit, 0, 1000000, NULL, "N",
+     "quit after N frames, for recording", "Output"},
     {0, "boundary", OPTION_INT, &config.boundary_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
      "how hard the edges push back, 0 to 12 (default 4)", "Sliders"},
     {0, "separation", OPTION_INT, &config.separation_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
@@ -1409,6 +1430,61 @@ static void read_mouse_report(const char *sequence) {
     mouse.present = 1;
 }
 
+/*
+ * Autopilot.
+ *
+ * A terminal left open on a second monitor becomes the demo for whoever walks
+ * past the chair, which is how a thing like this actually spreads. One notch
+ * every few seconds, of one slider at a time, so the change is always legible as
+ * a change rather than a new program. It backs off for a moment after a keypress,
+ * because fighting the user for a slider is worse than not moving it.
+ */
+static double last_key_at;
+static double last_drift_at;
+
+static void drift_a_slider(void) {
+    int *notches[] = {&config.boundary_notch, &config.separation_notch, &config.cohesion_notch,
+                      &config.alignment_notch, &config.vision_notch};
+    int which = (int)(random_unit() * 5) % 5;
+    int *notch = notches[which];
+    int step = random_unit() < 0.5 ? -1 : 1;
+
+    /* Turned back at the ends rather than stuck against them. */
+    if (*notch + step < 0 || *notch + step > LEGEND_BAR_CELLS) step = -step;
+    *notch += step;
+    apply_notches();
+}
+
+/* Autopilot when asked for, and after a while untouched when not. */
+static int flying_itself(void) {
+    if (autopilot || screensaver) return 1;
+    if (idle_seconds <= 0) return 0;
+    return clock_state.seconds - last_key_at >= idle_seconds;
+}
+
+static void maybe_drift(void) {
+    if (!flying_itself()) return;
+    if (clock_state.seconds - last_key_at < AUTOPILOT_YIELD) return;
+    if (clock_state.seconds - last_drift_at < AUTOPILOT_PERIOD) return;
+    last_drift_at = clock_state.seconds;
+    drift_a_slider();
+}
+
+/* The flock is the time, re-formed on the minute. */
+static void maybe_tell_the_time(void) {
+    static int minute_shown = -1;
+    time_t now = time(NULL);
+    struct tm parts;
+    char text[16];
+
+    if (!clock_mode) return;
+    localtime_r(&now, &parts);
+    if (parts.tm_min == minute_shown && spell.writing) return;
+    minute_shown = parts.tm_min;
+    snprintf(text, sizeof(text), "%02d:%02d", parts.tm_hour, parts.tm_min);
+    if (spell_layout(text)) spell.until = -1.0; /* Held until the minute turns. */
+}
+
 static int handle_input(void) {
     enum { INPUT_NORMAL, INPUT_ESCAPE, INPUT_SEQUENCE };
     static int input_state = INPUT_NORMAL;
@@ -1416,9 +1492,12 @@ static int handle_input(void) {
     static size_t sequence_length;
     char input[INPUT_BUFFER_SIZE];
     ssize_t length = read(STDIN_FILENO, input, sizeof(input));
+    if (length > 0) last_key_at = clock_state.seconds;
     for (ssize_t i = 0; i < length; i++) {
         unsigned char key = (unsigned char)input[i];
         int *notch = NULL, step = 0;
+        /* A screensaver is dismissed by whatever the passer by pressed. */
+        if (screensaver) return 0;
         if (input_state == INPUT_ESCAPE) {
             if (key == '[' || key == 'O') {
                 input_state = INPUT_SEQUENCE;
@@ -1652,6 +1731,12 @@ static void read_options(int argc, char **argv) {
     }
     apply_notches();
     requested_spell = read_spell_text(requested_spell);
+    /* A screensaver has one job and no panel, and anything at all ends it. */
+    if (screensaver) {
+        legend_enabled = 0;
+        show_intro = 0;
+        idle_seconds = 0;
+    }
 }
 
 static long elapsed_microseconds(const struct timespec *start, const struct timespec *end) {
@@ -1746,9 +1831,16 @@ int main(int argc, char **argv) {
     clock_gettime(CLOCK_MONOTONIC, &started);
     int live_birds = config.birds;
     int running = 1;
+    int leaving = 0; /* Frames left of the flight out. */
     while (running) {
-        running = handle_input();
-        if (!running) break;
+        if (!handle_input() && !leaving) {
+            /* Asked to quit: fly off the top first, so the last thing seen is
+             * the flock leaving rather than the screen blinking out. */
+            if (!show_outro) break;
+            leaving = OUTRO_FRAMES;
+            spell_clear();
+        }
+        if (leaving && --leaving == 0) break;
 
         clock_gettime(CLOCK_MONOTONIC, &frame_start);
         clock_state.frame++;
@@ -1757,6 +1849,8 @@ int main(int argc, char **argv) {
         /* Writing lets go when its hold is up, and the flock takes over again
          * from wherever the letters left it, which is the nicest part to watch. */
         if (spell.writing && spell.until >= 0 && clock_state.seconds >= spell.until) spell_clear();
+        maybe_tell_the_time();
+        maybe_drift();
         update_screen_dimensions();
         grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, config.birds);
         if (grid_status != SPATIAL_GRID_OK) {
@@ -1792,8 +1886,17 @@ int main(int argc, char **argv) {
                     spatial_grid_status_string(grid_status));
             exit(EXIT_FAILURE);
         }
+        if (leaving) {
+            /* Straight up, every one of them, and nothing else steering. */
+            for (int i = 0; i < config.birds; i++) {
+                birds[i].direction = 3 * M_PI / 2;
+                birds[i].y -= config.speed;
+                birds[i].frame = direction_frame(birds[i].direction);
+            }
+        }
         if (!paused || step_once) hunt(snapshot);
-        graphics_status = render_frame(&graphics, birds, snapshot, &grid);
+        graphics_status = leaving ? queue_render_frame(&graphics, birds)
+                                  : render_frame(&graphics, birds, snapshot, &grid);
         if (graphics_status != KITTY_GRAPHICS_OK) {
             fprintf(stderr, "Cannot render Kitty graphics: %s\n",
                     kitty_graphics_status_string(graphics_status));
@@ -1816,6 +1919,7 @@ int main(int argc, char **argv) {
             }
         }
         if (!running) break;
+        if (frame_limit > 0 && clock_state.frame >= frame_limit) break;
         clock_gettime(CLOCK_MONOTONIC, &frame_end);
         long remaining =
             1000000L / config.frame_rate - elapsed_microseconds(&frame_start, &frame_end);

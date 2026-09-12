@@ -26,6 +26,10 @@ enum {
     ROTATION_FRAMES = 90,
     MAX_PALETTE_SHADES = 8,
     MAX_FLOCKS = 5,
+    COLOUR_BY_FIXED = 0,
+    COLOUR_BY_HEADING,
+    COLOUR_BY_DENSITY,
+    COLOUR_BY_FLOCK,
     FRAME_ANGLE = 360 / ROTATION_FRAMES,
     SPRITE_SUPERSAMPLE = 8,
     SPRITE_WORK_MAX = 256,
@@ -133,7 +137,7 @@ typedef struct {
 } screen_t;
 
 typedef struct {
-    int birds, frame_rate, bird_size, palette, flocks;
+    int birds, frame_rate, bird_size, palette, flocks, colour_by;
     double speed;
     int vision_cells, vision_radius, vision_radius_squared;
     double separation, alignment, cohesion, boundary;
@@ -151,6 +155,7 @@ static config_t config = {
     .bird_size = DEFAULT_BIRD_SIZE,
     .palette = 0,
     .flocks = 1,
+    .colour_by = COLOUR_BY_HEADING,
     .vision_cells = DEFAULT_VISION_RADIUS / SPATIAL_CELL_SIZE,
     .vision_radius = DEFAULT_VISION_RADIUS,
     .vision_radius_squared = DEFAULT_VISION_RADIUS * DEFAULT_VISION_RADIUS,
@@ -488,6 +493,7 @@ static const palette_t PALETTES[] = {
 enum { PALETTE_COUNT = sizeof(PALETTES) / sizeof(*PALETTES) };
 
 static const char *PALETTE_NAMES[PALETTE_COUNT + 1];
+static const char *const COLOUR_BY_NAMES[] = {"fixed", "heading", "density", "flock", NULL};
 
 /* Named rather than numbered: the table's order is a presentation choice and
  * should not be load bearing. */
@@ -693,7 +699,8 @@ static void read_bird_position(const void *context, int index, double *x, double
     *y = birds[index].y;
 }
 
-static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, int target_index) {
+static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, int target_index,
+                              int *crowd) {
     const bird_t *target = &birds[target_index];
     vector_t separation = {0, 0}, alignment = {0, 0}, cohesion = {0, 0};
     vector_t boundary = boundary_vector(target);
@@ -735,6 +742,7 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
             }
         }
     }
+    if (crowd != NULL) *crowd = neighbors;
     if (neighbors) {
         if (kin) {
             alignment.x /= kin;
@@ -758,12 +766,40 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
     return target->direction;
 }
 
+/* What decides a bird's shade within the ramp. Heading is the striking one: a
+ * turn runs a ripple of colour through the whole flock, because neighbours that
+ * agree on a heading agree on a colour. */
+static int shade_for(const bird_t *bird, int crowd) {
+    int shades = palette_shades();
+    if (shades <= 1) return 0;
+    switch (config.colour_by) {
+        case COLOUR_BY_HEADING: {
+            double turns =
+                normalized_angle(sin(bird->direction), cos(bird->direction)) / (2 * M_PI);
+            int shade = (int)(turns * shades);
+            return shade >= shades ? shades - 1 : shade;
+        }
+        case COLOUR_BY_DENSITY: {
+            /* Eight neighbours is a crowd at the default radius, so the ramp is
+             * spent by then and the densest knots read as the far end of it. */
+            int shade = crowd * shades / 9;
+            return shade >= shades ? shades - 1 : shade;
+        }
+        case COLOUR_BY_FLOCK:
+            return bird->flock % shades;
+        default:
+            return bird->shade;
+    }
+}
+
 static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_grid_t *grid) {
     for (int i = 0; i < config.birds; i++) {
-        double direction = flock_direction(snapshot, grid, i);
+        int crowd = 0;
+        double direction = flock_direction(snapshot, grid, i, &crowd);
         birds[i].direction = direction;
         birds[i].x += config.speed * cos(direction);
         birds[i].y += config.speed * sin(direction);
+        birds[i].shade = shade_for(&birds[i], crowd);
     }
 }
 
@@ -1066,8 +1102,10 @@ static const option_t OPTIONS[] = {
      "sprite size in pixels (default 15)", "Flock"},
     {'k', "flocks", OPTION_INT, &config.flocks, 1, MAX_FLOCKS, NULL, "COUNT",
      "split into this many flocks that will not merge (default 1)", "Flock"},
-    {'c', "palette", OPTION_ENUM, &config.palette, 0, 0, PALETTE_NAMES, "NAME",
-     "colour the flock: theme, original, ember, ice, acid, paper", "Flock"},
+    {'c', "color", OPTION_ENUM, &config.palette, 0, 0, PALETTE_NAMES, "RAMP",
+     "theme, original, ember, ice, acid, paper (default theme)", "Colour"},
+    {0, "color-by", OPTION_ENUM, &config.colour_by, 0, 0, COLOUR_BY_NAMES, "MODE",
+     "what picks a bird's shade: heading, density, flock, fixed", "Colour"},
     {'f', "fps", OPTION_INT, &requested_frame_rate, MIN_FRAME_RATE, MAX_FRAME_RATE, NULL, "RATE",
      "frames a second, snapped to a notch (default 60)", "Display"},
     {'l', "legend", OPTION_FLAG, &legend_enabled, 0, 0, NULL, NULL,

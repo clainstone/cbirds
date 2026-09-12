@@ -24,6 +24,7 @@
 
 enum {
     ROTATION_FRAMES = 90,
+    MAX_PALETTE_SHADES = 8,
     FRAME_ANGLE = 360 / ROTATION_FRAMES,
     SPRITE_SUPERSAMPLE = 8,
     SPRITE_WORK_MAX = 256,
@@ -111,6 +112,7 @@ typedef struct {
 typedef struct {
     double x, y, direction;
     int frame;
+    int shade; /* Index into the palette, and half of the image id. */
 } bird_t;
 
 typedef struct {
@@ -125,7 +127,7 @@ typedef struct {
 } screen_t;
 
 typedef struct {
-    int birds, frame_rate, bird_size;
+    int birds, frame_rate, bird_size, palette;
     double speed;
     int vision_cells, vision_radius, vision_radius_squared;
     double separation, alignment, cohesion, boundary;
@@ -141,6 +143,7 @@ static config_t config = {
     .frame_rate = DEFAULT_FRAME_RATE,
     .speed = DEFAULT_SPEED,
     .bird_size = DEFAULT_BIRD_SIZE,
+    .palette = 0,
     .vision_cells = DEFAULT_VISION_RADIUS / SPATIAL_CELL_SIZE,
     .vision_radius = DEFAULT_VISION_RADIUS,
     .vision_radius_squared = DEFAULT_VISION_RADIUS * DEFAULT_VISION_RADIUS,
@@ -276,7 +279,71 @@ static void update_screen_dimensions(void) {
     apply_screen_size(size.ws_col, size.ws_row, size.ws_xpixel, size.ws_ypixel);
 }
 
-static void build_rotation_frames(image_frame_t frames[ROTATION_FRAMES]) {
+/*
+ * A palette is a list of tints applied to the one embedded sprite. The first
+ * entry of every palette is the sprite untouched, so a bird with no shade of
+ * its own looks exactly as it always did.
+ */
+typedef struct {
+    const char *name;
+    const char *help;
+    int shades;
+    const uint8_t (*tints)[3];
+    png_tint_mode_t mode;
+} palette_t;
+
+static const uint8_t EMBER_TINTS[][3] = {
+    {255, 214, 138}, {255, 176, 66}, {247, 122, 41}, {224, 74, 39}, {173, 44, 51},
+};
+static const uint8_t ICE_TINTS[][3] = {
+    {226, 246, 255}, {160, 220, 250}, {96, 176, 236}, {58, 122, 206}, {44, 74, 158},
+};
+static const uint8_t ACID_TINTS[][3] = {
+    {238, 255, 176}, {186, 244, 96}, {118, 214, 74}, {54, 176, 108}, {26, 122, 106},
+};
+static const uint8_t PAPER_TINTS[][3] = {
+    {248, 246, 240}, {206, 202, 192}, {158, 154, 146}, {104, 102, 98}, {48, 48, 46},
+};
+
+static const palette_t PALETTES[] = {
+    {"original", "the sprite as it was drawn", 1, NULL, PNG_TINT_MULTIPLY},
+    {"ember", "embers, pale gold to deep red", 5, EMBER_TINTS, PNG_TINT_REPLACE},
+    {"ice", "ice, white through to deep blue", 5, ICE_TINTS, PNG_TINT_REPLACE},
+    {"acid", "acid, lime through to teal", 5, ACID_TINTS, PNG_TINT_REPLACE},
+    {"paper", "paper, five greys", 5, PAPER_TINTS, PNG_TINT_REPLACE},
+};
+enum { PALETTE_COUNT = sizeof(PALETTES) / sizeof(*PALETTES) };
+
+static const char *PALETTE_NAMES[PALETTE_COUNT + 1];
+
+static void name_the_palettes(void) {
+    for (int i = 0; i < PALETTE_COUNT; i++) PALETTE_NAMES[i] = PALETTES[i].name;
+    PALETTE_NAMES[PALETTE_COUNT] = NULL;
+}
+
+static const palette_t *palette(void) {
+    return &PALETTES[config.palette];
+}
+
+static int palette_shades(void) {
+    return palette()->shades;
+}
+
+/* Shade zero of a tinted palette is still a tint: the list is the whole ramp. */
+static void palette_tint(png_image_t *image, int shade) {
+    const palette_t *chosen = palette();
+    if (chosen->tints == NULL) return;
+    if (shade < 0) shade = 0;
+    if (shade >= chosen->shades) shade = chosen->shades - 1;
+    png_tint(image, chosen->tints[shade][0], chosen->tints[shade][1], chosen->tints[shade][2],
+             chosen->mode);
+}
+
+/* Kitty has no per placement tint, so a colour is a second set of images. The
+ * rotation is the expensive half and it does not depend on the colour, so each
+ * angle is rotated once and then tinted and encoded per shade: the second shade
+ * costs a few hundred microseconds, not another fifty milliseconds. */
+static void build_rotation_frames(image_frame_t *frames, int shades) {
     png_image_t source = {0, 0, NULL}, canvas = {0, 0, NULL};
     png_status_t status = png_decode(sprite_png, sprite_png_len, &source);
     if (status != PNG_OK) {
@@ -294,25 +361,41 @@ static void build_rotation_frames(image_frame_t frames[ROTATION_FRAMES]) {
     }
     for (int i = 0; i < ROTATION_FRAMES; i++) {
         png_image_t frame = {0, 0, NULL};
-        uint8_t *encoded = NULL;
-        size_t encoded_length = 0;
         double radians = i * FRAME_ANGLE * M_PI / 180.0;
         status = png_rotate_resize(&canvas, radians, config.bird_size, config.bird_size, &frame);
-        if (status == PNG_OK) status = png_encode(&frame, &encoded, &encoded_length);
+        for (int shade = 0; status == PNG_OK && shade < shades; shade++) {
+            png_image_t tinted = {0, 0, NULL};
+            uint8_t *encoded = NULL;
+            size_t encoded_length = 0;
+            status = png_image_alloc(&tinted, frame.width, frame.height);
+            if (status == PNG_OK) {
+                memcpy(tinted.pixels, frame.pixels, (size_t)frame.width * (size_t)frame.height * 4);
+                palette_tint(&tinted, shade);
+                status = png_encode(&tinted, &encoded, &encoded_length);
+            }
+            png_image_free(&tinted);
+            if (status != PNG_OK) break;
+            frames[shade * ROTATION_FRAMES + i].data = encoded;
+            frames[shade * ROTATION_FRAMES + i].length = encoded_length;
+        }
         png_image_free(&frame);
         if (status != PNG_OK) {
             fprintf(stderr, "Cannot build the rotation frames: %s\n", png_status_string(status));
             exit(EXIT_FAILURE);
         }
-        frames[i].data = encoded;
-        frames[i].length = encoded_length;
     }
     png_image_free(&canvas);
 }
 
+/* Image ids run shade major: shade * ROTATION_FRAMES + frame + 1, so a bird's
+ * image is a multiply and an add away from its heading and its shade. */
+static uint32_t sprite_image_id(int shade, int frame) {
+    return (uint32_t)(shade * ROTATION_FRAMES + frame) + 1;
+}
+
 static kitty_graphics_status_t upload_rotation_frames(kitty_graphics_t *graphics,
-                                                      const image_frame_t frames[ROTATION_FRAMES]) {
-    for (int i = 0; i < ROTATION_FRAMES; i++) {
+                                                      const image_frame_t *frames, int shades) {
+    for (int i = 0; i < ROTATION_FRAMES * shades; i++) {
         kitty_graphics_status_t status =
             kitty_graphics_upload_png(graphics, (uint32_t)i + 1, frames[i].data, frames[i].length);
         if (status != KITTY_GRAPHICS_OK) return status;
@@ -321,8 +404,8 @@ static kitty_graphics_status_t upload_rotation_frames(kitty_graphics_t *graphics
     return status == KITTY_GRAPHICS_OK ? kitty_graphics_flush(graphics) : status;
 }
 
-static void free_rotation_frames(image_frame_t frames[ROTATION_FRAMES]) {
-    for (int i = 0; i < ROTATION_FRAMES; i++) {
+static void free_rotation_frames(image_frame_t *frames, int shades) {
+    for (int i = 0; i < ROTATION_FRAMES * shades; i++) {
         free(frames[i].data);
         frames[i].data = NULL;
         frames[i].length = 0;
@@ -388,6 +471,7 @@ static void initialize_birds(bird_t *birds) {
         }
         bird->direction = 2 * M_PI * random_unit();
         bird->frame = direction_frame(bird->direction);
+        bird->shade = (int)(random_unit() * palette_shades()) % palette_shades();
     }
 }
 
@@ -491,7 +575,7 @@ static int bird_placement(const bird_t *bird, kitty_graphics_placement_t *placem
     if (column >= screen.cols || row >= screen.rows) return 0;
 
     *placement = (kitty_graphics_placement_t){
-        .image_id = (uint32_t)bird->frame + 1,
+        .image_id = sprite_image_id(bird->shade, bird->frame),
         .placement_id = 0,
         .row = row,
         .column = column,
@@ -755,6 +839,8 @@ static const option_t OPTIONS[] = {
      "how many boids to fly (default 800)", "Flock"},
     {'s', "size", OPTION_INT, &config.bird_size, MIN_BIRD_SIZE, MAX_BIRD_SIZE, NULL, "PIXELS",
      "sprite size in pixels (default 15)", "Flock"},
+    {'c', "palette", OPTION_ENUM, &config.palette, 0, 0, PALETTE_NAMES, "NAME",
+     "colour the flock: original, ember, ice, acid, paper", "Flock"},
     {'f', "fps", OPTION_INT, &requested_frame_rate, MIN_FRAME_RATE, MAX_FRAME_RATE, NULL, "RATE",
      "frames a second, snapped to a notch (default 60)", "Display"},
     {'l', "legend", OPTION_FLAG, &legend_enabled, 0, 0, NULL, NULL,
@@ -776,6 +862,7 @@ static void usage(FILE *out, const char *program) {
 
 static void read_options(int argc, char **argv) {
     char error[160];
+    name_the_palettes();
     options_status_t status =
         options_parse(OPTIONS, OPTION_COUNT, argc, argv, error, sizeof(error));
 
@@ -805,7 +892,7 @@ static long elapsed_microseconds(const struct timespec *start, const struct time
 }
 
 int main(int argc, char **argv) {
-    image_frame_t frames[ROTATION_FRAMES] = {0};
+    image_frame_t frames[ROTATION_FRAMES * MAX_PALETTE_SHADES] = {0};
     kitty_graphics_t graphics;
     spatial_grid_t grid;
     struct timespec frame_start, frame_end;
@@ -824,7 +911,7 @@ int main(int argc, char **argv) {
                 spatial_grid_status_string(grid_status));
         exit(EXIT_FAILURE);
     }
-    build_rotation_frames(frames);
+    build_rotation_frames(frames, palette_shades());
 
     bird_t *birds = calloc((size_t)config.birds, sizeof(*birds));
     bird_t *snapshot = malloc(sizeof(*snapshot) * (size_t)config.birds);
@@ -848,8 +935,8 @@ int main(int argc, char **argv) {
     write_all("\x1b[J", sizeof("\x1b[J") - 1);
     update_screen_dimensions();
     initialize_birds(birds);
-    graphics_status = upload_rotation_frames(&graphics, frames);
-    free_rotation_frames(frames);
+    graphics_status = upload_rotation_frames(&graphics, frames, palette_shades());
+    free_rotation_frames(frames, palette_shades());
     if (graphics_status != KITTY_GRAPHICS_OK) {
         fprintf(stderr, "Cannot upload Kitty graphics: %s\n",
                 kitty_graphics_status_string(graphics_status));

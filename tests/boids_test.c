@@ -598,6 +598,66 @@ static void test_birds_start_clear_of_the_panel(void) {
 }
 
 /* Two flocks share the space without sharing a heading. */
+static void test_the_flock_can_be_laid_out_as_text(void) {
+    reset_test_config();
+    legend_enabled = 1;
+    apply_screen_size(200, 50, 1600, 800);
+
+    /* A target per lit cell of the font, minus any that would fall in the
+     * panel's turn zone, where no bird could ever reach one. */
+    int made = spell_layout("HELLO");
+    assert(made > 0 && made <= font_text_cells("HELLO"));
+    assert(spell.writing);
+    for (int i = 0; i < made; i++) {
+        assert(!legend_turn_zone(spell.x[i], spell.y[i]));
+        assert(spell.x[i] >= 0 && spell.x[i] <= screen.width);
+        assert(spell.y[i] >= 0 && spell.y[i] <= screen.height);
+    }
+
+    /* Birds share targets round robin, so a cell with several on it reads as a
+     * thick stroke rather than leaving the rest of the flock idle. */
+    double first_x, first_y, wrapped_x, wrapped_y;
+    assert(spell_target_of(0, &first_x, &first_y));
+    assert(spell_target_of(made, &wrapped_x, &wrapped_y));
+    assert(first_x == wrapped_x && first_y == wrapped_y);
+
+    /* A bird with a target steers at it and ignores its neighbours entirely. */
+    enum { BIRD_COUNT = 8 };
+    bird_t birds[BIRD_COUNT];
+    spatial_grid_t grid;
+    config.birds = BIRD_COUNT;
+    for (int i = 0; i < BIRD_COUNT; i++)
+        birds[i] = (bird_t){.x = spell.x[0] - 100, .y = spell.y[0], .direction = M_PI};
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRD_COUNT) == SPATIAL_GRID_OK);
+    assert(spatial_grid_build(&grid, BIRD_COUNT, read_bird_position, birds) == SPATIAL_GRID_OK);
+    assert(angle_difference(flock_direction(birds, &grid, 0, NULL), 0.0) < 1e-12);
+
+    /* And it lands exactly rather than orbiting: one update from a whole speed
+     * away puts it on the target, not past it. */
+    bird_t snapshot[BIRD_COUNT];
+    birds[0].x = spell.x[0] - config.speed / 2;
+    birds[0].y = spell.y[0];
+    memcpy(snapshot, birds, sizeof(birds));
+    update_birds(birds, snapshot, &grid);
+    assert(fabs(birds[0].x - spell.x[0]) < 1e-9);
+    assert(fabs(birds[0].y - spell.y[0]) < 1e-9);
+    spatial_grid_destroy(&grid);
+
+    /* Letting go hands the flock back to the flocking rules. */
+    spell_clear();
+    assert(!spell.writing);
+    assert(!spell_target_of(0, &first_x, &first_y));
+
+    /* Text with nothing to draw, and text that cannot fit, both decline. */
+    assert(spell_layout("") == 0);
+    assert(spell_layout("\x01\x02") == 0);
+    apply_screen_size(44, 15, 44 * 8, 15 * 16);
+    assert(spell_layout("A VERY LONG MESSAGE INDEED THAT WILL NOT FIT AT ALL") == 0);
+    assert(!spell.writing);
+    reset_test_config();
+}
+
 static void test_presets_set_every_notch(void) {
     reset_test_config();
     /* Each preset names a whole look, so every one of them has to move at least
@@ -1088,6 +1148,7 @@ int main(void) {
     test_boundary_bands_follow_the_viewport();
     test_bottom_band_scales_on_a_short_viewport();
     test_birds_start_spread_inside_the_free_region();
+    test_the_flock_can_be_laid_out_as_text();
     test_presets_set_every_notch();
     test_a_notch_survives_the_round_trip();
     test_the_pointer_moves_the_flock();

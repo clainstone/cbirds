@@ -137,3 +137,16 @@ says so.
 
 Forty-six flags became thirty-eight, and the eight that went were the eight
 nobody could have used well.
+
+## Any terminal at all
+
+cbirds drew with the Kitty graphics protocol and refused everything else,
+politely. It no longer refuses anything: the terminal is asked once what it can
+draw, and gets the best of it — Kitty's sprites; a sixel picture a frame in
+xterm, foot, mlterm, contour, mintty and Windows Terminal; an inline PNG a
+frame in iTerm2; and everywhere else the same flock in braille, eight dots a
+cell, only the cells that changed since the last frame. `--render` overrules
+the choice. A `--snapshot` under a text renderer is a picture of the dots the
+terminal showed, and `--record flock.cast` records the braille as an asciinema
+cast that plays back in any terminal. `cells.c` and `sixel.c` are the whole of
+it, and know nothing about birds.

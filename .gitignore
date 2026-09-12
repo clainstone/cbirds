@@ -16,6 +16,7 @@ core
 core.*
 .shot.png
 .t.gif
+docs/audit/
 snapshot*.png
 
 # Local tools, captures, editor and OS noise

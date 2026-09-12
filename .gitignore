@@ -4,6 +4,7 @@ mkasset
 kitty_graphics_test
 spatial_grid_test
 boids_test
+options_test
 *.o
 *.dSYM/
 *~

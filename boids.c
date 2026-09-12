@@ -104,6 +104,9 @@ static const double LEGEND_PUSH = 100000.0;
 static const double MOUSE_WEIGHT = 4.0;
 static const double HAWK_WEIGHT = 6.0;
 static const double HAWK_SPEED = 1.15;
+/* A breeze the whole flock leans into. Enough to shape it, not enough to carry
+ * it off: at the top notch it is about a third of the alignment weight. */
+static const double WIND_WEIGHT = 0.5;
 static const double CAT_PERIOD = 6.0; /* Seconds of one stalk and pounce. */
 static const double CAT_STALK = 4.5;  /* Of which this much is holding still. */
 static const double CAT_POUNCE = 3.0; /* And then this much harder. */
@@ -168,6 +171,7 @@ typedef struct {
     int birds, frame_rate, bird_size, palette, flocks, colour_by;
     int mouse_mode, mouse_reach;
     int wrap, trails, hawks, shape;
+    int wind_notch;
     double speed;
     int vision_cells, vision_radius, vision_radius_squared;
     double separation, alignment, cohesion, boundary;
@@ -516,6 +520,9 @@ static const uint8_t ICE_TINTS[][3] = {
 static const uint8_t ACID_TINTS[][3] = {
     {238, 255, 176}, {186, 244, 96}, {118, 214, 74}, {54, 176, 108}, {26, 122, 106},
 };
+static const uint8_t MATRIX_TINTS[][3] = {
+    {198, 255, 198}, {120, 246, 120}, {54, 210, 70}, {26, 150, 48}, {12, 92, 30},
+};
 static const uint8_t PAPER_TINTS[][3] = {
     {248, 246, 240}, {206, 202, 192}, {158, 154, 146}, {104, 102, 98}, {48, 48, 46},
 };
@@ -528,6 +535,7 @@ static const palette_t PALETTES[] = {
     {"ice", "ice, white through to deep blue", 5, ICE_TINTS, PNG_TINT_REPLACE},
     {"acid", "acid, lime through to teal", 5, ACID_TINTS, PNG_TINT_REPLACE},
     {"paper", "paper, five greys", 5, PAPER_TINTS, PNG_TINT_REPLACE},
+    {"matrix", "the green of the film it is named after", 5, MATRIX_TINTS, PNG_TINT_REPLACE},
 };
 enum { PALETTE_COUNT = sizeof(PALETTES) / sizeof(*PALETTES) };
 
@@ -890,6 +898,33 @@ static double normalized_angle(double y, double x) {
 }
 
 /*
+ * Wind.
+ *
+ * A slow wandering breeze, which is what keeps a flock off centre and stops a
+ * long run looking like it has settled. The direction takes a small random step
+ * each frame, so it drifts rather than jumping, and the strength is a notch like
+ * everything else.
+ */
+static double wind_direction;
+static int wind_is_fixed;
+
+static void drift_the_wind(void) {
+    if (wind_is_fixed || config.wind_notch == 0) return;
+    wind_direction += (random_unit() - 0.5) * 0.06;
+    if (wind_direction < 0) wind_direction += 2 * M_PI;
+    if (wind_direction >= 2 * M_PI) wind_direction -= 2 * M_PI;
+}
+
+static vector_t wind_vector(void) {
+    vector_t force = {0, 0};
+    if (config.wind_notch == 0) return force;
+    double strength = (double)config.wind_notch / LEGEND_BAR_CELLS;
+    force.x = strength * cos(wind_direction);
+    force.y = strength * sin(wind_direction);
+    return force;
+}
+
+/*
  * Hawks.
  *
  * A predator is what gives a clip a story: the flock splits, streams around it
@@ -1073,6 +1108,7 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
     vector_t boundary = boundary_vector(target);
     vector_t pointer = pointer_vector(target);
     vector_t hawk = hawk_vector(target);
+    vector_t wind = wind_vector();
     int neighbors = 0, kin = 0;
     int center_x, center_y;
     spatial_grid_cell_for_position(grid, target->x, target->y, &center_x, &center_y);
@@ -1121,14 +1157,16 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
         }
         double x = separation.x * config.separation + alignment.x * config.alignment +
                    cohesion.x * config.cohesion + boundary.x * config.boundary +
-                   pointer.x * MOUSE_WEIGHT + hawk.x * HAWK_WEIGHT;
+                   pointer.x * MOUSE_WEIGHT + hawk.x * HAWK_WEIGHT + wind.x * WIND_WEIGHT;
         double y = separation.y * config.separation + alignment.y * config.alignment +
                    cohesion.y * config.cohesion + boundary.y * config.boundary +
-                   pointer.y * MOUSE_WEIGHT + hawk.y * HAWK_WEIGHT;
+                   pointer.y * MOUSE_WEIGHT + hawk.y * HAWK_WEIGHT + wind.y * WIND_WEIGHT;
         return x == 0 && y == 0 ? target->direction : normalized_angle(y, x);
     }
-    boundary.x = boundary.x * config.boundary + pointer.x * MOUSE_WEIGHT + hawk.x * HAWK_WEIGHT;
-    boundary.y = boundary.y * config.boundary + pointer.y * MOUSE_WEIGHT + hawk.y * HAWK_WEIGHT;
+    boundary.x = boundary.x * config.boundary + pointer.x * MOUSE_WEIGHT + hawk.x * HAWK_WEIGHT +
+                 wind.x * WIND_WEIGHT;
+    boundary.y = boundary.y * config.boundary + pointer.y * MOUSE_WEIGHT + hawk.y * HAWK_WEIGHT +
+                 wind.y * WIND_WEIGHT;
     if (boundary.x != 0 || boundary.y != 0) {
         double x = cos(target->direction) + boundary.x;
         double y = sin(target->direction) + boundary.y;
@@ -1429,6 +1467,7 @@ static int show_outro = 1;
 static int autopilot;
 static int idle_seconds = 60;
 static int screensaver;
+static int matrix_mode;
 static int clock_mode;
 static char spell_buffer[256];
 static int requested_perception = DEFAULT_VISION_RADIUS;
@@ -1483,7 +1522,7 @@ static const option_t OPTIONS[] = {
     {'k', "flocks", OPTION_INT, &config.flocks, 1, MAX_FLOCKS, NULL, "COUNT",
      "split into this many flocks that will not merge (default 1)", "Flock"},
     {'c', "color", OPTION_ENUM, &config.palette, 0, 0, PALETTE_NAMES, "RAMP",
-     "theme, original, ember, ice, acid, paper (default theme)", "Colour"},
+     "theme, original, ember, ice, acid, paper, matrix", "Colour"},
     {0, "color-by", OPTION_ENUM, &config.colour_by, 0, 0, COLOUR_BY_NAMES, "MODE",
      "what picks a bird's shade: heading, density, flock, fixed", "Colour"},
     {0, "preset", OPTION_ENUM, &requested_preset, 0, 0, PRESET_NAMES, "NAME",
@@ -1510,6 +1549,7 @@ static const option_t OPTIONS[] = {
      "Modes"},
     {0, "idle", OPTION_INT, &idle_seconds, 0, 3600, NULL, "SECONDS",
      "autopilot after this long untouched (default 60, 0 off)", "Modes"},
+    {0, "matrix", OPTION_FLAG, &matrix_mode, 0, 0, NULL, NULL, "it is raining birds", "Oddities"},
     {0, "screensaver", OPTION_FLAG, &screensaver, 0, 0, NULL, NULL,
      "no panel, autopilot, any key or movement quits", "Modes"},
     {0, "frames", OPTION_INT, &frame_limit, 0, 1000000, NULL, "N",
@@ -1534,6 +1574,8 @@ static const option_t OPTIONS[] = {
      "frames a second, snapped to a notch (default 60)", "Sliders"},
     {'l', "legend", OPTION_FLAG, &legend_enabled, 0, 0, NULL, NULL,
      "show the parameter panel, on by default", "Display"},
+    {0, "wind", OPTION_INT, &config.wind_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
+     "a slow wandering breeze, 0 to 12 (default 0)", "Sliders"},
     {'w', "wrap", OPTION_FLAG, &config.wrap, 0, 0, NULL, NULL,
      "leave one edge, arrive from the other", "World"},
     {'e', "trails", OPTION_FLAG, &config.trails, 0, 0, NULL, NULL, "faint tails behind the flock",
@@ -1634,6 +1676,37 @@ static void maybe_tell_the_time(void) {
     if (spell_layout(text)) spell.until = -1.0; /* Held until the minute turns. */
 }
 
+/*
+ * Up up down down left right left right b a.
+ *
+ * Listed in --help rather than hidden, because an easter egg nobody finds is
+ * wasted and the line itself is a screenshot. The arrows arrive as CSI final
+ * bytes, which the sequence reader already has in hand; b and a are the same
+ * keys that move the boundary and alignment sliders, so those move too, and
+ * nothing is lost by that.
+ */
+static const char KONAMI[] = "AABBDCDCba";
+enum { KONAMI_LENGTH = sizeof(KONAMI) - 1 };
+static char konami_seen[KONAMI_LENGTH];
+static int konami_at;
+
+static void konami_note(char key) {
+    /* The last ten keys, compared as a whole. A ring rather than a running match
+     * because people mash arrows, and a stutter should not throw the sequence
+     * away: AAABBDCDCba has the code in it and ought to count. */
+    konami_seen[konami_at % KONAMI_LENGTH] = key;
+    konami_at++;
+    if (konami_at < KONAMI_LENGTH) return;
+    for (int i = 0; i < KONAMI_LENGTH; i++)
+        if (konami_seen[(konami_at + i) % KONAMI_LENGTH] != KONAMI[i]) return;
+
+    konami_at = 0;
+    memset(konami_seen, 0, sizeof(konami_seen));
+    config.hawks = MAX_HAWKS;
+    place_hawks();
+    if (spell_layout("NICE")) spell.until = clock_state.seconds + 3.0;
+}
+
 static int handle_input(void) {
     enum { INPUT_NORMAL, INPUT_ESCAPE, INPUT_SEQUENCE };
     static int input_state = INPUT_NORMAL;
@@ -1662,7 +1735,10 @@ static int handle_input(void) {
             if (key >= 0x40 && key <= 0x7e) {
                 input_state = INPUT_NORMAL;
                 sequence[sequence_length] = '\0';
-                if (key == 'M' || key == 'm') read_mouse_report(sequence);
+                if (key == 'M' || key == 'm')
+                    read_mouse_report(sequence);
+                else if (sequence_length == 0)
+                    konami_note((char)key); /* A bare arrow, not a modified one. */
                 continue;
             }
             if (sequence_length + 1 < sizeof(sequence)) sequence[sequence_length++] = (char)key;
@@ -1673,6 +1749,7 @@ static int handle_input(void) {
             continue;
         }
 
+        if (key == 'b' || key == 'a') konami_note((char)key);
         switch (key) {
             case 'q':
                 return 0;
@@ -1976,6 +2053,19 @@ static void read_options(int argc, char **argv) {
         png_image_free(&probe);
     }
     requested_spell = read_spell_text(requested_spell);
+    /* It is raining birds: green, falling, wrapping, with tails. Every part of it
+     * is a switch that already existed, which is the whole joke. */
+    if (matrix_mode) {
+        config.palette = palette_named("matrix");
+        config.wrap = 1;
+        config.trails = 1;
+        config.alignment_notch = LEGEND_BAR_CELLS;
+        config.wind_notch = LEGEND_BAR_CELLS;
+        config.colour_by = COLOUR_BY_FIXED;
+        wind_direction = M_PI / 2; /* Straight down, and it stays there. */
+        wind_is_fixed = 1;
+        apply_notches();
+    }
     /* A screensaver has one job and no panel, and anything at all ends it. */
     if (screensaver) {
         legend_enabled = 0;
@@ -2156,6 +2246,7 @@ int main(int argc, char **argv) {
         if (spell.writing && spell.until >= 0 && clock_state.seconds >= spell.until) spell_clear();
         maybe_tell_the_time();
         maybe_drift();
+        drift_the_wind();
         update_screen_dimensions();
         grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, config.birds);
         if (grid_status != SPATIAL_GRID_OK) {

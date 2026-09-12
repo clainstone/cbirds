@@ -580,6 +580,49 @@ static void test_birds_start_clear_of_the_panel(void) {
     }
 }
 
+static void test_mouse_reports_are_parsed(void) {
+    reset_test_config();
+    apply_screen_size(80, 24, 80 * 8, 24 * 16);
+    mouse.present = 0;
+
+    /* CSI < button ; column ; row M, one based, as mode 1006 sends it. The
+     * terminal names a cell, so the position is that cell's middle. */
+    assert(feed_input("\033[<35;10;5M") == 1);
+    assert(mouse.present);
+    assert(mouse.x == 9.5 * screen.cell_width);
+    assert(mouse.y == 4.5 * screen.cell_height);
+
+    /* A release report moves it just the same. */
+    assert(feed_input("\033[<0;20;9m") == 1);
+    assert(mouse.x == 19.5 * screen.cell_width);
+    assert(mouse.y == 8.5 * screen.cell_height);
+
+    /* A key arriving in the same read is still acted on. */
+    config.boundary_notch = DEFAULT_NOTCH;
+    apply_notches();
+    assert(feed_input("\033[<35;3;3MB") == 1);
+    assert(config.boundary_notch == DEFAULT_NOTCH + 1);
+
+    /* Sequences that are not mouse reports leave it alone, and are swallowed
+     * rather than read as keystrokes: an arrow key must not nudge a weight. */
+    double before_x = mouse.x;
+    config.boundary_notch = DEFAULT_NOTCH;
+    apply_notches();
+    assert(feed_input("\033[A\033[1;2B\033OP") == 1);
+    assert(mouse.x == before_x);
+    assert(config.boundary_notch == DEFAULT_NOTCH);
+
+    /* A report longer than the buffer cannot run off it. */
+    char huge[64];
+    memset(huge, '9', sizeof(huge) - 1);
+    huge[sizeof(huge) - 1] = '\0';
+    char overlong[80];
+    snprintf(overlong, sizeof(overlong), "\033[<%sM", huge);
+    assert(feed_input(overlong) == 1);
+    assert(feed_input("q") == 0);
+    reset_test_config();
+}
+
 static void test_vision_controls(void) {
     reset_test_config();
     assert(config.vision_radius == DEFAULT_VISION_RADIUS);
@@ -804,6 +847,7 @@ int main(void) {
     test_boundary_bands_follow_the_viewport();
     test_bottom_band_scales_on_a_short_viewport();
     test_birds_start_spread_inside_the_free_region();
+    test_mouse_reports_are_parsed();
     test_vision_controls();
     test_frame_rate_controls();
     test_flicker_free_render_queue();

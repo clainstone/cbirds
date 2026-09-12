@@ -53,6 +53,36 @@ static void set_test_screen(int width, int height) {
     update_turn_distances();
 }
 
+static void reset_test_config(void) {
+    config.birds = 800;
+    config.frame_rate = DEFAULT_FRAME_RATE;
+    config.bird_size = DEFAULT_BIRD_SIZE;
+    config.vision_cells = DEFAULT_VISION_CELLS;
+    config.separation = DEFAULT_SEPARATION_W;
+    config.alignment = DEFAULT_ALIGNMENT_W;
+    config.cohesion = DEFAULT_COHESION_W;
+    config.boundary = DEFAULT_BOUNDARY_W;
+    update_speed();
+    update_vision_radius();
+}
+
+/* The bar carries its own escapes: reverse video and an erase to end of line on
+ * the way in, a reset on the way out. These two strip them. */
+static const char *legend_text(const char *line) {
+    static const char prefix[] = "\033[7m\033[K";
+    assert(strncmp(line, prefix, sizeof(prefix) - 1) == 0);
+    return line + sizeof(prefix) - 1;
+}
+
+static size_t legend_text_length(const char *line) {
+    static const char suffix[] = "\033[0m";
+    const char *text = legend_text(line);
+    size_t length = strlen(text);
+    assert(length >= sizeof(suffix) - 1);
+    assert(strcmp(text + length - (sizeof(suffix) - 1), suffix) == 0);
+    return length - (sizeof(suffix) - 1);
+}
+
 static double angle_difference(double a, double b) {
     return fabs(atan2(sin(a - b), cos(a - b)));
 }
@@ -200,6 +230,69 @@ static void test_birds_start_spread_inside_the_free_region(void) {
     assert(distinct > BIRD_COUNT * 3 / 4);
 }
 
+static void test_legend_fits_every_width(void) {
+    char line[LEGEND_LINE_MAX];
+
+    reset_test_config();
+    apply_screen_size(120, 30, 120 * 8, 30 * 16);
+    build_legend(line, sizeof(line));
+    assert(legend_text_length(line) <= (size_t)screen.cols);
+    assert(strstr(line, "(Boids)") != NULL); /* The major mode field. */
+    assert(strstr(line, "800 boids") != NULL);
+    assert(strstr(line, "q quit") != NULL);
+
+    apply_screen_size(80, 30, 80 * 8, 30 * 16);
+    build_legend(line, sizeof(line));
+    assert(legend_text_length(line) <= (size_t)screen.cols);
+    assert(strstr(line, "(Boids)") == NULL); /* Dropped, it does not fit. */
+    assert(strstr(line, "b/B 0.20") != NULL);
+    assert(strstr(line, "r/R 60") != NULL);
+
+    apply_screen_size(48, 30, 48 * 8, 30 * 16);
+    build_legend(line, sizeof(line));
+    assert(legend_text_length(line) <= (size_t)screen.cols);
+    assert(strstr(line, "b0.20") != NULL);
+    assert(strstr(line, "b/B") == NULL);
+
+    /* Truncated rather than wrapped: a wrap would scroll the flock away. */
+    apply_screen_size(LEGEND_NARROW_COLS, 30, LEGEND_NARROW_COLS * 8, 30 * 16);
+    build_legend(line, sizeof(line));
+    assert(legend_text_length(line) <= (size_t)LEGEND_NARROW_COLS);
+}
+
+static void test_legend_row_is_reserved(void) {
+    reset_test_config();
+    apply_screen_size(80, 24, 80 * 8, 24 * 16);
+    assert(screen.cell_height == 16);
+    assert(screen.legend_row == 23);
+    assert(screen.rows == 23); /* The flock gives up the last row. */
+    /* And the sprite height that would spill out of the last row it can use. */
+    assert(screen.height == 23 * 16 - DEFAULT_BIRD_SIZE);
+    assert(screen.turn_y == screen.height / 3); /* The bands follow. */
+
+    /* No reachable position can put a sprite over the bar. */
+    for (int y = 0; y <= screen.height; y++) {
+        const bird_t bird = {.x = 100, .y = y};
+        kitty_graphics_placement_t placement;
+        assert(bird_placement(&bird, &placement));
+        assert(placement.row < screen.legend_row);
+        assert(y + DEFAULT_BIRD_SIZE <= screen.legend_row * screen.cell_height);
+    }
+}
+
+static void test_legend_absent_on_a_tiny_viewport(void) {
+    reset_test_config();
+    apply_screen_size(30, 24, 30 * 8, 24 * 16); /* Too narrow. */
+    assert(screen.legend_row < 0);
+    assert(screen.rows == 24);
+    assert(screen.height == 24 * 16);
+
+    apply_screen_size(80, 5, 80 * 8, 5 * 16); /* Too short. */
+    assert(screen.legend_row < 0);
+    assert(screen.rows == 5);
+    assert(screen.height == 5 * 16);
+}
+
 static int feed_input(const char *keys) {
     int descriptors[2];
     assert(pipe(descriptors) == 0);
@@ -214,6 +307,23 @@ static int feed_input(const char *keys) {
     assert(dup2(saved_stdin, STDIN_FILENO) == STDIN_FILENO);
     close(saved_stdin);
     return result;
+}
+
+static void test_legend_sigil_tracks_the_weights(void) {
+    char line[LEGEND_LINE_MAX];
+
+    reset_test_config();
+    apply_screen_size(120, 30, 120 * 8, 30 * 16);
+    build_legend(line, sizeof(line));
+    assert(strncmp(legend_text(line), "-:---", 5) == 0);
+
+    assert(feed_input("A") == 1);
+    build_legend(line, sizeof(line));
+    assert(strncmp(legend_text(line), "-:**-", 5) == 0);
+
+    reset_test_config();
+    build_legend(line, sizeof(line));
+    assert(strncmp(legend_text(line), "-:---", 5) == 0);
 }
 
 static void test_vision_controls(void) {
@@ -282,6 +392,8 @@ static void test_flicker_free_render_queue(void) {
     screen.rows = 24;
     screen.cell_width = 8;
     screen.cell_height = 16;
+    screen.legend_row = -1; /* The legend has its own test below. */
+    screen_changed = 0;
     assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
 
     assert(queue_render_frame(&graphics, &bird) == KITTY_GRAPHICS_OK);
@@ -313,6 +425,45 @@ static void test_flicker_free_render_queue(void) {
     kitty_graphics_destroy(&graphics);
 }
 
+static void test_frame_carries_the_legend_and_erases_on_resize(void) {
+    kitty_graphics_t graphics;
+    bird_t bird = {.x = 9, .y = 17, .direction = 0, .frame = 3};
+
+    reset_test_config();
+    config.birds = 1;
+    apply_screen_size(80, 24, 80 * 8, 24 * 16);
+    assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
+
+    /* First frame after a size change erases, because deleting placements
+     * leaves text behind. */
+    assert(queue_render_frame(&graphics, &bird) == KITTY_GRAPHICS_OK);
+    const char *erase = strstr(graphics.buffer, "\033[2J");
+    const char *placement = strstr(graphics.buffer, "a=p");
+    const char *bar = strstr(graphics.buffer, "\033[7m\033[K");
+    const char *sync_end = strstr(graphics.buffer, "\033[?2026l");
+    assert(erase != NULL && placement != NULL && bar != NULL && sync_end != NULL);
+    assert(erase < placement); /* Before the flock is drawn again. */
+    assert(bar > placement);   /* And the bar goes on top. */
+    assert(bar < sync_end);    /* Inside the update, so it cannot tear. */
+    /* Addressed at the reserved row, one based on the wire. */
+    assert(strstr(graphics.buffer, "\033[24;1H\033[7m") != NULL);
+
+    /* A frame at an unchanged size keeps the bar and drops the erase. */
+    clear_graphics_buffer(&graphics);
+    assert(queue_render_frame(&graphics, &bird) == KITTY_GRAPHICS_OK);
+    assert(strstr(graphics.buffer, "\033[2J") == NULL);
+    assert(strstr(graphics.buffer, "\033[7m\033[K") != NULL);
+
+    /* No bar at all once the viewport is too small for one. */
+    clear_graphics_buffer(&graphics);
+    apply_screen_size(30, 24, 30 * 8, 24 * 16);
+    assert(queue_render_frame(&graphics, &bird) == KITTY_GRAPHICS_OK);
+    assert(strstr(graphics.buffer, "\033[2J") != NULL);
+    assert(strstr(graphics.buffer, "\033[7m\033[K") == NULL);
+
+    kitty_graphics_destroy(&graphics);
+}
+
 int main(void) {
     test_engine_matches_brute_force();
     test_boundary_bands_follow_the_viewport();
@@ -321,5 +472,10 @@ int main(void) {
     test_vision_controls();
     test_frame_rate_controls();
     test_flicker_free_render_queue();
+    test_legend_fits_every_width();
+    test_legend_sigil_tracks_the_weights();
+    test_legend_row_is_reserved();
+    test_legend_absent_on_a_tiny_viewport();
+    test_frame_carries_the_legend_and_erases_on_resize();
     return 0;
 }

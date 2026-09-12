@@ -190,10 +190,10 @@ While the simulation is running, use these keyboard commands:
 - `S` / `s` - Increase/decrease **separation** weight
 - `C` / `c` - Increase/decrease **cohesion** weight
 - `A` / `a` - Increase/decrease **alignment** weight
-- `P` / `p` - Increase/decrease **perception radius** by one 12-pixel cell (1–5 cells)
+- `P` / `p` - Increase/decrease **perception radius** by one notch, 4 pixels (12–60 pixels)
 
 #### Performance
-- `R` / `r` - Increase/decrease frame rate by 5 FPS (limited to 30–120)
+- `R` / `r` - Increase/decrease frame rate by one notch (limited to 30–120)
 
 #### The Parameter Panel
 
@@ -203,20 +203,28 @@ the keys are written lowercase first because that is the end of the bar each one
 works from.
 
 ```
-╭──────────────────────────╮
-│ boundary   ▓▓▓░░░░░  b/B │
-│ separation ▓▓░░░░░░  s/S │
-│ cohesion   ▓▓░░░░░░  c/C │
-│ alignment  ▓▓▓░░░░░  a/A │
-│ perception ▓▓▓▓░░░░  p/P │
-│ rate       ▓▓▓░░░░░  r/R │
-│                          │
-│ quit       q             │
-╰──────────────────────────╯
+╭──────────────────────────────╮
+│ boundary   ▓▓▓▓░░░░░░░░  b/B │
+│ separation ▓▓▓▓░░░░░░░░  s/S │
+│ cohesion   ▓▓▓▓░░░░░░░░  c/C │
+│ alignment  ▓▓▓▓░░░░░░░░  a/A │
+│ perception ▓▓▓▓▓▓░░░░░░  p/P │
+│ rate       ▓▓▓▓░░░░░░░░  r/R │
+│                              │
+│ quit       q                 │
+╰──────────────────────────────╯
 ```
 
-The panel is 28 by 10 cells and never changes size: it follows the longest
-parameter name and the bar, not the terminal. It is dropped below 40 columns or
+**One keypress is one notch of bar.** The bar has twelve cells, and every
+parameter travels through exactly twelve steps from its floor to its ceiling, so
+pressing a key always moves its slider by one cell and never by a fraction of
+one. That holds because the notch is the state the keys move: the weight, the
+radius and the frame rate are all derived from it, so a value and its bar cannot
+drift apart. Each default sits on the fourth notch, a third along, except
+perception which starts on the sixth.
+
+The panel is 32 by 10 cells and never changes size: it follows the longest
+parameter name and the bar, not the terminal. It is dropped below 44 columns or
 14 rows, where it would leave no corridor to fly in, and `--no-legend` turns it
 off outright.
 
@@ -245,13 +253,14 @@ FRAME_RATE = 60            // Frames per second
 SPEED = 40                 // Movement speed (pixels/frame at 60 FPS)
 BIRD_SIZE = 15             // Sprite size (pixels), see -s
 SPATIAL_CELL_SIZE = 12     // Fixed grid cell size in pixels
-VISION_CELLS = 3           // Default radius: 3 cells = 36 pixels
+VISION_RADIUS = 36         // Default perception radius in pixels, 12 to 60
+LEGEND_BAR_CELLS = 12      // Bar cells, and the steps every parameter travels
 
-// Behavioral weights, each adjustable from a floor to three times its default
-SEPARATION_W = 0.005       // Avoidance strength, 0.001 to 0.015
-ALIGNMENT_W = 1.5          // Direction matching strength, 0.1 to 4.5
-COHESION_W = 0.01          // Grouping strength, 0.002 to 0.03
-BOUNDARY_AV_W = 0.2        // Edge avoidance strength, 0.01 to 0.6
+// Behavioral weights, twelve notches from a floor to a ceiling, default on the 4th
+SEPARATION_W = 0.005       // Avoidance strength, 0.001 to 0.013
+ALIGNMENT_W = 1.5          // Direction matching strength, 0.1 to 4.3
+COHESION_W = 0.01          // Grouping strength, 0.002 to 0.026
+BOUNDARY_AV_W = 0.2        // Edge avoidance strength, 0.01 to 0.58
 
 // Edge bands the flock turns away from, as a fraction of the viewport
 TURN_BAND_DIVISOR = 3      // Sides and top: one third of width / height
@@ -262,9 +271,12 @@ BOTTOM_BAND_DIVISOR = 6    // Bottom: one sixth of the height
 covered per second stays constant: changing FPS (`-f`, or `R`/`r` at runtime)
 does not change the flock speed while the terminal sustains that rate.
 
-The perception radius ranges from 1 to 5 cells (12–60 pixels). Cells only
-select neighbor candidates; the final distance check remains circular and
-uses the exact radius in pixels.
+The perception radius is tuned in pixels, from 12 to 60 in steps of 4, rather
+than in whole grid cells: that is what lets it share the same twelve step travel
+as everything else. The block of cells the neighbor search sweeps is derived from
+it and rounds up, so it always reaches as far as the radius does; cells only
+select candidates, and the final distance check remains circular on the exact
+radius.
 
 Each weight is bounded on both sides. The ceiling is three times the default,
 which gives the panel's sliders a scale to fill against and keeps a keypress

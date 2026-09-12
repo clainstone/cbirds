@@ -850,31 +850,89 @@ static void test_hawks_hunt_and_the_flock_flees(void) {
     config.birds = BIRD_COUNT;
     config.hawks = 1;
     place_hawks();
-    /* One hawk, centred, and the nearest bird well off to its right. */
+
+    /* One hawk in the middle, pointing the wrong way, and the flock off to its
+     * right well out of reach. */
     hawks[0].x = 800;
     hawks[0].y = 400;
-    hawks[0].direction = M_PI; /* Pointing the wrong way to start. */
-    for (int i = 0; i < BIRD_COUNT; i++) birds[i] = (bird_t){.x = 1200, .y = 400};
-    birds[3] = (bird_t){.x = 900, .y = 400}; /* The nearest. */
+    hawks[0].direction = M_PI;
+    hawks[0].prey = -1;
+    hawks[0].commitment = 0;
+    hawks[0].passing = 0;
+    for (int i = 0; i < BIRD_COUNT; i++) birds[i] = (bird_t){.x = 1100, .y = 400};
 
+    /* It banks rather than snapping: one frame turns it by its limit and no more,
+     * which is what stopped it reading as a glitch. */
+    double before = hawks[0].direction;
     hunt(birds);
-    assert(cos(hawks[0].direction) > 0.99); /* Turned to face its prey. */
-    assert(hawks[0].x > 800);               /* And closed on it. */
+    double turned = angle_difference(hawks[0].direction, before);
+    assert(turned > 0);
+    assert(turned <= HAWK_TURN + 1e-9);
+    assert(hawks[0].prey >= 0); /* And it has chosen something. */
 
-    /* Faster than the flock, or the chase would never look like one. */
-    double travelled = hawks[0].x - 800;
-    assert(travelled > config.speed);
+    /* Given time it comes round and closes. */
+    double gap_before = 1100 - hawks[0].x;
+    for (int frame = 0; frame < 60; frame++) hunt(birds);
+    assert(cos(hawks[0].direction) > 0.9);
+    assert(1100 - hawks[0].x < gap_before);
 
-    /* Every bird flees it, hardest when closest, and not at all out of reach. */
-    const bird_t close = {.x = 800 + 20, .y = 400};
-    const bird_t further = {.x = 800 + 150, .y = 400};
-    const bird_t clear = {.x = 800 + HAWK_REACH + 1, .y = 400};
+    /* It sticks with one bird rather than swapping every frame: that flip
+     * flopping was the whole reason it looked broken. */
+    hawks[0].x = 400;
+    hawks[0].y = 400;
+    hawks[0].prey = -1;
+    hawks[0].commitment = 0;
+    hawks[0].passing = 0;
+    hunt(birds);
+    int chosen = hawks[0].prey;
+    assert(chosen >= 0);
+    int changes = 0;
+    for (int frame = 0; frame < 20; frame++) {
+        hunt(birds);
+        if (hawks[0].prey != chosen) {
+            changes++;
+            chosen = hawks[0].prey;
+        }
+    }
+    assert(changes <= 1);
+
+    /* Flying among them starts a pass: it stops steering and goes straight out
+     * the other side, which is what a stoop looks like from outside. */
+    hawks[0].x = birds[0].x;
+    hawks[0].y = birds[0].y;
+    hawks[0].passing = 0;
+    hunt(birds);
+    assert(hawks[0].passing > 0);
+    assert(hawks[0].prey < 0);
+    double heading = hawks[0].direction;
+    hunt(birds);
+    assert(angle_difference(hawks[0].direction, heading) < 1e-12); /* Straight. */
+
+    /* Turned back at a wall rather than pinned against it: pinning cost it a
+     * quarter of every run sliding along an edge. */
+    hawks[0].x = screen.width - 1;
+    hawks[0].y = 400;
+    hawks[0].direction = 0; /* Straight at the wall. */
+    hawks[0].prey = -1;
+    hawks[0].commitment = 30;
+    hawks[0].passing = 30;
+    hunt(birds);
+    assert(hawks[0].x <= screen.width);
+    assert(cos(hawks[0].direction) < 0); /* Sent back the other way. */
+    hunt(birds);
+    assert(hawks[0].x < screen.width - 1); /* And actually leaving. */
+
+    /* Every bird flees every hawk in reach, hardest when closest, not at all
+     * beyond it. */
+    config.hawks = 1;
     hawks[0].x = 800;
+    hawks[0].y = 400;
+    const bird_t close = {.x = 820, .y = 400};
+    const bird_t further = {.x = 800 + HAWK_REACH - 20, .y = 400};
+    const bird_t clear = {.x = 800 + HAWK_REACH + 1, .y = 400};
     assert(hawk_vector(&close).x > hawk_vector(&further).x);
     assert(hawk_vector(&further).x > 0);
     assert(hawk_vector(&clear).x == 0 && hawk_vector(&clear).y == 0);
-
-    /* With no hawks there is no force at all. */
     config.hawks = 0;
     assert(hawk_vector(&close).x == 0);
 
@@ -887,10 +945,10 @@ static void test_hawks_hunt_and_the_flock_flees(void) {
     assert(cos(flock_direction(birds, &grid, 0, NULL)) > 0);
     spatial_grid_destroy(&grid);
 
-    /* Hawks are kept on the screen, wherever the chase leads. */
+    /* However long the chase runs, a hawk stays on the screen. */
     config.hawks = MAX_HAWKS;
     place_hawks();
-    for (int step = 0; step < 200; step++) {
+    for (int step = 0; step < 400; step++) {
         hunt(birds);
         for (int i = 0; i < config.hawks; i++) {
             assert(hawks[i].x >= 0 && hawks[i].x <= screen.width);
@@ -899,6 +957,41 @@ static void test_hawks_hunt_and_the_flock_flees(void) {
     }
     config.hawks = 0;
     legend_enabled = 1;
+    reset_test_config();
+}
+
+/* Splitting the flock has to show the split, or the flag does nothing anyone can
+ * see. */
+static void test_more_flocks_colour_by_flock(void) {
+    reset_test_config();
+    config.palette = palette_named("ember");
+    assert(palette_shades() == 5);
+
+    /* One flock: coloured by heading, which is the default and the striking one. */
+    config.flocks = 1;
+    config.colour_by = COLOUR_BY_HEADING;
+    bird_t bird = {.direction = 1.0, .flock = 0};
+    int by_heading = shade_for(&bird, 0);
+
+    /* Three flocks with nothing asked for: coloured by flock, so the three are
+     * three colours. */
+    config.flocks = 3;
+    config.colour_by = COLOUR_BY_FLOCK;
+    int seen[MAX_FLOCKS] = {0};
+    for (int flock = 0; flock < 3; flock++) {
+        bird_t member = {.direction = 1.0, .flock = flock};
+        int shade = shade_for(&member, 0);
+        assert(shade >= 0 && shade < palette_shades());
+        seen[shade] = 1;
+    }
+    int distinct = 0;
+    for (int i = 0; i < MAX_FLOCKS; i++) distinct += seen[i];
+    assert(distinct == 3); /* Three flocks, three shades. */
+
+    /* Asking for heading explicitly still wins, whatever the flock count. */
+    config.colour_by = COLOUR_BY_HEADING;
+    bird_t again = {.direction = 1.0, .flock = 2};
+    assert(shade_for(&again, 0) == by_heading);
     reset_test_config();
 }
 
@@ -1458,6 +1551,7 @@ int main(void) {
     test_wind_leans_the_flock();
     test_autopilot_wanders_and_yields();
     test_hawks_hunt_and_the_flock_flees();
+    test_more_flocks_colour_by_flock();
     test_the_flock_can_be_laid_out_as_text();
     test_presets_set_every_notch();
     test_a_notch_survives_the_round_trip();

@@ -228,11 +228,11 @@ BIRD_SIZE = 15             // Sprite size (pixels), see -s
 SPATIAL_CELL_SIZE = 12     // Fixed grid cell size in pixels
 VISION_CELLS = 3           // Default radius: 3 cells = 36 pixels
 
-// Behavioral weights
-SEPARATION_W = 0.005       // Avoidance strength
-ALIGNMENT_W = 1.5          // Direction matching strength
-COHESION_W = 0.01          // Grouping strength
-BOUNDARY_AV_W = 0.2        // Edge avoidance strength
+// Behavioral weights, each adjustable from a floor to three times its default
+SEPARATION_W = 0.005       // Avoidance strength, 0.001 to 0.015
+ALIGNMENT_W = 1.5          // Direction matching strength, 0.1 to 4.5
+COHESION_W = 0.01          // Grouping strength, 0.002 to 0.03
+BOUNDARY_AV_W = 0.2        // Edge avoidance strength, 0.01 to 0.6
 
 // Edge bands the flock turns away from, as a fraction of the viewport
 TURN_BAND_DIVISOR = 3      // Sides and top: one third of width / height
@@ -246,6 +246,9 @@ does not change the flock speed while the terminal sustains that rate.
 The perception radius ranges from 1 to 5 cells (12–60 pixels). Cells only
 select neighbor candidates; the final distance check remains circular and
 uses the exact radius in pixels.
+
+Each weight is bounded on both sides. The ceiling is three times the default,
+which keeps every weight in a range the flock still reads as flocking.
 
 The turn bands are proportional to the viewport, so they follow a resize and
 stay a band on a short terminal instead of covering it whole. The bottom one is

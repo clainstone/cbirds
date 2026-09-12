@@ -73,6 +73,14 @@ static const double COHESION_MIN = 0.002;
 static const double ALIGNMENT_STEP = 0.1;
 static const double ALIGNMENT_MIN = 0.1;
 
+/* Three times the default each. The weights used to rise without a limit, which
+ * left a slider nothing to fill against; this also puts every default at a third
+ * of its travel and keeps a keypress worth between two and six cells of bar. */
+static const double BOUNDARY_MAX = 3 * DEFAULT_BOUNDARY_W;
+static const double SEPARATION_MAX = 3 * DEFAULT_SEPARATION_W;
+static const double COHESION_MAX = 3 * DEFAULT_COHESION_W;
+static const double ALIGNMENT_MAX = 3 * DEFAULT_ALIGNMENT_W;
+
 #define ALT_SCREEN_ON "\033[?1049h"
 #define ALT_SCREEN_OFF "\033[?1049l"
 #define CURSOR_HIDE "\033[?25l"
@@ -546,7 +554,10 @@ static int handle_input(void) {
             case 'q':
                 return 0;
             case 'B':
-                config.boundary += BOUNDARY_STEP;
+                if (config.boundary < BOUNDARY_MAX) {
+                    config.boundary += BOUNDARY_STEP;
+                    if (config.boundary > BOUNDARY_MAX) config.boundary = BOUNDARY_MAX;
+                }
                 break;
             case 'b':
                 if (config.boundary > BOUNDARY_MIN) {
@@ -555,7 +566,10 @@ static int handle_input(void) {
                 }
                 break;
             case 'S':
-                config.separation += SEPARATION_STEP;
+                if (config.separation < SEPARATION_MAX) {
+                    config.separation += SEPARATION_STEP;
+                    if (config.separation > SEPARATION_MAX) config.separation = SEPARATION_MAX;
+                }
                 break;
             case 's':
                 if (config.separation > SEPARATION_MIN) {
@@ -564,7 +578,10 @@ static int handle_input(void) {
                 }
                 break;
             case 'C':
-                config.cohesion += COHESION_STEP;
+                if (config.cohesion < COHESION_MAX) {
+                    config.cohesion += COHESION_STEP;
+                    if (config.cohesion > COHESION_MAX) config.cohesion = COHESION_MAX;
+                }
                 break;
             case 'c':
                 if (config.cohesion > COHESION_MIN) {
@@ -573,7 +590,10 @@ static int handle_input(void) {
                 }
                 break;
             case 'A':
-                config.alignment += ALIGNMENT_STEP;
+                if (config.alignment < ALIGNMENT_MAX) {
+                    config.alignment += ALIGNMENT_STEP;
+                    if (config.alignment > ALIGNMENT_MAX) config.alignment = ALIGNMENT_MAX;
+                }
                 break;
             case 'a':
                 if (config.alignment > ALIGNMENT_MIN) {

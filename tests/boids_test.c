@@ -8,7 +8,7 @@ static double brute_force_flock_direction(const bird_t *birds, int target_index)
     const bird_t *target = &birds[target_index];
     vector_t separation = {0, 0}, alignment = {0, 0}, cohesion = {0, 0};
     vector_t boundary = boundary_vector(target);
-    int neighbors = 0;
+    int neighbors = 0, kin = 0;
 
     for (int i = 0; i < config.birds; i++) {
         if (i == target_index) continue;
@@ -18,18 +18,22 @@ static double brute_force_flock_direction(const bird_t *birds, int target_index)
         if (dx * dx + dy * dy >= config.vision_radius_squared) continue;
         separation.x += dx;
         separation.y += dy;
+        neighbors++;
+        if (other->flock != target->flock) continue;
         alignment.x += cos(other->direction);
         alignment.y += sin(other->direction);
         cohesion.x += other->x;
         cohesion.y += other->y;
-        neighbors++;
+        kin++;
     }
 
     if (neighbors) {
-        alignment.x /= neighbors;
-        alignment.y /= neighbors;
-        cohesion.x = cohesion.x / neighbors - target->x;
-        cohesion.y = cohesion.y / neighbors - target->y;
+        if (kin) {
+            alignment.x /= kin;
+            alignment.y /= kin;
+            cohesion.x = cohesion.x / kin - target->x;
+            cohesion.y = cohesion.y / kin - target->y;
+        }
         double x = separation.x * config.separation + alignment.x * config.alignment +
                    cohesion.x * config.cohesion + boundary.x * config.boundary;
         double y = separation.y * config.separation + alignment.y * config.alignment +
@@ -128,14 +132,22 @@ static void test_engine_matches_brute_force(void) {
     assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRD_COUNT) == SPATIAL_GRID_OK);
     assert(spatial_grid_build(&grid, BIRD_COUNT, read_bird_position, snapshot) == SPATIAL_GRID_OK);
 
-    for (config.vision_notch = 0; config.vision_notch <= LEGEND_BAR_CELLS; config.vision_notch++) {
-        apply_notches();
-        for (int i = 0; i < BIRD_COUNT; i++) {
-            double expected = brute_force_flock_direction(snapshot, i);
-            double actual = flock_direction(snapshot, &grid, i);
-            assert(angle_difference(expected, actual) < 1e-11);
+    /* Swept over the flock count too: the reference models the same social rule,
+     * so a divergence would mean one of the two forgot it. */
+    for (config.flocks = 1; config.flocks <= MAX_FLOCKS; config.flocks++) {
+        for (int i = 0; i < BIRD_COUNT; i++) snapshot[i].flock = i % config.flocks;
+        for (config.vision_notch = 0; config.vision_notch <= LEGEND_BAR_CELLS;
+             config.vision_notch++) {
+            apply_notches();
+            for (int i = 0; i < BIRD_COUNT; i++) {
+                double expected = brute_force_flock_direction(snapshot, i);
+                double actual = flock_direction(snapshot, &grid, i);
+                assert(angle_difference(expected, actual) < 1e-11);
+            }
         }
     }
+    config.flocks = 1;
+    for (int i = 0; i < BIRD_COUNT; i++) snapshot[i].flock = 0;
 
     config.vision_notch = 6;
     apply_notches();
@@ -580,6 +592,41 @@ static void test_birds_start_clear_of_the_panel(void) {
     }
 }
 
+/* Two flocks share the space without sharing a heading. */
+static void test_flocks_do_not_align_with_each_other(void) {
+    enum { BIRD_COUNT = 40 };
+    bird_t birds[BIRD_COUNT];
+    spatial_grid_t grid;
+
+    reset_test_config();
+    legend_enabled = 0;
+    apply_screen_size(200, 50, 200 * 8, 50 * 16);
+    config.birds = BIRD_COUNT;
+    config.flocks = 2;
+
+    /* One bird of flock zero heading right, and a crowd of flock one heading the
+     * other way. They sit exactly on top of it, so separation contributes nothing
+     * and only the social terms can move it: the test is then about those alone. */
+    birds[0] = (bird_t){800, 400, 0, 0, 0, 0};
+    for (int i = 1; i < BIRD_COUNT; i++) birds[i] = (bird_t){800, 400, M_PI, 0, 0, 1};
+
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRD_COUNT) == SPATIAL_GRID_OK);
+    assert(spatial_grid_build(&grid, BIRD_COUNT, read_bird_position, birds) == SPATIAL_GRID_OK);
+
+    /* Not its flock, so it holds its own heading however many of them there are. */
+    assert(flock_direction(birds, &grid, 0) == 0.0);
+
+    /* Put them all in one flock and the same crowd turns it right around. */
+    config.flocks = 1;
+    for (int i = 0; i < BIRD_COUNT; i++) birds[i].flock = 0;
+    assert(angle_difference(flock_direction(birds, &grid, 0), M_PI) < 1e-12);
+
+    spatial_grid_destroy(&grid);
+    legend_enabled = 1;
+    reset_test_config();
+}
+
 static void test_mouse_reports_are_parsed(void) {
     reset_test_config();
     apply_screen_size(80, 24, 80 * 8, 24 * 16);
@@ -847,6 +894,7 @@ int main(void) {
     test_boundary_bands_follow_the_viewport();
     test_bottom_band_scales_on_a_short_viewport();
     test_birds_start_spread_inside_the_free_region();
+    test_flocks_do_not_align_with_each_other();
     test_mouse_reports_are_parsed();
     test_vision_controls();
     test_frame_rate_controls();

@@ -598,6 +598,83 @@ static void test_birds_start_clear_of_the_panel(void) {
 }
 
 /* Two flocks share the space without sharing a heading. */
+static void test_the_konami_code(void) {
+    reset_test_config();
+    legend_enabled = 1;
+    apply_screen_size(200, 50, 1600, 800);
+    config.hawks = 0;
+    konami_at = 0;
+    spell_clear();
+
+    /* Nine of the ten is nine of the ten. */
+    for (const char *c = "AABBDCDCb"; *c; c++) konami_note(*c);
+    assert(config.hawks == 0);
+    konami_note('a');
+    assert(config.hawks == MAX_HAWKS);
+    assert(spell.writing); /* And it says so. */
+
+    /* A wrong key in the middle is a wrong sequence. */
+    config.hawks = 0;
+    spell_clear();
+    konami_at = 0;
+    memset(konami_seen, 0, sizeof(konami_seen));
+    for (const char *c = "AABBDCDXCba"; *c; c++) konami_note(*c);
+    assert(config.hawks == 0);
+
+    /* People mash arrows, so a stutter in front must not throw it away: the last
+     * ten keys are what count, not a running match. */
+    for (const char *c = "AAABBDCDCba"; *c; c++) konami_note(*c);
+    assert(config.hawks == MAX_HAWKS);
+
+    /* And rubbish in front of a correct code still counts. */
+    config.hawks = 0;
+    spell_clear();
+    for (const char *c = "qwertyAABBDCDCba"; *c; c++) konami_note(*c);
+    assert(config.hawks == MAX_HAWKS);
+
+    config.hawks = 0;
+    konami_at = 0;
+    spell_clear();
+    reset_test_config();
+}
+
+static void test_wind_leans_the_flock(void) {
+    reset_test_config();
+    config.wind_notch = 0;
+    assert(wind_vector().x == 0 && wind_vector().y == 0);
+
+    /* Stronger with the notch, and pointing where the wind points. */
+    wind_is_fixed = 1;
+    wind_direction = 0;
+    config.wind_notch = LEGEND_BAR_CELLS;
+    vector_t full = wind_vector();
+    config.wind_notch = LEGEND_BAR_CELLS / 2;
+    vector_t half = wind_vector();
+    assert(full.x > half.x && half.x > 0);
+    assert(fabs(full.y) < 1e-12);
+
+    wind_direction = M_PI / 2;
+    vector_t down = wind_vector();
+    assert(down.y > 0 && fabs(down.x) < 1e-12);
+
+    /* Fixed means fixed; otherwise it drifts, and stays on the circle. */
+    double held = wind_direction;
+    drift_the_wind();
+    assert(wind_direction == held);
+    wind_is_fixed = 0;
+    srand(3);
+    for (int i = 0; i < 1000; i++) {
+        drift_the_wind();
+        assert(wind_direction >= 0 && wind_direction < 2 * M_PI);
+    }
+    assert(wind_direction != held); /* It went somewhere. */
+
+    config.wind_notch = 0;
+    wind_is_fixed = 0;
+    wind_direction = 0;
+    reset_test_config();
+}
+
 static void test_autopilot_wanders_and_yields(void) {
     reset_test_config();
     autopilot = 0;
@@ -1274,6 +1351,8 @@ int main(void) {
     test_boundary_bands_follow_the_viewport();
     test_bottom_band_scales_on_a_short_viewport();
     test_birds_start_spread_inside_the_free_region();
+    test_the_konami_code();
+    test_wind_leans_the_flock();
     test_autopilot_wanders_and_yields();
     test_hawks_hunt_and_the_flock_flees();
     test_the_flock_can_be_laid_out_as_text();

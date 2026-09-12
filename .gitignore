@@ -6,6 +6,7 @@ spatial_grid_test
 boids_test
 options_test
 png_test
+gif_test
 *.o
 *.dSYM/
 *~
@@ -14,6 +15,7 @@ perf.data*
 core
 core.*
 .shot.png
+.t.gif
 snapshot*.png
 
 # Local tools, captures, editor and OS noise

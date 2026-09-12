@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include "font.h"
+#include "gif.h"
 #include "kitty_graphics.h"
 #include "options.h"
 #include "png.h"
@@ -1305,6 +1306,11 @@ static int frame_limit;
 static int show_stats;
 static int bench_frames;
 static const char *snapshot_path;
+static const char *record_path;
+static int record_every = 2;
+static int record_delay = 4;
+static int record_columns = 100;
+static int record_rows = 30;
 
 /* What the panel's stats row reports, averaged over the last second so the
  * numbers are readable rather than flickering. */
@@ -1643,6 +1649,16 @@ static const option_t OPTIONS[] = {
      "quit after N frames, for recording", "Output", 0},
     {0, "snapshot", NULL, OPTION_STRING, &snapshot_path, 0, 0, NULL, "FILE",
      "write the last frame as a PNG, with our own encoder", "Output", 0},
+    {0, "record", NULL, OPTION_STRING, &record_path, 0, 0, NULL, "FILE",
+     "record an animated GIF with no terminal, and quit", "Output", 0},
+    {0, "record-every", NULL, OPTION_INT, &record_every, 1, 60, NULL, "N",
+     "record one frame in N (default 2)", "Output", 0},
+    {0, "record-delay", NULL, OPTION_INT, &record_delay, 1, 100, NULL, "CS",
+     "hundredths of a second a frame (default 4)", "Output", 0},
+    {0, "record-size", NULL, OPTION_INT, &record_columns, 40, 400, NULL, "COLUMNS",
+     "the width to record at, in cells (default 100)", "Output", 0},
+    {0, "record-rows", NULL, OPTION_INT, &record_rows, 14, 120, NULL, "ROWS",
+     "the height to record at, in cells (default 30)", "Output", 0},
 
     {0, "force", NULL, OPTION_FLAG, &force_graphics, 0, 0, NULL, NULL,
      "draw without asking the terminal whether it can", "General", 0},
@@ -1983,20 +1999,19 @@ static void blend_sprite(png_image_t *canvas, const png_image_t *sprite, int at_
     }
 }
 
-static int write_snapshot(const char *path, const bird_t *birds) {
-    png_image_t source = {0, 0, NULL}, canvas_sprite = {0, 0, NULL}, canvas = {0, 0, NULL};
-    png_image_t frames[ROTATION_FRAMES] = {{0, 0, NULL}};
-    uint8_t *encoded = NULL;
-    size_t encoded_length = 0;
-    int written = 0;
+/* The rotated sprites as pixels, which is what compositing needs and the
+ * renderer never does, because Kitty does it. */
+static png_status_t rasterise_sprites(png_image_t frames[ROTATION_FRAMES]) {
+    png_image_t source = {0, 0, NULL}, canvas_sprite = {0, 0, NULL};
 
-    if (png_decode(sprite_png, sprite_png_len, &source) != PNG_OK) return 0;
+    png_status_t status = load_sprite(&source);
+    if (status != PNG_OK) return status;
     int work = config.bird_size * SPRITE_SUPERSAMPLE;
     if (work > SPRITE_WORK_MAX) work = SPRITE_WORK_MAX;
     if (work > source.width) work = source.width;
-    png_status_t status = png_resize(&source, work, work, &canvas_sprite);
+    status = png_resize(&source, work, work, &canvas_sprite);
     png_image_free(&source);
-    if (status != PNG_OK) return 0;
+    if (status != PNG_OK) return status;
 
     for (int i = 0; i < ROTATION_FRAMES && status == PNG_OK; i++) {
         status = png_rotate_resize(&canvas_sprite, i * FRAME_ANGLE * M_PI / 180.0, config.bird_size,
@@ -2004,22 +2019,41 @@ static int write_snapshot(const char *path, const bird_t *birds) {
         if (status == PNG_OK) palette_tint(&frames[i], 0);
     }
     png_image_free(&canvas_sprite);
+    return status;
+}
 
+/* The ground, opaque, so a picture looks like the terminal it was taken in
+ * rather than like a cut out. */
+static void fill_ground(png_image_t *canvas) {
+    for (size_t i = 0; i < (size_t)canvas->width * (size_t)canvas->height; i++) {
+        canvas->pixels[i * 4 + 0] = 18;
+        canvas->pixels[i * 4 + 1] = 18;
+        canvas->pixels[i * 4 + 2] = 24;
+        canvas->pixels[i * 4 + 3] = 255;
+    }
+}
+
+static void compose(png_image_t *canvas, const png_image_t frames[ROTATION_FRAMES],
+                    const bird_t *birds) {
+    fill_ground(canvas);
+    for (int i = 0; i < config.birds; i++) {
+        int frame = birds[i].frame % ROTATION_FRAMES;
+        if (frames[frame].pixels == NULL) continue;
+        blend_sprite(canvas, &frames[frame], (int)birds[i].x, (int)birds[i].y);
+    }
+}
+
+static int write_snapshot(const char *path, const bird_t *birds) {
+    png_image_t canvas = {0, 0, NULL};
+    png_image_t frames[ROTATION_FRAMES] = {{0, 0, NULL}};
+    uint8_t *encoded = NULL;
+    size_t encoded_length = 0;
+    int written = 0;
+
+    png_status_t status = rasterise_sprites(frames);
     if (status == PNG_OK) status = png_image_alloc(&canvas, screen.width, screen.height);
     if (status == PNG_OK) {
-        /* Opaque, so the picture looks like the terminal it was taken in rather
-         * than like a cut out. */
-        for (size_t i = 0; i < (size_t)screen.width * (size_t)screen.height; i++) {
-            canvas.pixels[i * 4 + 0] = 18;
-            canvas.pixels[i * 4 + 1] = 18;
-            canvas.pixels[i * 4 + 2] = 24;
-            canvas.pixels[i * 4 + 3] = 255;
-        }
-        for (int i = 0; i < config.birds; i++) {
-            int frame = birds[i].frame % ROTATION_FRAMES;
-            if (frames[frame].pixels == NULL) continue;
-            blend_sprite(&canvas, &frames[frame], (int)birds[i].x, (int)birds[i].y);
-        }
+        compose(&canvas, frames, birds);
         status = png_encode(&canvas, &encoded, &encoded_length);
     }
     for (int i = 0; i < ROTATION_FRAMES; i++) png_image_free(&frames[i]);
@@ -2170,6 +2204,89 @@ static long elapsed_microseconds(const struct timespec *start, const struct time
  * opened and nothing is drawn: the frame is built into the graphics buffer and
  * its length counted, which is exactly what a real frame would put on the wire.
  */
+/*
+ * Recording.
+ *
+ * Headless, like the benchmark, and for the same reason: the demo in the README
+ * has to be regenerable by anyone who clones this, with one command, and nothing
+ * about it should depend on a terminal being attached or on how fast one happens
+ * to be. Every frame is simulated, every --record-every'th is composited and
+ * handed to the GIF writer.
+ */
+static int run_recording(void) {
+    png_image_t frames[ROTATION_FRAMES] = {{0, 0, NULL}};
+    png_image_t canvas = {0, 0, NULL};
+    spatial_grid_t grid;
+    gif_writer_t *gif = NULL;
+    size_t bytes = 0;
+    int written = 0;
+    int total = frame_limit > 0 ? frame_limit : 300;
+
+    apply_screen_size(record_columns, record_rows, record_columns * DEFAULT_CELL_WIDTH,
+                      record_rows * DEFAULT_CELL_HEIGHT);
+    if (spatial_grid_init(&grid, SPATIAL_CELL_SIZE) != SPATIAL_GRID_OK) return EXIT_FAILURE;
+    if (spatial_grid_prepare(&grid, screen.width, screen.height, config.birds) != SPATIAL_GRID_OK)
+        return EXIT_FAILURE;
+    if (rasterise_sprites(frames) != PNG_OK) {
+        fprintf(stderr, "%s: cannot build the sprites to record with\n", program_name);
+        return EXIT_FAILURE;
+    }
+    if (png_image_alloc(&canvas, screen.width, screen.height) != PNG_OK) return EXIT_FAILURE;
+
+    gif_status_t gif_status =
+        gif_open(&gif, record_path, screen.width, screen.height, record_delay);
+    if (gif_status != GIF_OK) {
+        fprintf(stderr, "%s: %s: %s\n", program_name, record_path, gif_status_string(gif_status));
+        return EXIT_FAILURE;
+    }
+
+    bird_t *birds = calloc((size_t)config.birds, sizeof(*birds));
+    bird_t *snapshot = malloc(sizeof(*snapshot) * (size_t)config.birds);
+    if (birds == NULL || snapshot == NULL) return EXIT_FAILURE;
+    srand(requested_seed >= 0 ? (unsigned)requested_seed : 1u);
+    initialize_birds(birds);
+    place_hawks();
+    if (requested_spell != NULL && spell_layout(requested_spell))
+        spell.until = spell_hold > 0 ? (double)spell_hold : -1.0;
+
+    for (int frame = 0; frame < total && gif_status == GIF_OK; frame++) {
+        /* The clock the features read has to advance, or nothing that animates
+         * on its own terms would animate at all. */
+        clock_state.frame = frame;
+        clock_state.seconds = (double)frame / config.frame_rate;
+        if (spell.writing && spell.until >= 0 && clock_state.seconds >= spell.until) spell_clear();
+        maybe_tell_the_time();
+        maybe_drift();
+        drift_the_wind();
+
+        memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
+        spatial_grid_build(&grid, config.birds, read_bird_position, snapshot);
+        hunt(snapshot);
+        update_birds(birds, snapshot, &grid);
+        for (int i = 0; i < config.birds; i++) birds[i].frame = direction_frame(birds[i].direction);
+
+        if (frame % record_every != 0) continue;
+        compose(&canvas, frames, birds);
+        gif_status = gif_add_frame(gif, &canvas);
+    }
+
+    gif_status_t closed = gif_close(gif, &bytes, &written);
+    if (gif_status == GIF_OK) gif_status = closed;
+    for (int i = 0; i < ROTATION_FRAMES; i++) png_image_free(&frames[i]);
+    png_image_free(&canvas);
+    spatial_grid_destroy(&grid);
+    free(snapshot);
+    free(birds);
+
+    if (gif_status != GIF_OK) {
+        fprintf(stderr, "%s: %s: %s\n", program_name, record_path, gif_status_string(gif_status));
+        return EXIT_FAILURE;
+    }
+    printf("%s: %d frames, %dx%d, %.1f KB\n", record_path, written, screen.width, screen.height,
+           (double)bytes / 1024.0);
+    return EXIT_SUCCESS;
+}
+
 static int run_benchmark(void) {
     kitty_graphics_t graphics;
     spatial_grid_t grid;
@@ -2228,6 +2345,7 @@ int main(int argc, char **argv) {
     struct timespec frame_start, frame_end;
     read_options(argc, argv);
     if (bench_frames > 0) return run_benchmark();
+    if (record_path != NULL) return run_recording();
     install_signal_handlers();
     atexit(restore_terminal);
 

@@ -9,10 +9,11 @@
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS-lightgrey.svg)
 
-![The flock spelling its own name](docs/hero.png)
+![cbirds recording itself](docs/demo.gif)
 
-*That is a terminal. Those are PNG sprites. It wrote its own name, and then took
-its own photograph with its own PNG encoder.*
+*That is a terminal. Those are PNG sprites. It wrote its own name, and then
+recorded this GIF of itself — the LZW encoder is in `gif.c`, and one command
+regenerates it.*
 
 </div>
 
@@ -49,7 +50,7 @@ cbirds                    # already does, that is the default
 cbirds --color ember      # or pick a ramp
 ```
 
-<div align="center"><img src="docs/murmuration.png" alt="A murmuration" width="90%"></div>
+<div align="center"><img src="docs/hero.png" alt="The flock spelling its own name" width="90%"></div>
 
 ```bash
 cbirds --preset murmuration --trails    # the starling look, with tails
@@ -64,10 +65,12 @@ cbirds --shape fish --wrap              # or a school, off one edge and onto the
 
 <table>
 <tr>
-<td width="50%"><img src="docs/hawks.png" alt="Two hawks scattering the flock"></td>
-<td width="50%"><img src="docs/matrix.png" alt="Matrix rain, as birds"></td>
+<td width="33%"><img src="docs/murmuration.png" alt="A murmuration"></td>
+<td width="33%"><img src="docs/hawks.png" alt="Two hawks scattering the flock"></td>
+<td width="33%"><img src="docs/matrix.png" alt="Matrix rain, as birds"></td>
 </tr>
 <tr>
+<td align="center"><code>--preset murmuration --trails</code></td>
 <td align="center"><code>--hawks 2 --color acid</code></td>
 <td align="center"><code>--matrix</code></td>
 </tr>
@@ -147,6 +150,15 @@ swallow it. The screen is **never** cleared after the sprites are uploaded:
 clearing deletes them, and every later placement would point at an image that no
 longer exists. A test asserts that no frame ever carries a screen erase.
 
+**The recording.** `--record` runs headless — no terminal, no frame budget, and
+deterministic given `--seed` — composites every few frames into one canvas and
+writes an animated GIF: global colour table chosen from the frames themselves,
+LZW, Netscape looping. The demo at the top of this file was made by the command
+in `docs/README.md`, in four tenths of a second, and nothing outside this
+repository touched it. The test reads a recording back with a GIF parser written
+separately from the writer, because an encoder checked against its own
+assumptions is not checked.
+
 **The compression.** `png_encode` runs LZ77 with a hash chain and the fixed
 Huffman codes of RFC 1951, which the inflater in the same file has always been
 able to read. Fixed rather than dynamic because there is no tree to build and no
@@ -212,7 +224,7 @@ answer for it. Kitty, WezTerm, Ghostty and recent Konsole all do.
 Run it under one of those, or pass --force to try anyway.
 ```
 
-Build needs GCC 7+ or Clang 10+ and `make`. `make test` runs four suites.
+Build needs GCC 7+ or Clang 10+ and `make`. `make test` runs six suites.
 
 ## Layout
 
@@ -224,8 +236,9 @@ Build needs GCC 7+ or Clang 10+ and `make`. `make test` runs four suites.
 | `spatial_grid.c` `.h` | the uniform grid and its contiguous cell buckets |
 | `png.c` `png.h` | the PNG library: decode, encode, DEFLATE, rotate, resize, tint |
 | `font.c` `font.h` | the 5×7 font the flock writes with |
+| `gif.c` `gif.h` | the animated GIF writer, colour quantisation and LZW |
 | `sprite_png.h` | the bird, generated from `matrix.png` by `mkasset.c` |
-| `tests/` | four suites, run by `make test` |
+| `tests/` | six suites, run by `make test` |
 
 ## Contributing
 

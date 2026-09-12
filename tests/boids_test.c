@@ -74,6 +74,8 @@ static void reset_test_config(void) {
     config.colour_by = COLOUR_BY_HEADING;
     config.mouse_mode = MOUSE_FLEE;
     config.mouse_reach = DEFAULT_MOUSE_REACH;
+    config.turning_notch = DEFAULT_TURNING_NOTCH;
+    config.wind_notch = 0;
     config.flocks = 1;
     apply_notches();
 }
@@ -160,7 +162,10 @@ static void test_engine_matches_brute_force(void) {
     memcpy(reference, snapshot, sizeof(snapshot));
     update_birds(optimized, snapshot, &grid);
     for (int i = 0; i < BIRD_COUNT; i++) {
-        double direction = brute_force_flock_direction(snapshot, i);
+        /* The reference banks the same way the engine does, or this would be
+         * comparing two different models rather than two ways of searching. */
+        double direction = turn_towards(snapshot[i].direction,
+                                        brute_force_flock_direction(snapshot, i), turn_limit());
         reference[i].direction = direction;
         reference[i].x += config.speed * cos(direction);
         reference[i].y += config.speed * sin(direction);
@@ -547,33 +552,40 @@ static void test_no_bird_ever_reaches_the_panel(void) {
     spatial_grid_t grid;
 
     assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
-    for (int rate = MIN_FRAME_RATE; rate <= MAX_FRAME_RATE;
-         rate += MAX_FRAME_RATE - MIN_FRAME_RATE) {
-        reset_test_config();
-        config.frame_rate = rate;
-        update_speed(); /* Which moves the turn margin with it. */
-        apply_screen_size(200, 50, 200 * 8, 50 * 16);
-        config.birds = 1;
-        assert(spatial_grid_prepare(&grid, screen.width, screen.height, 1) == SPATIAL_GRID_OK);
+    /* Swept over the frame rate, which moves the margin, and over the turning
+     * limit, which is what nearly broke this: a bird that cannot turn at once
+     * cannot be turned away at once, so the panel's push is exempt from the limit
+     * and this test is what says so. Dropping that exemption fails it. */
+    static const int TURNS[] = {0, 1, DEFAULT_TURNING_NOTCH, LEGEND_BAR_CELLS};
+    for (size_t turn = 0; turn < sizeof(TURNS) / sizeof(*TURNS); turn++)
+        for (int rate = MIN_FRAME_RATE; rate <= MAX_FRAME_RATE;
+             rate += MAX_FRAME_RATE - MIN_FRAME_RATE) {
+            reset_test_config();
+            config.turning_notch = TURNS[turn];
+            config.frame_rate = rate;
+            update_speed(); /* Which moves the turn margin with it. */
+            apply_screen_size(200, 50, 200 * 8, 50 * 16);
+            config.birds = 1;
+            assert(spatial_grid_prepare(&grid, screen.width, screen.height, 1) == SPATIAL_GRID_OK);
 
-        double margin = config.speed;
-        /* Start just outside the turn zone, all the way round its two open
-         * sides, aimed in every direction. */
-        for (double x = 0; x <= screen.legend_width + margin + 40; x += 17)
-            for (double y = 0; y <= screen.legend_height + margin + 40; y += 13)
-                for (int d = 0; d < DIRECTIONS; d++) {
-                    bird_t bird = {.x = x, .y = y, .direction = 2 * M_PI * d / DIRECTIONS};
-                    if (legend_turn_zone(bird.x, bird.y)) continue; /* Not a legal start. */
-                    bird_t snapshot = bird;
-                    for (int frame = 0; frame < FRAMES; frame++) {
-                        snapshot = bird;
-                        assert(spatial_grid_build(&grid, 1, read_bird_position, &snapshot) ==
-                               SPATIAL_GRID_OK);
-                        update_birds(&bird, &snapshot, &grid);
-                        assert(!sprite_overlaps_legend(bird.x, bird.y));
+            double margin = config.speed;
+            /* Start just outside the turn zone, all the way round its two open
+             * sides, aimed in every direction. */
+            for (double x = 0; x <= screen.legend_width + margin + 40; x += 17)
+                for (double y = 0; y <= screen.legend_height + margin + 40; y += 13)
+                    for (int d = 0; d < DIRECTIONS; d++) {
+                        bird_t bird = {.x = x, .y = y, .direction = 2 * M_PI * d / DIRECTIONS};
+                        if (legend_turn_zone(bird.x, bird.y)) continue; /* Not a legal start. */
+                        bird_t snapshot = bird;
+                        for (int frame = 0; frame < FRAMES; frame++) {
+                            snapshot = bird;
+                            assert(spatial_grid_build(&grid, 1, read_bird_position, &snapshot) ==
+                                   SPATIAL_GRID_OK);
+                            update_birds(&bird, &snapshot, &grid);
+                            assert(!sprite_overlaps_legend(bird.x, bird.y));
+                        }
                     }
-                }
-    }
+        }
     spatial_grid_destroy(&grid);
     reset_test_config();
 }
@@ -598,6 +610,66 @@ static void test_birds_start_clear_of_the_panel(void) {
 }
 
 /* Two flocks share the space without sharing a heading. */
+static void test_birds_bank_rather_than_snap(void) {
+    reset_test_config();
+    config.turning_notch = DEFAULT_TURNING_NOTCH;
+    double most = turn_limit();
+    assert(most > 0 && most < 2 * M_PI);
+
+    /* Asked to reverse, it turns as far as it may and no further. */
+    double turned = turn_towards(0.0, M_PI, most);
+    assert(angle_difference(turned, most) < 1e-12);
+
+    /* It takes the short way round, through zero rather than the long way. */
+    double from_high = turn_towards(2 * M_PI - 0.05, 0.05, most);
+    assert(from_high >= 0 && from_high < 2 * M_PI);
+    assert(angle_difference(from_high, 0.05) < 1e-12); /* Within reach, so it arrives. */
+    double clockwise = turn_towards(0.05, 2 * M_PI - 0.05, most);
+    assert(angle_difference(clockwise, 2 * M_PI - 0.05) < 1e-12);
+
+    /* Anything already within the limit is simply reached. */
+    assert(angle_difference(turn_towards(1.0, 1.0 + most / 2, most), 1.0 + most / 2) < 1e-12);
+
+    /* The result is always on the circle, from anywhere to anywhere. */
+    for (int a = 0; a < 360; a += 7)
+        for (int b = 0; b < 360; b += 11) {
+            double got = turn_towards(a * M_PI / 180, b * M_PI / 180, most);
+            assert(got >= 0 && got < 2 * M_PI);
+            assert(angle_difference(got, a * M_PI / 180) <= most + 1e-12);
+        }
+
+    /* Twelve notches is instant, which is what it always used to be. */
+    config.turning_notch = LEGEND_BAR_CELLS;
+    assert(angle_difference(turn_towards(0.0, M_PI, turn_limit()), M_PI) < 1e-12);
+    /* And none at all is a straight line. */
+    config.turning_notch = 0;
+    assert(turn_limit() == 0.0);
+    assert(turn_towards(1.0, 3.0, turn_limit()) == 1.0);
+
+    /* Writing is exempt, or a bird could not land on a letter: it would circle
+     * one, and the crispness of the letters is the whole point of them. */
+    legend_enabled = 1;
+    apply_screen_size(200, 50, 1600, 800);
+    config.turning_notch = 0; /* The harshest limit there is. */
+    assert(spell_layout("I") > 0);
+    enum { BIRD_COUNT = 4 };
+    bird_t birds[BIRD_COUNT], snapshot[BIRD_COUNT];
+    spatial_grid_t grid;
+    config.birds = BIRD_COUNT;
+    for (int i = 0; i < BIRD_COUNT; i++)
+        birds[i] = (bird_t){.x = spell.x[0] - config.speed / 2, .y = spell.y[0], .direction = M_PI};
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRD_COUNT) == SPATIAL_GRID_OK);
+    memcpy(snapshot, birds, sizeof(birds));
+    assert(spatial_grid_build(&grid, BIRD_COUNT, read_bird_position, snapshot) == SPATIAL_GRID_OK);
+    update_birds(birds, snapshot, &grid);
+    assert(fabs(birds[0].x - spell.x[0]) < 1e-9); /* Landed, despite the limit. */
+    spatial_grid_destroy(&grid);
+
+    spell_clear();
+    reset_test_config();
+}
+
 static void test_the_konami_code(void) {
     reset_test_config();
     legend_enabled = 1;
@@ -1351,6 +1423,7 @@ int main(void) {
     test_boundary_bands_follow_the_viewport();
     test_bottom_band_scales_on_a_short_viewport();
     test_birds_start_spread_inside_the_free_region();
+    test_birds_bank_rather_than_snap();
     test_the_konami_code();
     test_wind_leans_the_flock();
     test_autopilot_wanders_and_yields();

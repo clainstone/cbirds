@@ -37,6 +37,7 @@ enum {
     MOUSE_OFF,
     DEFAULT_MOUSE_REACH = 120,
     DEFAULT_VISION_NOTCH = 6,
+    DEFAULT_TURNING_NOTCH = 8,
     /* Only every sixteenth bird leaves one, because a tail behind all of them is
      * three times the bandwidth for a picture that reads as mud. Fifty comets in
      * a flock of eight hundred is what says "moving" in a still frame. */
@@ -171,7 +172,7 @@ typedef struct {
     int birds, frame_rate, bird_size, palette, flocks, colour_by;
     int mouse_mode, mouse_reach;
     int wrap, trails, hawks, shape;
-    int wind_notch;
+    int wind_notch, turning_notch;
     double speed;
     int vision_cells, vision_radius, vision_radius_squared;
     double separation, alignment, cohesion, boundary;
@@ -192,6 +193,7 @@ static config_t config = {
     .colour_by = COLOUR_BY_HEADING,
     .mouse_mode = MOUSE_FLEE,
     .mouse_reach = DEFAULT_MOUSE_REACH,
+    .turning_notch = DEFAULT_TURNING_NOTCH,
     .vision_cells = DEFAULT_VISION_RADIUS / SPATIAL_CELL_SIZE,
     .vision_radius = DEFAULT_VISION_RADIUS,
     .vision_radius_squared = DEFAULT_VISION_RADIUS * DEFAULT_VISION_RADIUS,
@@ -1211,10 +1213,49 @@ static void wrap_position(bird_t *bird) {
     if (bird->y >= height) bird->y -= height;
 }
 
+/*
+ * Turning inertia.
+ *
+ * A bird that can turn any amount in one frame moves like a particle: the flock
+ * comes out as a blob that changes shape instantly. Cap the turn and it banks
+ * instead, which gives the flock curved fronts, a leading edge, and the look of
+ * something with mass. This is the single change that makes it read as birds
+ * rather than as points, which is why the default is eight of twelve rather than
+ * the twelve it used to effectively be.
+ *
+ * Writing is exempt. It already overrules the flocking rules, and a bird that
+ * cannot turn sharply cannot land on a letter: it would circle one instead, and
+ * the crispness of the letters is the whole point of them.
+ */
+static double turn_towards(double from, double to, double most) {
+    double delta = atan2(sin(to - from), cos(to - from));
+    if (delta > most) delta = most;
+    if (delta < -most) delta = -most;
+    double turned = from + delta;
+    if (turned < 0) turned += 2 * M_PI;
+    if (turned >= 2 * M_PI) turned -= 2 * M_PI;
+    return turned;
+}
+
+/* Twelve is instant, zero is a straight line and nothing in between is either. */
+static double turn_limit(void) {
+    if (config.turning_notch >= LEGEND_BAR_CELLS) return 2 * M_PI;
+    return M_PI * config.turning_notch / LEGEND_BAR_CELLS / 2.0;
+}
+
 static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_grid_t *grid) {
     for (int i = 0; i < config.birds; i++) {
         int crowd = 0;
         double direction = flock_direction(snapshot, grid, i, &crowd);
+        /* Banking is for flocking. Two things are not flocking and are exempt: a
+         * bird writing a letter, which has to be able to land on it, and a bird
+         * inside the panel's turn zone, whose push is a constraint rather than a
+         * force. Limiting that one would break the panel's unreachability, which
+         * is proved on the assumption that a bird can turn away at once. */
+        double unused_x, unused_y;
+        if (!spell_target_of(i, &unused_x, &unused_y) &&
+            !legend_turn_zone(snapshot[i].x, snapshot[i].y))
+            direction = turn_towards(snapshot[i].direction, direction, turn_limit());
         birds[i].direction = direction;
         /* Never past the target: the last step is the distance left, which is
          * what makes a letter crisp instead of a cloud orbiting one. */
@@ -1539,6 +1580,9 @@ static const option_t OPTIONS[] = {
     {0, "alignment", NULL, OPTION_INT, &config.alignment_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
      "how much it matches its neighbours (default 4)", "Sliders   0 to 12, as the panel shows them",
      0},
+    {0, "turning", NULL, OPTION_INT, &config.turning_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
+     "sharpest turn a frame, 12 is instant (default 8)",
+     "Sliders   0 to 12, as the panel shows them", 0},
     {0, "wind", NULL, OPTION_INT, &config.wind_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
      "a slow wandering breeze (default 0)", "Sliders   0 to 12, as the panel shows them", 0},
     {0, "perception", NULL, OPTION_INT, &requested_perception, MIN_VISION_RADIUS, MAX_VISION_RADIUS,
@@ -1606,10 +1650,11 @@ static const option_t OPTIONS[] = {
 enum { OPTION_COUNT = sizeof(OPTIONS) / sizeof(*OPTIONS) };
 
 /* The panel teaches the slider keys, so this only has to list the rest. */
-#define KEYS_HELP                                                      \
-    "\nKeys   b/B s/S c/C a/A p/P r/R   one notch down / up\n"         \
-    "       space pause   . step   0 reset   +/- birds   Tab preset\n" \
-    "       h panel   e trails   w wrap   k/K hawks   M mouse   L colour   q quit\n"
+#define KEYS_HELP                                                           \
+    "\nKeys   b/B s/S c/C a/A p/P r/R t/T   one notch down / up\n"          \
+    "       space pause   . step   0 reset   +/- birds   Tab preset\n"      \
+    "       h panel   e trails   w wrap   k/K hawks   M mouse   L colour\n" \
+    "       q quit\n"
 
 enum { EXIT_USAGE = 2 }; /* A mistyped command is not a run that went wrong. */
 
@@ -1814,6 +1859,12 @@ static int handle_input(void) {
                 continue;
             case 'K':
                 if (config.hawks > 0) config.hawks--;
+                continue;
+            case 'T':
+                if (config.turning_notch < LEGEND_BAR_CELLS) config.turning_notch++;
+                continue;
+            case 't':
+                if (config.turning_notch > 0) config.turning_notch--;
                 continue;
             case 'w':
                 config.wrap = !config.wrap;

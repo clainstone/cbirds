@@ -670,7 +670,8 @@ static png_status_t draw_shape(int which, int size, png_image_t *out) {
     return PNG_OK;
 }
 
-static const char *sprite_path; /* --sprite, a file of the user's own. */
+static const char *sprite_path;             /* --sprite, a file of the user's own. */
+static const char *program_name = "cbirds"; /* As invoked, for every message. */
 
 /* Whichever the user asked for: a PNG of their own, one of the drawn shapes, or
  * the drawing compiled into the binary. */
@@ -678,7 +679,7 @@ static png_status_t load_sprite(png_image_t *out) {
     if (sprite_path != NULL) {
         FILE *file = fopen(sprite_path, "rb");
         if (file == NULL) {
-            fprintf(stderr, "cbirds: cannot open %s\n", sprite_path);
+            fprintf(stderr, "%s: cannot open %s\n", program_name, sprite_path);
             exit(EXIT_FAILURE);
         }
         static uint8_t buffer[1 << 22]; /* Four megabytes of PNG is a generous bird. */
@@ -1907,7 +1908,8 @@ static const char *read_spell_text(const char *given) {
      * no controlling terminal to go back to, raw mode will say so in a moment. */
     if (!isatty(STDIN_FILENO)) {
         if (freopen("/dev/tty", "r", stdin) == NULL) {
-            fprintf(stderr, "cbirds: read the text from stdin but found no terminal to run in\n");
+            fprintf(stderr, "%s: read the text from stdin but found no terminal to run in\n",
+                    program_name);
             exit(EXIT_FAILURE);
         }
     }
@@ -1916,6 +1918,7 @@ static const char *read_spell_text(const char *given) {
 
 static void read_options(int argc, char **argv) {
     char error[160];
+    if (argc > 0 && argv[0] != NULL) program_name = argv[0];
     name_the_palettes();
     name_the_presets();
     name_the_shapes();
@@ -1923,7 +1926,7 @@ static void read_options(int argc, char **argv) {
         options_parse(OPTIONS, OPTION_COUNT, argc, argv, error, sizeof(error));
 
     if (status == OPTIONS_HELP) {
-        usage(stdout, argv[0]);
+        usage(stdout, program_name);
         exit(EXIT_SUCCESS);
     }
     if (status == OPTIONS_VERSION) {
@@ -1931,8 +1934,8 @@ static void read_options(int argc, char **argv) {
         exit(EXIT_SUCCESS);
     }
     if (status != OPTIONS_OK) {
-        fprintf(stderr, "%s: %s\n", argv[0], error);
-        fprintf(stderr, "Try '%s --help'.\n", argv[0]);
+        fprintf(stderr, "%s: %s\n", program_name, error);
+        fprintf(stderr, "Try '%s --help'.\n", program_name);
         exit(EXIT_FAILURE);
     }
     /* A preset is expanded first so that a slider given after it still wins: the
@@ -1964,9 +1967,10 @@ static void read_options(int argc, char **argv) {
      * sprite the same way and none of them gets halfway into a run first. */
     if (sprite_path != NULL) {
         png_image_t probe = {0, 0, NULL};
-        png_status_t status = load_sprite(&probe);
-        if (status != PNG_OK) {
-            fprintf(stderr, "%s: %s: %s\n", argv[0], sprite_path, png_status_string(status));
+        png_status_t sprite_status = load_sprite(&probe);
+        if (sprite_status != PNG_OK) {
+            fprintf(stderr, "%s: %s: %s\n", program_name, sprite_path,
+                    png_status_string(sprite_status));
             exit(EXIT_FAILURE);
         }
         png_image_free(&probe);
@@ -2247,9 +2251,9 @@ int main(int argc, char **argv) {
     if (snapshot_path != NULL) {
         restore_terminal();
         if (write_snapshot(snapshot_path, birds))
-            fprintf(stderr, "cbirds: wrote %s\n", snapshot_path);
+            fprintf(stderr, "%s: wrote %s\n", program_name, snapshot_path);
         else
-            fprintf(stderr, "cbirds: could not write %s\n", snapshot_path);
+            fprintf(stderr, "%s: could not write %s\n", program_name, snapshot_path);
     }
     spatial_grid_destroy(&grid);
     kitty_graphics_destroy(&graphics);

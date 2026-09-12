@@ -598,6 +598,69 @@ static void test_birds_start_clear_of_the_panel(void) {
 }
 
 /* Two flocks share the space without sharing a heading. */
+static void test_hawks_hunt_and_the_flock_flees(void) {
+    enum { BIRD_COUNT = 20 };
+    bird_t birds[BIRD_COUNT];
+    spatial_grid_t grid;
+
+    reset_test_config();
+    legend_enabled = 0;
+    apply_screen_size(200, 50, 1600, 800);
+    config.birds = BIRD_COUNT;
+    config.hawks = 1;
+    place_hawks();
+    /* One hawk, centred, and the nearest bird well off to its right. */
+    hawks[0].x = 800;
+    hawks[0].y = 400;
+    hawks[0].direction = M_PI; /* Pointing the wrong way to start. */
+    for (int i = 0; i < BIRD_COUNT; i++) birds[i] = (bird_t){.x = 1200, .y = 400};
+    birds[3] = (bird_t){.x = 900, .y = 400}; /* The nearest. */
+
+    hunt(birds);
+    assert(cos(hawks[0].direction) > 0.99); /* Turned to face its prey. */
+    assert(hawks[0].x > 800);               /* And closed on it. */
+
+    /* Faster than the flock, or the chase would never look like one. */
+    double travelled = hawks[0].x - 800;
+    assert(travelled > config.speed);
+
+    /* Every bird flees it, hardest when closest, and not at all out of reach. */
+    const bird_t close = {.x = 800 + 20, .y = 400};
+    const bird_t further = {.x = 800 + 150, .y = 400};
+    const bird_t clear = {.x = 800 + HAWK_REACH + 1, .y = 400};
+    hawks[0].x = 800;
+    assert(hawk_vector(&close).x > hawk_vector(&further).x);
+    assert(hawk_vector(&further).x > 0);
+    assert(hawk_vector(&clear).x == 0 && hawk_vector(&clear).y == 0);
+
+    /* With no hawks there is no force at all. */
+    config.hawks = 0;
+    assert(hawk_vector(&close).x == 0);
+
+    /* And a hawk overrules a flock heading into it. */
+    config.hawks = 1;
+    for (int i = 0; i < BIRD_COUNT; i++) birds[i] = (bird_t){.x = 830, .y = 400, .direction = M_PI};
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRD_COUNT) == SPATIAL_GRID_OK);
+    assert(spatial_grid_build(&grid, BIRD_COUNT, read_bird_position, birds) == SPATIAL_GRID_OK);
+    assert(cos(flock_direction(birds, &grid, 0, NULL)) > 0);
+    spatial_grid_destroy(&grid);
+
+    /* Hawks are kept on the screen, wherever the chase leads. */
+    config.hawks = MAX_HAWKS;
+    place_hawks();
+    for (int step = 0; step < 200; step++) {
+        hunt(birds);
+        for (int i = 0; i < config.hawks; i++) {
+            assert(hawks[i].x >= 0 && hawks[i].x <= screen.width);
+            assert(hawks[i].y >= 0 && hawks[i].y <= screen.height);
+        }
+    }
+    config.hawks = 0;
+    legend_enabled = 1;
+    reset_test_config();
+}
+
 static void test_the_flock_can_be_laid_out_as_text(void) {
     reset_test_config();
     legend_enabled = 1;
@@ -1148,6 +1211,7 @@ int main(void) {
     test_boundary_bands_follow_the_viewport();
     test_bottom_band_scales_on_a_short_viewport();
     test_birds_start_spread_inside_the_free_region();
+    test_hawks_hunt_and_the_flock_flees();
     test_the_flock_can_be_laid_out_as_text();
     test_presets_set_every_notch();
     test_a_notch_survives_the_round_trip();

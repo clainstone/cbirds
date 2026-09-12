@@ -43,6 +43,8 @@ enum {
     TRAIL_EVERY = 16,
     TRAIL_LENGTH = 4,
     INTRO_SECONDS = 3,
+    MAX_HAWKS = 8,
+    HAWK_REACH = 180,
     FRAME_ANGLE = 360 / ROTATION_FRAMES,
     SPRITE_SUPERSAMPLE = 8,
     SPRITE_WORK_MAX = 256,
@@ -97,6 +99,8 @@ static const double LEGEND_PUSH = 100000.0;
 /* Heavy enough to bend a flock that is busy flocking, light enough that it bends
  * rather than shatters. */
 static const double MOUSE_WEIGHT = 4.0;
+static const double HAWK_WEIGHT = 6.0;
+static const double HAWK_SPEED = 1.15;
 static const double CAT_PERIOD = 6.0; /* Seconds of one stalk and pounce. */
 static const double CAT_STALK = 4.5;  /* Of which this much is holding still. */
 static const double CAT_POUNCE = 3.0; /* And then this much harder. */
@@ -160,7 +164,7 @@ typedef struct {
 typedef struct {
     int birds, frame_rate, bird_size, palette, flocks, colour_by;
     int mouse_mode, mouse_reach;
-    int wrap, trails;
+    int wrap, trails, hawks;
     double speed;
     int vision_cells, vision_radius, vision_radius_squared;
     double separation, alignment, cohesion, boundary;
@@ -569,14 +573,14 @@ static void palette_tint(png_image_t *image, int shade) {
  * rotation is the expensive half and it does not depend on the colour, so each
  * angle is rotated once and then tinted and encoded per shade: the second shade
  * costs a few hundred microseconds, not another fifty milliseconds. */
-static void build_rotation_frames(image_frame_t *frames, int shades) {
+static void build_rotation_frames(image_frame_t *frames, int shades, int size) {
     png_image_t source = {0, 0, NULL}, canvas = {0, 0, NULL};
     png_status_t status = png_decode(sprite_png, sprite_png_len, &source);
     if (status != PNG_OK) {
         fprintf(stderr, "Cannot decode the embedded sprite: %s\n", png_status_string(status));
         exit(EXIT_FAILURE);
     }
-    int canvas_size = config.bird_size * SPRITE_SUPERSAMPLE;
+    int canvas_size = size * SPRITE_SUPERSAMPLE;
     if (canvas_size > SPRITE_WORK_MAX) canvas_size = SPRITE_WORK_MAX;
     if (canvas_size > source.width) canvas_size = source.width;
     status = png_resize(&source, canvas_size, canvas_size, &canvas);
@@ -588,7 +592,7 @@ static void build_rotation_frames(image_frame_t *frames, int shades) {
     for (int i = 0; i < ROTATION_FRAMES; i++) {
         png_image_t frame = {0, 0, NULL};
         double radians = i * FRAME_ANGLE * M_PI / 180.0;
-        status = png_rotate_resize(&canvas, radians, config.bird_size, config.bird_size, &frame);
+        status = png_rotate_resize(&canvas, radians, size, size, &frame);
         for (int shade = 0; status == PNG_OK && shade < shades; shade++) {
             png_image_t tinted = {0, 0, NULL};
             uint8_t *encoded = NULL;
@@ -617,6 +621,12 @@ static void build_rotation_frames(image_frame_t *frames, int shades) {
  * image is a multiply and an add away from its heading and its shade. */
 static uint32_t sprite_image_id(int shade, int frame) {
     return (uint32_t)(shade * ROTATION_FRAMES + frame) + 1;
+}
+
+/* The hawks' own set, uploaded after the flock's, so one arithmetic rule covers
+ * every placement the program makes. */
+static uint32_t hawk_image_id(int frame) {
+    return (uint32_t)(palette_shades() * ROTATION_FRAMES + frame) + 1;
 }
 
 static kitty_graphics_status_t upload_rotation_frames(kitty_graphics_t *graphics,
@@ -752,6 +762,84 @@ static int spell_target_of(int index, double *x, double *y) {
     return 1;
 }
 
+static double normalized_angle(double y, double x) {
+    double angle = atan2(y, x);
+    return angle < 0 ? angle + 2 * M_PI : angle;
+}
+
+/*
+ * Hawks.
+ *
+ * A predator is what gives a clip a story: the flock splits, streams around it
+ * and closes again behind, which is the part people loop. A hawk is not a boid.
+ * It has no neighbours, obeys none of the three rules, and is kept out of the
+ * grid entirely, so the flocking maths is untouched by its existence: it simply
+ * chases the nearest bird and every bird flees it.
+ */
+typedef struct {
+    double x, y, direction;
+    int frame;
+} hawk_t;
+
+static hawk_t hawks[MAX_HAWKS];
+/* The hawks' images always go up, so k can summon one at any time. */
+static int hawk_sets_built;
+
+static void place_hawks(void) {
+    for (int i = 0; i < config.hawks; i++) {
+        hawks[i].x = screen.width * (i + 1.0) / (config.hawks + 1.0);
+        hawks[i].y = screen.height * (i % 2 ? 0.75 : 0.25);
+        hawks[i].direction = 2 * M_PI * random_unit();
+        hawks[i].frame = direction_frame(hawks[i].direction);
+    }
+}
+
+/* Brute force over the flock, because eight hawks against four thousand birds is
+ * a few tens of thousands of comparisons: less than one percent of a frame, and
+ * it needs no grid of its own. */
+static void hunt(const bird_t *birds) {
+    for (int i = 0; i < config.hawks; i++) {
+        double best = -1, best_x = 0, best_y = 0;
+        for (int b = 0; b < config.birds; b++) {
+            double dx = birds[b].x - hawks[i].x, dy = birds[b].y - hawks[i].y;
+            double squared = dx * dx + dy * dy;
+            if (best < 0 || squared < best) {
+                best = squared;
+                best_x = birds[b].x;
+                best_y = birds[b].y;
+            }
+        }
+        if (best >= 0) {
+            double to_x = best_x - hawks[i].x, to_y = best_y - hawks[i].y;
+            if (to_x * to_x + to_y * to_y > 1e-9) hawks[i].direction = normalized_angle(to_y, to_x);
+        }
+        /* Faster than its prey, or it would never catch up and the chase would
+         * never look like one. Turned back at the edges like everything else. */
+        hawks[i].x += config.speed * HAWK_SPEED * cos(hawks[i].direction);
+        hawks[i].y += config.speed * HAWK_SPEED * sin(hawks[i].direction);
+        if (hawks[i].x < 0) hawks[i].x = 0;
+        if (hawks[i].x > screen.width) hawks[i].x = screen.width;
+        if (hawks[i].y < 0) hawks[i].y = 0;
+        if (hawks[i].y > screen.height) hawks[i].y = screen.height;
+        hawks[i].frame = direction_frame(hawks[i].direction);
+    }
+}
+
+/* Every bird flees every hawk in reach, hardest when it is closest. */
+static vector_t hawk_vector(const bird_t *bird) {
+    vector_t force = {0, 0};
+    for (int i = 0; i < config.hawks; i++) {
+        double dx = bird->x - hawks[i].x, dy = bird->y - hawks[i].y;
+        double squared = dx * dx + dy * dy;
+        if (squared >= HAWK_REACH * HAWK_REACH || squared < 1e-9) continue;
+        double distance = sqrt(squared);
+        double strength = (HAWK_REACH - distance) / HAWK_REACH;
+        force.x += strength * dx / distance;
+        force.y += strength * dy / distance;
+    }
+    return force;
+}
+
 /* One bird, so that growing the flock at runtime places only the new ones. */
 static void place_one_bird(bird_t *bird, int index) {
     double min_x = screen.turn_x, max_x = screen.width - screen.turn_x;
@@ -785,11 +873,6 @@ static void place_one_bird(bird_t *bird, int index) {
 
 static void initialize_birds(bird_t *birds) {
     for (int i = 0; i < config.birds; i++) place_one_bird(&birds[i], i);
-}
-
-static double normalized_angle(double y, double x) {
-    double angle = atan2(y, x);
-    return angle < 0 ? angle + 2 * M_PI : angle;
 }
 
 /*
@@ -867,6 +950,7 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
     vector_t separation = {0, 0}, alignment = {0, 0}, cohesion = {0, 0};
     vector_t boundary = boundary_vector(target);
     vector_t pointer = pointer_vector(target);
+    vector_t hawk = hawk_vector(target);
     int neighbors = 0, kin = 0;
     int center_x, center_y;
     spatial_grid_cell_for_position(grid, target->x, target->y, &center_x, &center_y);
@@ -915,14 +999,14 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
         }
         double x = separation.x * config.separation + alignment.x * config.alignment +
                    cohesion.x * config.cohesion + boundary.x * config.boundary +
-                   pointer.x * MOUSE_WEIGHT;
+                   pointer.x * MOUSE_WEIGHT + hawk.x * HAWK_WEIGHT;
         double y = separation.y * config.separation + alignment.y * config.alignment +
                    cohesion.y * config.cohesion + boundary.y * config.boundary +
-                   pointer.y * MOUSE_WEIGHT;
+                   pointer.y * MOUSE_WEIGHT + hawk.y * HAWK_WEIGHT;
         return x == 0 && y == 0 ? target->direction : normalized_angle(y, x);
     }
-    boundary.x = boundary.x * config.boundary + pointer.x * MOUSE_WEIGHT;
-    boundary.y = boundary.y * config.boundary + pointer.y * MOUSE_WEIGHT;
+    boundary.x = boundary.x * config.boundary + pointer.x * MOUSE_WEIGHT + hawk.x * HAWK_WEIGHT;
+    boundary.y = boundary.y * config.boundary + pointer.y * MOUSE_WEIGHT + hawk.y * HAWK_WEIGHT;
     if (boundary.x != 0 || boundary.y != 0) {
         double x = cos(target->direction) + boundary.x;
         double y = sin(target->direction) + boundary.y;
@@ -1130,6 +1214,14 @@ static kitty_graphics_status_t queue_render_frame(kitty_graphics_t *graphics, co
         if (bird_placement(&birds[i], &placement))
             status = kitty_graphics_place(graphics, &placement);
     }
+    for (int i = 0; status == KITTY_GRAPHICS_OK && i < config.hawks; i++) {
+        bird_t as_bird = {.x = hawks[i].x, .y = hawks[i].y, .frame = hawks[i].frame};
+        kitty_graphics_placement_t placement;
+        if (bird_placement(&as_bird, &placement)) {
+            placement.image_id = hawk_image_id(hawks[i].frame);
+            status = kitty_graphics_place(graphics, &placement);
+        }
+    }
     if (status == KITTY_GRAPHICS_OK) status = queue_legend(graphics);
     if (status == KITTY_GRAPHICS_OK) status = kitty_graphics_end_synchronized_update(graphics);
     return status;
@@ -1250,6 +1342,8 @@ static const option_t OPTIONS[] = {
      "murmuration, swarm, school, storm, calm", "Flock"},
     {0, "seed", OPTION_INT, &requested_seed, 0, 2147483647, NULL, "N",
      "the same seed gives the same flock", "Flock"},
+    {0, "hawks", OPTION_INT, &config.hawks, 0, MAX_HAWKS, NULL, "COUNT",
+     "predators hunting the flock (default 0)", "Flock"},
     {0, "spell", OPTION_STRING, &requested_spell, 0, 0, NULL, "TEXT",
      "the flock writes TEXT, then lets go; - reads stdin", "World"},
     {0, "spell-hold", OPTION_INT, &spell_hold, 0, 600, NULL, "SECONDS",
@@ -1382,6 +1476,15 @@ static int handle_input(void) {
                 legend_enabled = !legend_enabled;
                 measure_legend();
                 update_turn_distances();
+                continue;
+            case 'k':
+                if (config.hawks < hawk_sets_built * MAX_HAWKS && config.hawks < MAX_HAWKS) {
+                    config.hawks++;
+                    place_hawks();
+                }
+                continue;
+            case 'K':
+                if (config.hawks > 0) config.hawks--;
                 continue;
             case 'w':
                 config.wrap = !config.wrap;
@@ -1556,7 +1659,7 @@ static long elapsed_microseconds(const struct timespec *start, const struct time
 }
 
 int main(int argc, char **argv) {
-    image_frame_t frames[ROTATION_FRAMES * MAX_PALETTE_SHADES] = {0};
+    image_frame_t frames[ROTATION_FRAMES * (MAX_PALETTE_SHADES + 1)] = {0};
     kitty_graphics_t graphics;
     spatial_grid_t grid;
     struct timespec frame_start, frame_end;
@@ -1597,7 +1700,13 @@ int main(int argc, char **argv) {
                 spatial_grid_status_string(grid_status));
         exit(EXIT_FAILURE);
     }
-    build_rotation_frames(frames, palette_shades());
+    build_rotation_frames(frames, palette_shades(), config.bird_size);
+    /* A hawk has to read as a bigger bird at a glance, so it gets its own set at
+     * twice the size, one shade, uploaded straight after the flock's. */
+    build_rotation_frames(
+        frames + palette_shades() * ROTATION_FRAMES, 1,
+        config.bird_size * 2 > MAX_BIRD_SIZE ? MAX_BIRD_SIZE : config.bird_size * 2);
+    hawk_sets_built = 1;
 
     bird_t *birds = calloc((size_t)config.birds, sizeof(*birds));
     bird_t *snapshot = malloc(sizeof(*snapshot) * (size_t)config.birds);
@@ -1616,6 +1725,7 @@ int main(int argc, char **argv) {
     write_all("\x1b[J", sizeof("\x1b[J") - 1);
     update_screen_dimensions();
     initialize_birds(birds);
+    place_hawks();
     /* An explicit text wins over the intro: someone who asked for a word does
      * not want to be told the program's name first. */
     if (requested_spell != NULL) {
@@ -1623,8 +1733,9 @@ int main(int argc, char **argv) {
     } else if (show_intro && spell_layout("CBIRDS")) {
         spell.until = INTRO_SECONDS;
     }
-    graphics_status = upload_rotation_frames(&graphics, frames, palette_shades());
-    free_rotation_frames(frames, palette_shades());
+    int sprite_sets = palette_shades() + 1;
+    graphics_status = upload_rotation_frames(&graphics, frames, sprite_sets);
+    free_rotation_frames(frames, sprite_sets);
     if (graphics_status != KITTY_GRAPHICS_OK) {
         fprintf(stderr, "Cannot upload Kitty graphics: %s\n",
                 kitty_graphics_status_string(graphics_status));
@@ -1681,6 +1792,7 @@ int main(int argc, char **argv) {
                     spatial_grid_status_string(grid_status));
             exit(EXIT_FAILURE);
         }
+        if (!paused || step_once) hunt(snapshot);
         graphics_status = render_frame(&graphics, birds, snapshot, &grid);
         if (graphics_status != KITTY_GRAPHICS_OK) {
             fprintf(stderr, "Cannot render Kitty graphics: %s\n",

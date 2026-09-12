@@ -48,15 +48,24 @@ enum {
     DEFAULT_VISION_CELLS = 3,
     MIN_VISION_CELLS = 1,
     MAX_VISION_CELLS = 5,
-    /* Legend widths, in columns: below the narrowest the bar is dropped and the
-     * flock keeps the whole viewport. */
-    LEGEND_NARROW_COLS = 44,
-    LEGEND_MEDIUM_COLS = 74,
-    LEGEND_WIDE_COLS = 100,
-    LEGEND_MIN_ROWS = 6,
-    LEGEND_TEXT_MAX = 256,
-    LEGEND_LINE_MAX = LEGEND_TEXT_MAX + 16
+    /* The parameter panel, anchored to the top left corner. Its size in cells is
+     * fixed: it follows the longest parameter name and the bar, never the
+     * terminal. Below the minimum viewport it is dropped and the flock keeps
+     * everything; the minimums leave a corridor to the right of the panel and
+     * one underneath it. */
+    LEGEND_COLUMNS = 28,
+    LEGEND_ROWS = 10,
+    LEGEND_BAR_CELLS = 8,
+    LEGEND_NAME_WIDTH = 10,
+    LEGEND_MIN_COLS = 40,
+    LEGEND_MIN_ROWS = 14,
+    LEGEND_LINE_MAX = 128,
+    SPAWN_ATTEMPTS = 32
 };
+
+/* The same scale as the original bottom edge turn: large enough that it settles
+ * the direction on its own, whatever the flocking terms are doing. */
+static const double LEGEND_PUSH = 100000.0;
 
 /* Needed in the config initializer, so macros rather than constants. */
 #define DEFAULT_SEPARATION_W 0.005
@@ -104,7 +113,7 @@ typedef struct {
 typedef struct {
     int width, height, cols, rows;
     int cell_width, cell_height, turn_x, turn_y, turn_bottom;
-    int legend_row; /* Zero-based row of the legend, negative when there is none. */
+    int legend_width, legend_height; /* The panel in pixels, zero when there is none. */
 } screen_t;
 
 typedef struct {
@@ -129,9 +138,12 @@ static config_t config = {
     .boundary = DEFAULT_BOUNDARY_W,
 };
 static screen_t screen;
-/* Where the legend was last drawn, so a resize can erase that row and nothing
- * else. Clearing the whole screen would take the uploaded sprites with it. */
-static int drawn_legend_row = -1;
+static int legend_enabled = 1; /* Cleared by --no-legend, never at runtime. */
+/* Whether the panel is currently on screen. The panel is anchored at the origin
+ * and constant in cells, so it never leaves text behind by moving: the only row
+ * ever needing an erase is one it occupied before being switched off. Clearing
+ * the whole screen would take the uploaded sprites with it. */
+static int legend_drawn;
 static struct termios saved_termios;
 static volatile sig_atomic_t terminal_is_raw;
 static volatile sig_atomic_t terminal_restored;
@@ -208,19 +220,16 @@ static void update_turn_distances(void) {
     if (screen.turn_bottom < 1) screen.turn_bottom = 1;
 }
 
-/* The legend is text, and a Kitty placement is not clipped to its cell, so the
- * flock gives up the last row plus the sprite height that would spill into it.
- * Every later derivation works off the reduced height, which is what keeps the
- * bands, the grid and the placement bounds consistent with it. */
-static void reserve_legend_row(void) {
-    screen.legend_row = -1;
-    if (screen.rows < LEGEND_MIN_ROWS || screen.cols < LEGEND_NARROW_COLS) return;
-
-    int height = (screen.rows - 1) * screen.cell_height - config.bird_size;
-    if (height < screen.cell_height) return; /* Not enough left to fly in. */
-    screen.legend_row = screen.rows - 1;
-    screen.rows--;
-    screen.height = height;
+/* The panel takes a corner rather than a row, so the flyable area stays an L and
+ * no other derivation has to shrink: the flock keeps the full width below the
+ * panel and the full height beside it, and is kept out of the corner by a force
+ * instead of by a bound. */
+static void measure_legend(void) {
+    screen.legend_width = screen.legend_height = 0;
+    if (!legend_enabled) return;
+    if (screen.cols < LEGEND_MIN_COLS || screen.rows < LEGEND_MIN_ROWS) return;
+    screen.legend_width = LEGEND_COLUMNS * screen.cell_width;
+    screen.legend_height = LEGEND_ROWS * screen.cell_height;
 }
 
 /* Split out of the ioctl query so the tests drive the real derivation. */
@@ -237,7 +246,7 @@ static void apply_screen_size(int cols, int rows, int pixel_width, int pixel_hei
     screen.cell_height = screen.height / screen.rows;
     if (screen.cell_width < 1) screen.cell_width = 1;
     if (screen.cell_height < 1) screen.cell_height = 1;
-    reserve_legend_row();
+    measure_legend();
     update_turn_distances();
 }
 
@@ -310,6 +319,30 @@ static int direction_frame(double radians) {
     return ((degrees % 360 + 360) % 360) / FRAME_ANGLE;
 }
 
+/* Where the force acts: the panel grown by one frame of travel. A bird just
+ * outside this rectangle lands at worst one epsilon inside the panel edge, which
+ * is still outside the panel itself, and by then the push is on. That is what
+ * makes the panel unreachable rather than merely unwelcoming, and the margin
+ * follows the frame rate because speed does. */
+static int legend_turn_zone(double x, double y) {
+    return screen.legend_width > 0 && x < screen.legend_width + config.speed &&
+           y < screen.legend_height + config.speed;
+}
+
+/* Out through the nearer of the two open sides. The panel sits in a corner, so
+ * the only ways out are right and down, and the push never aims at a screen
+ * edge. The magnitude settles the direction by itself. */
+static int legend_repels(const bird_t *bird, vector_t *boundary) {
+    if (!legend_turn_zone(bird->x, bird->y)) return 0;
+    double escape_x = screen.legend_width + config.speed - bird->x;
+    double escape_y = screen.legend_height + config.speed - bird->y;
+    if (escape_x <= escape_y)
+        boundary->x = LEGEND_PUSH;
+    else
+        boundary->y = LEGEND_PUSH;
+    return 1;
+}
+
 /* Spread over the region no turn band covers, so no bird starts by fleeing an
  * edge and the flock does not begin stacked on a single point. */
 static void initialize_birds(bird_t *birds) {
@@ -320,8 +353,20 @@ static void initialize_birds(bird_t *birds) {
 
     for (int i = 0; i < config.birds; i++) {
         bird_t *bird = &birds[i];
-        bird->x = min_x + (max_x - min_x) * random_unit();
-        bird->y = min_y + (max_y - min_y) * random_unit();
+        /* Rejected rather than clamped, so the whole free region stays in play
+         * instead of the flock piling up along one edge of the panel. Bounded,
+         * with a deterministic fallback below the panel, because on a small
+         * viewport the free region can be almost entirely covered. */
+        for (int attempt = 0;; attempt++) {
+            bird->x = min_x + (max_x - min_x) * random_unit();
+            bird->y = min_y + (max_y - min_y) * random_unit();
+            if (!legend_turn_zone(bird->x, bird->y)) break;
+            if (attempt + 1 >= SPAWN_ATTEMPTS) {
+                bird->y = screen.legend_height + config.speed + 1;
+                if (bird->y > max_y) bird->x = screen.legend_width + config.speed + 1;
+                break;
+            }
+        }
         bird->direction = 2 * M_PI * random_unit();
         bird->frame = direction_frame(bird->direction);
     }
@@ -334,6 +379,7 @@ static double normalized_angle(double y, double x) {
 
 static vector_t boundary_vector(const bird_t *bird) {
     vector_t boundary = {0, 0};
+    if (legend_repels(bird, &boundary)) return boundary;
     if (bird->x < screen.turn_x)
         boundary.x = 1;
     else if (bird->x > screen.width - screen.turn_x)
@@ -437,62 +483,92 @@ static int bird_placement(const bird_t *bird, kitty_graphics_placement_t *placem
     return 1;
 }
 
-static int weights_are_default(void) {
-    return config.boundary == DEFAULT_BOUNDARY_W && config.separation == DEFAULT_SEPARATION_W &&
-           config.cohesion == DEFAULT_COHESION_W && config.alignment == DEFAULT_ALIGNMENT_W;
+/* Fraction of a parameter's travel, so a slider empties completely on its floor
+ * rather than stopping short of it. */
+static int bar_cells(double value, double minimum, double maximum) {
+    double fraction = (value - minimum) / (maximum - minimum);
+    if (fraction < 0) fraction = 0;
+    if (fraction > 1) fraction = 1;
+    return (int)(fraction * LEGEND_BAR_CELLS + 0.5);
 }
 
-/* An Emacs mode line. The sigil follows the convention for a modified buffer:
- * dashes while the weights sit at their defaults, stars once one is touched.
- * Three widths, because truncating in the middle of a field reads as a glitch. */
-static void build_legend(char *line, size_t size) {
-    const char *sigil = weights_are_default() ? "-:---" : "-:**-";
-    char text[LEGEND_TEXT_MAX];
+/* One slider row: the name, the bar, and the two keys that move it, the lowering
+ * one first because that is the end of the bar it works from. No number: the bar
+ * is the readout. */
+static void legend_slider(char *line, size_t size, const char *name, double value, double minimum,
+                          double maximum, char lower, char raise) {
+    char bar[LEGEND_BAR_CELLS * 3 + 1];
+    int filled = bar_cells(value, minimum, maximum);
+    size_t at = 0;
 
-    if (screen.cols >= LEGEND_WIDE_COLS)
-        snprintf(text, sizeof(text),
-                 "%s cbirds  %d boids  %dfps  (Boids)  b/B %.2f  s/S %.3f  c/C %.3f  a/A %.1f  "
-                 "p/P %d  q quit",
-                 sigil, config.birds, config.frame_rate, config.boundary, config.separation,
-                 config.cohesion, config.alignment, config.vision_cells);
-    else if (screen.cols >= LEGEND_MEDIUM_COLS)
-        snprintf(text, sizeof(text),
-                 "%s b/B %.2f  s/S %.3f  c/C %.3f  a/A %.1f  p/P %d  r/R %d  q quit", sigil,
-                 config.boundary, config.separation, config.cohesion, config.alignment,
-                 config.vision_cells, config.frame_rate);
-    else
-        snprintf(text, sizeof(text), "%s b%.2f s%.3f c%.3f a%.1f p%d r%d q", sigil, config.boundary,
-                 config.separation, config.cohesion, config.alignment, config.vision_cells,
-                 config.frame_rate);
+    for (int cell = 0; cell < LEGEND_BAR_CELLS; cell++) {
+        const char *glyph = cell < filled ? "\u2593" : "\u2591";
+        memcpy(bar + at, glyph, 3);
+        at += 3;
+    }
+    bar[at] = '\0';
+    snprintf(line, size, "\u2502 %-*s %s  %c/%c \u2502", LEGEND_NAME_WIDTH, name, bar, lower,
+             raise);
+}
 
-    /* Never wider than the viewport: a wrapped mode line would scroll the flock
-     * off the top of the screen. The erase to end of line paints the rest of the
-     * bar in the reversed background, so there is nothing to pad. */
-    if (strlen(text) > (size_t)screen.cols) text[screen.cols] = '\0';
-    snprintf(line, size, "\033[7m\033[K%s\033[0m", text);
+/* The panel, ten rows of it, anchored to the top left corner. */
+static void build_legend(char lines[LEGEND_ROWS][LEGEND_LINE_MAX]) {
+    int inner = LEGEND_COLUMNS - 2;
+    size_t at = 0;
+
+    memcpy(lines[0], "\u256d", 3);
+    at = 3;
+    for (int i = 0; i < inner; i++, at += 3) memcpy(lines[0] + at, "\u2500", 3);
+    memcpy(lines[0] + at, "\u256e", 4);
+
+    legend_slider(lines[1], LEGEND_LINE_MAX, "boundary", config.boundary, BOUNDARY_MIN,
+                  BOUNDARY_MAX, 'b', 'B');
+    legend_slider(lines[2], LEGEND_LINE_MAX, "separation", config.separation, SEPARATION_MIN,
+                  SEPARATION_MAX, 's', 'S');
+    legend_slider(lines[3], LEGEND_LINE_MAX, "cohesion", config.cohesion, COHESION_MIN,
+                  COHESION_MAX, 'c', 'C');
+    legend_slider(lines[4], LEGEND_LINE_MAX, "alignment", config.alignment, ALIGNMENT_MIN,
+                  ALIGNMENT_MAX, 'a', 'A');
+    legend_slider(lines[5], LEGEND_LINE_MAX, "perception", config.vision_cells, MIN_VISION_CELLS,
+                  MAX_VISION_CELLS, 'p', 'P');
+    legend_slider(lines[6], LEGEND_LINE_MAX, "rate", config.frame_rate, MIN_FRAME_RATE,
+                  MAX_FRAME_RATE, 'r', 'R');
+
+    snprintf(lines[7], LEGEND_LINE_MAX, "\u2502 %*s \u2502", inner - 2, "");
+    snprintf(lines[8], LEGEND_LINE_MAX, "\u2502 %-*s q%*s \u2502", LEGEND_NAME_WIDTH, "quit",
+             inner - LEGEND_NAME_WIDTH - 4, "");
+
+    memcpy(lines[9], "\u2570", 3);
+    at = 3;
+    for (int i = 0; i < inner; i++, at += 3) memcpy(lines[9] + at, "\u2500", 3);
+    memcpy(lines[9] + at, "\u256f", 4);
 }
 
 static kitty_graphics_status_t queue_legend(kitty_graphics_t *graphics) {
-    char line[LEGEND_LINE_MAX];
+    char lines[LEGEND_ROWS][LEGEND_LINE_MAX];
 
-    /* A resize moves the bar, and text is not swept away by the per frame
-     * placement clear: the row it used to sit on has to be erased by hand.
-     * Only that row, an erase of the whole screen would delete the uploaded
-     * sprites along with it and leave every later placement pointing at
-     * nothing. */
-    if (drawn_legend_row >= 0 && drawn_legend_row != screen.legend_row) {
-        kitty_graphics_status_t status =
-            kitty_graphics_write_text(graphics, drawn_legend_row, 0, "\033[K");
-        if (status != KITTY_GRAPHICS_OK) return status;
-        drawn_legend_row = -1;
+    if (screen.legend_width == 0) {
+        /* Switched off by a viewport that shrank under it. The panel never moves
+         * and never changes size, so these are the only rows that can ever hold
+         * stale text, and they are erased one line at a time: an erase of the
+         * whole screen would delete the uploaded sprites and leave every later
+         * placement pointing at nothing. */
+        if (!legend_drawn) return KITTY_GRAPHICS_OK;
+        for (int row = 0; row < LEGEND_ROWS; row++) {
+            kitty_graphics_status_t status = kitty_graphics_write_text(graphics, row, 0, "\033[K");
+            if (status != KITTY_GRAPHICS_OK) return status;
+        }
+        legend_drawn = 0;
+        return KITTY_GRAPHICS_OK;
     }
-    if (screen.legend_row < 0) return KITTY_GRAPHICS_OK;
 
-    build_legend(line, sizeof(line));
-    kitty_graphics_status_t status =
-        kitty_graphics_write_text(graphics, screen.legend_row, 0, line);
-    if (status == KITTY_GRAPHICS_OK) drawn_legend_row = screen.legend_row;
-    return status;
+    build_legend(lines);
+    for (int row = 0; row < LEGEND_ROWS; row++) {
+        kitty_graphics_status_t status = kitty_graphics_write_text(graphics, row, 0, lines[row]);
+        if (status != KITTY_GRAPHICS_OK) return status;
+    }
+    legend_drawn = 1;
+    return KITTY_GRAPHICS_OK;
 }
 
 static kitty_graphics_status_t queue_render_frame(kitty_graphics_t *graphics, const bird_t *birds) {
@@ -643,10 +719,11 @@ static int wait_for_terminal_io(void) {
 
 static void usage(const char *program) {
     fprintf(stderr,
-            "Usage: %s [-n BIRDS] [-f FPS] [-s SIZE]\n"
+            "Usage: %s [-n BIRDS] [-f FPS] [-s SIZE] [--no-legend]\n"
             "  -n NUMBER    number of boids (default 800, max %d)\n"
             "  -f FPS       frame rate (default %d, from %d to %d)\n"
             "  -s SIZE      bird size in pixels (default %d, from %d to %d)\n"
+            "  --no-legend  hide the parameter panel, the flock keeps the corner\n"
             "  -h           show this help\n",
             program, MAX_BIRDS, DEFAULT_FRAME_RATE, MIN_FRAME_RATE, MAX_FRAME_RATE,
             DEFAULT_BIRD_SIZE, MIN_BIRD_SIZE, MAX_BIRD_SIZE);
@@ -657,6 +734,10 @@ static void read_options(int argc, char **argv) {
         if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
             usage(argv[0]);
             exit(EXIT_SUCCESS);
+        }
+        if (!strcmp(argv[i], "--no-legend")) {
+            legend_enabled = 0;
+            continue;
         }
         if (strlen(argv[i]) != 2 || argv[i][0] != '-' || !strchr("nfs", argv[i][1])) {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);

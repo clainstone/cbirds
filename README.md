@@ -51,7 +51,7 @@ These simple rules create surprisingly realistic emergent behavior resembling na
 - 📦 **Self Contained**: own PNG decoder, encoder and DEFLATE implementation, no zlib, no libpng
 - ⚡ **High Performance**: Handles 800+ boids at 60 FPS on modern hardware
 - 📐 **Responsive Layout**: Automatic adaptation to terminal resizing
-- 📊 **Emacs Style Mode Line**: the active parameters and the key legend on the bottom row
+- 🎚️ **Parameter Panel**: every adjustable value as a slider in the top left corner, and the flock cannot fly through it
 - 🎮 **Real-time Control**: Interactive parameter adjustment during runtime
 
 ### Customization
@@ -169,6 +169,7 @@ Options:
   -n NUMBER    Set number of boids (default: 800, max: 4096)
   -f FPS       Set frame rate (default: 60, from 30 to 120)
   -s SIZE      Set bird size in pixels (default: 15, from 4 to 64)
+  --no-legend  Hide the parameter panel, the flock keeps the corner
   -h           Show usage and exit
 
 Examples:
@@ -194,25 +195,43 @@ While the simulation is running, use these keyboard commands:
 #### Performance
 - `R` / `r` - Increase/decrease frame rate by 5 FPS (limited to 30–120)
 
-#### The Mode Line
+#### The Parameter Panel
 
-The bottom row carries a mode line in the Emacs manner, in reverse video, with
-the live parameters and the keys that change them:
+The top left corner carries a panel of sliders, one per adjustable parameter,
+with the two keys that move each one. No numbers: the bar is the readout, and
+the keys are written lowercase first because that is the end of the bar each one
+works from.
 
 ```
--:--- cbirds  800 boids  60fps  (Boids)  b/B 0.20  s/S 0.005  c/C 0.010  a/A 1.5  p/P 3  q quit
+╭──────────────────────────╮
+│ boundary   ▓▓▓░░░░░  b/B │
+│ separation ▓▓░░░░░░  s/S │
+│ cohesion   ▓▓░░░░░░  c/C │
+│ alignment  ▓▓▓░░░░░  a/A │
+│ perception ▓▓▓▓░░░░  p/P │
+│ rate       ▓▓▓░░░░░  r/R │
+│                          │
+│ quit       q             │
+╰──────────────────────────╯
 ```
 
-The leading sigil follows the Emacs convention for a modified buffer: `-:---`
-while the four weights sit at their defaults, `-:**-` once any of them is
-touched. Three layouts are used depending on the width, the widest from 100
-columns and the most compact from 44; below 44 columns, or 6 rows, the bar is
-dropped and the flock keeps the whole viewport.
+The panel is 28 by 10 cells and never changes size: it follows the longest
+parameter name and the bar, not the terminal. It is dropped below 40 columns or
+14 rows, where it would leave no corridor to fly in, and `--no-legend` turns it
+off outright.
 
-The row is reserved: the flock gives it up along with the sprite height that
-would otherwise spill into it, since a Kitty placement is not clipped to its
-cell. At 24 rows of 16 pixels that costs about 8% of the vertical area, at
-1080p about 4%. Note that `demo.gif` above predates the mode line.
+**The flock cannot enter it.** While the panel is up its rectangle carries an
+edge force of magnitude 100000, far above every other term in the model, aimed
+at whichever of the two open sides is nearer. The force acts on the panel grown
+by one frame of travel, which is what makes the panel unreachable rather than
+merely unwelcoming: a bird just outside that margin lands at worst a hair inside
+it, still clear of the panel, and is turned away before the next step. The margin
+is derived from the speed, so it follows the frame rate on its own. A run of 800
+boids issues no placement over the panel at any frame rate.
+
+Because the panel takes a corner rather than a row, the flyable area stays an L:
+the flock keeps the full width below the panel and the full height beside it.
+Note that `demo.gif` above predates the panel.
 
 ## Configuration
 
@@ -248,7 +267,8 @@ select neighbor candidates; the final distance check remains circular and
 uses the exact radius in pixels.
 
 Each weight is bounded on both sides. The ceiling is three times the default,
-which keeps every weight in a range the flock still reads as flocking.
+which gives the panel's sliders a scale to fill against and keeps a keypress
+worth between two and six cells of bar.
 
 The turn bands are proportional to the viewport, so they follow a resize and
 stay a band on a short terminal instead of covering it whole. The bottom one is
@@ -282,7 +302,7 @@ The simulation follows this execution flow:
    - Process keyboard input and drain any pending terminal output
    - Copy current state for consistent calculations
    - Rebuild the spatial grid from that immutable snapshot
-   - Queue the current positions for rendering, then the mode line on top
+   - Queue the current positions for rendering, then the panel on top
    - Calculate neighbor influences from nearby cells
    - Apply flocking rules and update positions
    - Update rotation frame IDs based on new directions
@@ -334,21 +354,22 @@ Image uploads are Base64 encoded and automatically split into protocol chunks
 of at most 4096 bytes by `kitty_graphics.c`.
 
 As in the original fast renderer, each frame uses one global placement clear
-followed by all current placements, and then the mode line. The whole operation
+followed by all current placements, and then the panel. The whole operation
 is wrapped in DEC synchronized-update mode (`CSI ? 2026 h` / `CSI ? 2026 l`), so
 the terminal presents it atomically instead of displaying the empty intermediate
 state.
 
-The mode line travels in the same buffer as the graphics commands, so it shares
-that atomic frame and the flow control below. It is text rather than a placement,
-which means the per frame placement clear does not remove it: when a resize moves
-the bar, the row it used to sit on is erased by hand (`CSI K` on that row alone),
-otherwise the old bar stays stranded mid screen. It has to be that row alone.
-Clearing the whole screen once the sprites are uploaded deletes them, and every
+The panel travels in the same buffer as the graphics commands, so it shares that
+atomic frame and the flow control below. It is text rather than a placement,
+which means the per frame placement clear does not remove it. Being anchored to
+the origin and constant in cells, it never strands text by moving; the only rows
+that ever need an erase are the ten it held when a shrinking viewport switches it
+off, and those are erased one line at a time with `CSI K`. Never the whole
+screen. Clearing the screen once the sprites are uploaded deletes them, and every
 later placement then refers to an image that no longer exists, so the flock stops
 being drawn altogether: that is also why the one full erase at startup happens
-before the upload, not after. Redrawing the bar every frame costs about 110 bytes
-against the 29 KB a frame of 800 boids already spends.
+before the upload, not after. Redrawing the panel every frame costs about 400
+bytes against the 29 KB a frame of 800 boids already spends.
 Default placement and z-index IDs are omitted to keep every command compact;
 `C=1` prevents cursor movement and accidental scrolling.
 

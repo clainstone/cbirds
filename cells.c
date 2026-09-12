@@ -21,6 +21,21 @@ uint32_t cells_braille(unsigned dots) {
     return 0x2800 + pattern;
 }
 
+/* Unicode 13 laid the sextants out by the value of their pattern, top left the
+ * lowest bit, and left out the patterns that already existed as characters: the
+ * left and right halves, nothing, and everything. */
+uint32_t cells_sextant(unsigned blocks) {
+    blocks &= 0x3F;
+    if (blocks == 0) return ' ';
+    if (blocks == 0x3F) return 0x2588; /* Full block. */
+    if (blocks == 0x15) return 0x258C; /* Left half: rows one, two and three, left. */
+    if (blocks == 0x2A) return 0x2590; /* Right half. */
+    uint32_t code = 0x1FB00 + blocks - 1;
+    if (blocks > 0x15) code--;
+    if (blocks > 0x2A) code--;
+    return code;
+}
+
 const char *cells_status_string(cells_status_t status) {
     switch (status) {
         case CELLS_OK:
@@ -163,6 +178,28 @@ static void read_braille_cell(cell_t *cell, const png_image_t *canvas, int x0, i
     cell->has_fg = 1;
 }
 
+static void read_sextant_cell(cell_t *cell, const png_image_t *canvas, int x0, int y0,
+                              int cell_width, int cell_height) {
+    unsigned blocks = 0;
+    for (int row = 0; row < 3; row++)
+        for (int column = 0; column < 2; column++) {
+            int bx0 = x0 + column * cell_width / 2;
+            int bx1 = x0 + (column + 1) * cell_width / 2;
+            int by0 = y0 + row * cell_height / 3;
+            int by1 = y0 + (row + 1) * cell_height / 3;
+            if (bx1 <= bx0) bx1 = bx0 + 1;
+            if (by1 <= by0) by1 = by0 + 1;
+            patch_t block = read_patch(canvas, bx0, by0, bx1 - bx0, by1 - by0);
+            if (block.coverage >= INK_THRESHOLD) blocks |= 1u << (column + row * 2);
+        }
+    memset(cell, 0, sizeof(*cell));
+    if (blocks == 0) return;
+    patch_t whole = read_patch(canvas, x0, y0, cell_width, cell_height);
+    cell->glyph = cells_sextant(blocks);
+    memcpy(cell->fg, whole.rgb, 3);
+    cell->has_fg = 1;
+}
+
 static void read_block_cell(cell_t *cell, const png_image_t *canvas, int x0, int y0, int cell_width,
                             int cell_height) {
     int half = cell_height / 2;
@@ -205,6 +242,8 @@ void cells_read(cells_t *cells, cells_style_t style, const png_image_t *canvas, 
             int x0 = col * cell_width, y0 = row * cell_height;
             if (style == CELLS_BRAILLE)
                 read_braille_cell(cell, canvas, x0, y0, cell_width, cell_height);
+            else if (style == CELLS_SEXTANTS)
+                read_sextant_cell(cell, canvas, x0, y0, cell_width, cell_height);
             else
                 read_block_cell(cell, canvas, x0, y0, cell_width, cell_height);
         }
@@ -245,7 +284,18 @@ cells_status_t cells_paint(const cells_t *cells, cells_style_t style, png_image_
             const cell_t *cell = &cells->before[(size_t)row * (size_t)cells->cols + (size_t)col];
             if (cell->glyph == 0) continue;
             int x0 = col * cell_width, y0 = row * cell_height;
-            if (style == CELLS_BRAILLE) {
+            if (style == CELLS_SEXTANTS) {
+                /* Back from the code point to the pattern, the way it was made. */
+                unsigned blocks = 0;
+                for (unsigned candidate = 1; candidate < 0x40; candidate++)
+                    if (cells_sextant(candidate) == cell->glyph) blocks = candidate;
+                int third = cell_height / 3;
+                for (int r = 0; r < 3; r++)
+                    for (int c = 0; c < 2; c++)
+                        if (blocks & (1u << (c + r * 2)))
+                            paint_rect(out, x0 + c * dot_w, y0 + r * third, dot_w,
+                                       r == 2 ? cell_height - 2 * third : third, cell->fg);
+            } else if (style == CELLS_BRAILLE) {
                 unsigned bits = cell->glyph - 0x2800;
                 for (int r = 0; r < 4; r++)
                     for (int c = 0; c < 2; c++)

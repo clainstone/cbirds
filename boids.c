@@ -288,14 +288,22 @@ typedef enum {
     RENDER_SIXEL, /* xterm, foot, mlterm, contour, mintty: a picture a frame. */
     RENDER_ITERM, /* iTerm2's inline images: a PNG a frame. */
     RENDER_BRAILLE,
+    RENDER_SEXTANTS, /* Solid two by three blocks: bolder than dots, needs a 2020 font. */
     RENDER_BLOCKS,
 } render_mode_t;
-static const char *const RENDER_NAMES[] = {"auto",    "kitty",  "sixel", "iterm",
-                                           "braille", "blocks", NULL};
+static const char *const RENDER_NAMES[] = {"auto",    "kitty",    "sixel",  "iterm",
+                                           "braille", "sextants", "blocks", NULL};
 static int render_mode = RENDER_AUTO;
 
 static int drawing_with_text(void) {
-    return render_mode == RENDER_BRAILLE || render_mode == RENDER_BLOCKS;
+    return render_mode == RENDER_BRAILLE || render_mode == RENDER_SEXTANTS ||
+           render_mode == RENDER_BLOCKS;
+}
+
+static cells_style_t text_style(void) {
+    if (render_mode == RENDER_SEXTANTS) return CELLS_SEXTANTS;
+    if (render_mode == RENDER_BLOCKS) return CELLS_BLOCKS;
+    return CELLS_BRAILLE;
 }
 
 /* A whole picture every frame, rather than sprites placed or cells diffed. */
@@ -2298,8 +2306,7 @@ static kitty_graphics_status_t queue_text_frame(kitty_graphics_t *graphics, cons
                       legend_drawn ? LEGEND_ROWS : 0);
 
     compose_onto(&text_canvas, text_sprites, birds, 0);
-    cells_read(&text_cells, render_mode == RENDER_BLOCKS ? CELLS_BLOCKS : CELLS_BRAILLE,
-               &text_canvas, screen.cell_width, screen.cell_height);
+    cells_read(&text_cells, text_style(), &text_canvas, screen.cell_width, screen.cell_height);
     if (cells_emit(&text_cells) != CELLS_OK) return KITTY_GRAPHICS_ERR_MEMORY;
     if (status == KITTY_GRAPHICS_OK)
         status = kitty_graphics_write_raw(graphics, text_cells.text, text_cells.length);
@@ -2515,7 +2522,7 @@ static const option_t OPTIONS[] = {
      "the size to record at, in cells (default 96x26)", "Output", 0},
 
     {0, "render", NULL, OPTION_ENUM, &render_mode, 0, 0, RENDER_NAMES, "HOW",
-     "kitty, sixel, iterm, braille, blocks; auto asks (default auto)", "Look", 1},
+     "kitty, sixel, iterm, braille, sextants, blocks; auto asks", "Look", 1},
 };
 enum { OPTION_COUNT = sizeof(OPTIONS) / sizeof(*OPTIONS) };
 
@@ -2969,8 +2976,8 @@ static int write_snapshot(const char *path, const bird_t *birds) {
 
     png_status_t status = PNG_OK;
     if (drawing_with_text()) {
-        if (cells_paint(&text_cells, render_mode == RENDER_BLOCKS ? CELLS_BLOCKS : CELLS_BRAILLE,
-                        &canvas, screen.cell_width, screen.cell_height, ground) != CELLS_OK)
+        if (cells_paint(&text_cells, text_style(), &canvas, screen.cell_width, screen.cell_height,
+                        ground) != CELLS_OK)
             status = PNG_ERR_MEMORY;
     } else {
         status = rasterise_sprites(frames);

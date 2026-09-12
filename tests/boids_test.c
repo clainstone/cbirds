@@ -107,11 +107,11 @@ static void initialize_test_birds(bird_t *birds, int count) {
         birds[i].direction = (double)(test_random(&state) % 3600u) * M_PI / 1800.0;
         birds[i].frame = direction_frame(birds[i].direction);
     }
-    birds[0] = (bird_t){12, 12, 0, 0};
-    birds[1] = (bird_t){24, 12, M_PI / 2, 0};
-    birds[2] = (bird_t){36, 36, M_PI, 0};
-    birds[3] = (bird_t){-1, 20, M_PI / 4, 0};
-    birds[4] = (bird_t){641, 20, 3 * M_PI / 2, 0};
+    birds[0] = (bird_t){.x = 12, .y = 12};
+    birds[1] = (bird_t){.x = 24, .y = 12, .direction = M_PI / 2};
+    birds[2] = (bird_t){.x = 36, .y = 36, .direction = M_PI};
+    birds[3] = (bird_t){.x = -1, .y = 20, .direction = M_PI / 4};
+    birds[4] = (bird_t){.x = 641, .y = 20, .direction = 3 * M_PI / 2};
 }
 
 static void test_engine_matches_brute_force(void) {
@@ -517,9 +517,9 @@ static void test_legend_push_overrules_the_flock(void) {
     /* One bird inside the turn zone, every neighbour packed to its upper left
      * and heading that way, so separation, alignment and cohesion all pull it
      * deeper into the panel. */
-    birds[0] = (bird_t){screen.legend_width + 2.0, screen.legend_height / 2.0, 0, 0};
+    birds[0] = (bird_t){.x = screen.legend_width + 2.0, .y = screen.legend_height / 2.0};
     for (int i = 1; i < BIRD_COUNT; i++)
-        birds[i] = (bird_t){birds[0].x - 4, birds[0].y - 4, M_PI, 0};
+        birds[i] = (bird_t){.x = birds[0].x - 4, .y = birds[0].y - 4, .direction = M_PI};
 
     assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
     assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRD_COUNT) == SPATIAL_GRID_OK);
@@ -557,7 +557,7 @@ static void test_no_bird_ever_reaches_the_panel(void) {
         for (double x = 0; x <= screen.legend_width + margin + 40; x += 17)
             for (double y = 0; y <= screen.legend_height + margin + 40; y += 13)
                 for (int d = 0; d < DIRECTIONS; d++) {
-                    bird_t bird = {x, y, 2 * M_PI * d / DIRECTIONS, 0};
+                    bird_t bird = {.x = x, .y = y, .direction = 2 * M_PI * d / DIRECTIONS};
                     if (legend_turn_zone(bird.x, bird.y)) continue; /* Not a legal start. */
                     bird_t snapshot = bird;
                     for (int frame = 0; frame < FRAMES; frame++) {
@@ -607,8 +607,9 @@ static void test_flocks_do_not_align_with_each_other(void) {
     /* One bird of flock zero heading right, and a crowd of flock one heading the
      * other way. They sit exactly on top of it, so separation contributes nothing
      * and only the social terms can move it: the test is then about those alone. */
-    birds[0] = (bird_t){800, 400, 0, 0, 0, 0};
-    for (int i = 1; i < BIRD_COUNT; i++) birds[i] = (bird_t){800, 400, M_PI, 0, 0, 1};
+    birds[0] = (bird_t){.x = 800, .y = 400};
+    for (int i = 1; i < BIRD_COUNT; i++)
+        birds[i] = (bird_t){.x = 800, .y = 400, .direction = M_PI, .flock = 1};
 
     assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
     assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRD_COUNT) == SPATIAL_GRID_OK);

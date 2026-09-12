@@ -30,6 +30,11 @@ enum {
     COLOUR_BY_HEADING,
     COLOUR_BY_DENSITY,
     COLOUR_BY_FLOCK,
+    MOUSE_FLEE = 0,
+    MOUSE_FOLLOW,
+    MOUSE_CAT,
+    MOUSE_OFF,
+    DEFAULT_MOUSE_REACH = 120,
     FRAME_ANGLE = 360 / ROTATION_FRAMES,
     SPRITE_SUPERSAMPLE = 8,
     SPRITE_WORK_MAX = 256,
@@ -81,6 +86,12 @@ enum {
 /* The same scale as the original bottom edge turn: large enough that it settles
  * the direction on its own, whatever the flocking terms are doing. */
 static const double LEGEND_PUSH = 100000.0;
+/* Heavy enough to bend a flock that is busy flocking, light enough that it bends
+ * rather than shatters. */
+static const double MOUSE_WEIGHT = 4.0;
+static const double CAT_PERIOD = 6.0; /* Seconds of one stalk and pounce. */
+static const double CAT_STALK = 4.5;  /* Of which this much is holding still. */
+static const double CAT_POUNCE = 3.0; /* And then this much harder. */
 
 /* Needed in the config initializer, so macros rather than constants. */
 #define DEFAULT_SEPARATION_W 0.005
@@ -111,8 +122,8 @@ static const double ALIGNMENT_MAX = NOTCH_CEILING(0.1, DEFAULT_ALIGNMENT_W);
 #define SYNC_UPDATE_END "\033[?2026l"
 /* Any event tracking plus SGR coordinates: 1003 reports plain motion as well as
  * clicks, and 1006 lifts the 223 column ceiling of the original encoding. */
-#define MOUSE_ON "\033[?1003h\033[?1006h"
-#define MOUSE_OFF "\033[?1006l\033[?1003l"
+#define MOUSE_REPORT_ON "\033[?1003h\033[?1006h"
+#define MOUSE_REPORT_OFF "\033[?1006l\033[?1003l"
 
 typedef struct {
     double x, y;
@@ -138,6 +149,7 @@ typedef struct {
 
 typedef struct {
     int birds, frame_rate, bird_size, palette, flocks, colour_by;
+    int mouse_mode, mouse_reach;
     double speed;
     int vision_cells, vision_radius, vision_radius_squared;
     double separation, alignment, cohesion, boundary;
@@ -156,6 +168,8 @@ static config_t config = {
     .palette = 0,
     .flocks = 1,
     .colour_by = COLOUR_BY_HEADING,
+    .mouse_mode = MOUSE_FLEE,
+    .mouse_reach = DEFAULT_MOUSE_REACH,
     .vision_cells = DEFAULT_VISION_RADIUS / SPATIAL_CELL_SIZE,
     .vision_radius = DEFAULT_VISION_RADIUS,
     .vision_radius_squared = DEFAULT_VISION_RADIUS * DEFAULT_VISION_RADIUS,
@@ -223,7 +237,7 @@ static void restore_terminal(void) {
         terminal_is_raw = 0;
     }
     if (!alt_screen_is_on) return; /* The probe failed before we took the screen. */
-    write_all(MOUSE_OFF, sizeof(MOUSE_OFF) - 1);
+    write_all(MOUSE_REPORT_OFF, sizeof(MOUSE_REPORT_OFF) - 1);
     write_all(SYNC_UPDATE_END, sizeof(SYNC_UPDATE_END) - 1);
     write_all(CURSOR_SHOW, sizeof(CURSOR_SHOW) - 1);
     write_all(ALT_SCREEN_OFF, sizeof(ALT_SCREEN_OFF) - 1);
@@ -309,7 +323,7 @@ static int terminal_speaks_graphics(void) {
 static void enter_alt_screen(void) {
     write_all(ALT_SCREEN_ON, sizeof(ALT_SCREEN_ON) - 1);
     write_all(CURSOR_HIDE, sizeof(CURSOR_HIDE) - 1);
-    if (mouse_enabled) write_all(MOUSE_ON, sizeof(MOUSE_ON) - 1);
+    if (mouse_enabled) write_all(MOUSE_REPORT_ON, sizeof(MOUSE_REPORT_ON) - 1);
     alt_screen_is_on = 1;
 }
 
@@ -494,6 +508,7 @@ enum { PALETTE_COUNT = sizeof(PALETTES) / sizeof(*PALETTES) };
 
 static const char *PALETTE_NAMES[PALETTE_COUNT + 1];
 static const char *const COLOUR_BY_NAMES[] = {"fixed", "heading", "density", "flock", NULL};
+static const char *const MOUSE_NAMES[] = {"flee", "follow", "cat", "off", NULL};
 
 /* Named rather than numbered: the table's order is a presentation choice and
  * should not be load bearing. */
@@ -679,6 +694,45 @@ static double normalized_angle(double y, double x) {
     return angle < 0 ? angle + 2 * M_PI : angle;
 }
 
+/*
+ * The pointer, as a thing in the world.
+ *
+ * flee is the default because it is the one that explains itself: the flock
+ * parts around the cursor within a second of the viewer moving it, and nobody
+ * has to be told what happened. follow is the opposite and makes the pointer a
+ * feeder. cat holds still and waits, the flock creeps back, and then it pounces:
+ * this is kitty, after all.
+ *
+ * The force falls off with distance rather than being a hard wall like the
+ * panel's, because the flock has to bend around the pointer and close again
+ * behind it, not bounce off it.
+ */
+static vector_t pointer_vector(const bird_t *bird) {
+    vector_t force = {0, 0};
+    if (!mouse.present || config.mouse_mode == MOUSE_OFF) return force;
+
+    double dx = bird->x - mouse.x, dy = bird->y - mouse.y;
+    double squared = dx * dx + dy * dy;
+    double reach = config.mouse_reach;
+    if (squared >= reach * reach || squared < 1e-9) return force;
+
+    double distance = sqrt(squared);
+    /* One at the pointer, nothing at the edge of its reach. */
+    double strength = (reach - distance) / reach;
+    double pull = config.mouse_mode == MOUSE_FOLLOW ? -1.0 : 1.0;
+
+    if (config.mouse_mode == MOUSE_CAT) {
+        /* Still for a while, then a pounce: the flock has time to come back and
+         * be surprised. The pounce is a stronger flee over a wider reach. */
+        double phase = fmod(clock_state.seconds, CAT_PERIOD);
+        if (phase < CAT_STALK) return force;
+        strength *= CAT_POUNCE;
+    }
+    force.x = pull * strength * dx / distance;
+    force.y = pull * strength * dy / distance;
+    return force;
+}
+
 static vector_t boundary_vector(const bird_t *bird) {
     vector_t boundary = {0, 0};
     if (legend_repels(bird, &boundary)) return boundary;
@@ -704,6 +758,7 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
     const bird_t *target = &birds[target_index];
     vector_t separation = {0, 0}, alignment = {0, 0}, cohesion = {0, 0};
     vector_t boundary = boundary_vector(target);
+    vector_t pointer = pointer_vector(target);
     int neighbors = 0, kin = 0;
     int center_x, center_y;
     spatial_grid_cell_for_position(grid, target->x, target->y, &center_x, &center_y);
@@ -751,13 +806,15 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
             cohesion.y = cohesion.y / kin - target->y;
         }
         double x = separation.x * config.separation + alignment.x * config.alignment +
-                   cohesion.x * config.cohesion + boundary.x * config.boundary;
+                   cohesion.x * config.cohesion + boundary.x * config.boundary +
+                   pointer.x * MOUSE_WEIGHT;
         double y = separation.y * config.separation + alignment.y * config.alignment +
-                   cohesion.y * config.cohesion + boundary.y * config.boundary;
+                   cohesion.y * config.cohesion + boundary.y * config.boundary +
+                   pointer.y * MOUSE_WEIGHT;
         return x == 0 && y == 0 ? target->direction : normalized_angle(y, x);
     }
-    boundary.x *= config.boundary;
-    boundary.y *= config.boundary;
+    boundary.x = boundary.x * config.boundary + pointer.x * MOUSE_WEIGHT;
+    boundary.y = boundary.y * config.boundary + pointer.y * MOUSE_WEIGHT;
     if (boundary.x != 0 || boundary.y != 0) {
         double x = cos(target->direction) + boundary.x;
         double y = sin(target->direction) + boundary.y;
@@ -1110,8 +1167,12 @@ static const option_t OPTIONS[] = {
      "frames a second, snapped to a notch (default 60)", "Display"},
     {'l', "legend", OPTION_FLAG, &legend_enabled, 0, 0, NULL, NULL,
      "show the parameter panel, on by default", "Display"},
-    {'m', "mouse", OPTION_FLAG, &mouse_enabled, 0, 0, NULL, NULL,
-     "follow the pointer, on by default", "Interaction"},
+    {'m', "mouse", OPTION_ENUM, &config.mouse_mode, 0, 0, MOUSE_NAMES, "MODE",
+     "the pointer is: flee, follow, cat, off (default flee)", "Interaction"},
+    {0, "mouse-reach", OPTION_INT, &config.mouse_reach, 8, 600, NULL, "PIXELS",
+     "how far the pointer reaches (default 120)", "Interaction"},
+    {0, "mouse-reporting", OPTION_FLAG, &mouse_enabled, 0, 0, NULL, NULL,
+     "ask the terminal for pointer positions, on by default", "Interaction"},
     {0, "force", OPTION_FLAG, &force_graphics, 0, 0, NULL, NULL,
      "draw without asking the terminal whether it can", "General"},
 };

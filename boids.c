@@ -1103,6 +1103,23 @@ static int bird_placement(const bird_t *bird, kitty_graphics_placement_t *placem
     return 1;
 }
 
+static int frame_limit;
+static int show_stats;
+static int bench_frames;
+static const char *snapshot_path;
+
+/* What the panel's stats row reports, averaged over the last second so the
+ * numbers are readable rather than flickering. */
+static struct {
+    double frame_ms;
+    double bytes;
+    double rate;
+    long counted;
+    double window_started;
+    double window_ms;
+    double window_bytes;
+} stats;
+
 /* One slider row: the name, the bar, and the two keys that move it, the lowering
  * one first because that is the end of the bar it works from. The filled length
  * is the notch itself, not a value scaled into cells, so a keypress moves the bar
@@ -1156,7 +1173,11 @@ static void build_legend(char lines[LEGEND_ROWS][LEGEND_LINE_MAX]) {
     snprintf(value, sizeof(value), "%d", config.frame_rate);
     legend_slider(lines[6], LEGEND_LINE_MAX, "rate", config.rate_notch, value, 'r', 'R');
 
-    snprintf(lines[7], LEGEND_LINE_MAX, "\u2502 %*s \u2502", inner - 2, "");
+    if (show_stats)
+        snprintf(lines[7], LEGEND_LINE_MAX, "\u2502 %-*s %5.1fms %4.0fK %3.0f \u2502",
+                 LEGEND_NAME_WIDTH, "frame", stats.frame_ms, stats.bytes / 1024.0, stats.rate);
+    else
+        snprintf(lines[7], LEGEND_LINE_MAX, "\u2502 %*s \u2502", inner - 2, "");
     snprintf(lines[8], LEGEND_LINE_MAX, "\u2502 %-*s q%*s \u2502", LEGEND_NAME_WIDTH, "quit",
              inner - LEGEND_NAME_WIDTH - 4, "");
 
@@ -1290,7 +1311,6 @@ static int autopilot;
 static int idle_seconds = 60;
 static int screensaver;
 static int clock_mode;
-static int frame_limit;
 static char spell_buffer[256];
 static int requested_perception = DEFAULT_VISION_RADIUS;
 static int requested_seed = -1;
@@ -1371,6 +1391,12 @@ static const option_t OPTIONS[] = {
      "no panel, autopilot, any key or movement quits", "Modes"},
     {0, "frames", OPTION_INT, &frame_limit, 0, 1000000, NULL, "N",
      "quit after N frames, for recording", "Output"},
+    {0, "stats", OPTION_FLAG, &show_stats, 0, 0, NULL, NULL,
+     "frame time, bytes and rate, in the panel", "Output"},
+    {0, "bench", OPTION_INT, &bench_frames, 0, 1000000, NULL, "N",
+     "run N frames with no terminal, print the numbers, quit", "Output"},
+    {0, "snapshot", OPTION_STRING, &snapshot_path, 0, 0, NULL, "FILE",
+     "write the last frame as a PNG, with our own encoder", "Output"},
     {0, "boundary", OPTION_INT, &config.boundary_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
      "how hard the edges push back, 0 to 12 (default 4)", "Sliders"},
     {0, "separation", OPTION_INT, &config.separation_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
@@ -1654,6 +1680,87 @@ static int wait_for_terminal_io(void) {
 
 #define CBIRDS_VERSION "1.0.0"
 
+/*
+ * The program writes its own PNG, with its own encoder.
+ *
+ * Compositing is the one thing the renderer never has to do, because Kitty does
+ * it: so a snapshot rebuilds the rotated sprites as pixels, alpha blends every
+ * bird into one canvas, and hands it to png_encode. Fifty milliseconds and a few
+ * megabytes for a still, which is a fair price for a picture that the README can
+ * honestly say the program drew of itself.
+ */
+static void blend_sprite(png_image_t *canvas, const png_image_t *sprite, int at_x, int at_y) {
+    for (int y = 0; y < sprite->height; y++) {
+        int cy = at_y + y;
+        if (cy < 0 || cy >= canvas->height) continue;
+        for (int x = 0; x < sprite->width; x++) {
+            int cx = at_x + x;
+            if (cx < 0 || cx >= canvas->width) continue;
+            const uint8_t *src =
+                sprite->pixels + ((size_t)y * (size_t)sprite->width + (size_t)x) * 4;
+            uint8_t *dst = canvas->pixels + ((size_t)cy * (size_t)canvas->width + (size_t)cx) * 4;
+            unsigned alpha = src[3];
+            if (alpha == 0) continue;
+            for (int c = 0; c < 3; c++)
+                dst[c] = (uint8_t)((src[c] * alpha + dst[c] * (255 - alpha)) / 255);
+            dst[3] = (uint8_t)(alpha + dst[3] * (255 - alpha) / 255);
+        }
+    }
+}
+
+static int write_snapshot(const char *path, const bird_t *birds) {
+    png_image_t source = {0, 0, NULL}, canvas_sprite = {0, 0, NULL}, canvas = {0, 0, NULL};
+    png_image_t frames[ROTATION_FRAMES] = {{0, 0, NULL}};
+    uint8_t *encoded = NULL;
+    size_t encoded_length = 0;
+    int written = 0;
+
+    if (png_decode(sprite_png, sprite_png_len, &source) != PNG_OK) return 0;
+    int work = config.bird_size * SPRITE_SUPERSAMPLE;
+    if (work > SPRITE_WORK_MAX) work = SPRITE_WORK_MAX;
+    if (work > source.width) work = source.width;
+    png_status_t status = png_resize(&source, work, work, &canvas_sprite);
+    png_image_free(&source);
+    if (status != PNG_OK) return 0;
+
+    for (int i = 0; i < ROTATION_FRAMES && status == PNG_OK; i++) {
+        status = png_rotate_resize(&canvas_sprite, i * FRAME_ANGLE * M_PI / 180.0, config.bird_size,
+                                   config.bird_size, &frames[i]);
+        if (status == PNG_OK) palette_tint(&frames[i], 0);
+    }
+    png_image_free(&canvas_sprite);
+
+    if (status == PNG_OK) status = png_image_alloc(&canvas, screen.width, screen.height);
+    if (status == PNG_OK) {
+        /* Opaque, so the picture looks like the terminal it was taken in rather
+         * than like a cut out. */
+        for (size_t i = 0; i < (size_t)screen.width * (size_t)screen.height; i++) {
+            canvas.pixels[i * 4 + 0] = 18;
+            canvas.pixels[i * 4 + 1] = 18;
+            canvas.pixels[i * 4 + 2] = 24;
+            canvas.pixels[i * 4 + 3] = 255;
+        }
+        for (int i = 0; i < config.birds; i++) {
+            int frame = birds[i].frame % ROTATION_FRAMES;
+            if (frames[frame].pixels == NULL) continue;
+            blend_sprite(&canvas, &frames[frame], (int)birds[i].x, (int)birds[i].y);
+        }
+        status = png_encode(&canvas, &encoded, &encoded_length);
+    }
+    for (int i = 0; i < ROTATION_FRAMES; i++) png_image_free(&frames[i]);
+    png_image_free(&canvas);
+
+    if (status == PNG_OK) {
+        FILE *out = fopen(path, "wb");
+        if (out != NULL) {
+            written = fwrite(encoded, 1, encoded_length, out) == encoded_length;
+            fclose(out);
+        }
+    }
+    free(encoded);
+    return written;
+}
+
 static void usage(FILE *out, const char *program) {
     options_usage(out, program, "cbirds \u2014 a flock of birds in your terminal.", EXAMPLES,
                   OPTIONS, OPTION_COUNT);
@@ -1743,12 +1850,72 @@ static long elapsed_microseconds(const struct timespec *start, const struct time
     return (end->tv_sec - start->tv_sec) * 1000000L + (end->tv_nsec - start->tv_nsec) / 1000L;
 }
 
+/*
+ * The numbers, with no terminal in the way.
+ *
+ * What the README claims about this program should be measurable by anyone who
+ * clones it, so the measurement is a flag rather than a paragraph. No terminal is
+ * opened and nothing is drawn: the frame is built into the graphics buffer and
+ * its length counted, which is exactly what a real frame would put on the wire.
+ */
+static int run_benchmark(void) {
+    kitty_graphics_t graphics;
+    spatial_grid_t grid;
+    struct timespec start, finish;
+
+    apply_screen_size(200, 50, 1600, 800);
+    if (spatial_grid_init(&grid, SPATIAL_CELL_SIZE) != SPATIAL_GRID_OK) return EXIT_FAILURE;
+    if (spatial_grid_prepare(&grid, screen.width, screen.height, config.birds) != SPATIAL_GRID_OK)
+        return EXIT_FAILURE;
+    if (kitty_graphics_init(&graphics, STDOUT_FILENO) != KITTY_GRAPHICS_OK) return EXIT_FAILURE;
+
+    bird_t *birds = calloc((size_t)config.birds, sizeof(*birds));
+    bird_t *snapshot = malloc(sizeof(*snapshot) * (size_t)config.birds);
+    if (birds == NULL || snapshot == NULL) return EXIT_FAILURE;
+    srand(requested_seed >= 0 ? (unsigned)requested_seed : 1u);
+    initialize_birds(birds);
+    place_hawks();
+
+    double bytes = 0;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    for (int frame = 0; frame < bench_frames; frame++) {
+        memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
+        spatial_grid_build(&grid, config.birds, read_bird_position, snapshot);
+        hunt(snapshot);
+        graphics.length = 0;
+        render_frame(&graphics, birds, snapshot, &grid);
+        bytes += (double)graphics.length;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &finish);
+
+    double seconds =
+        (double)(finish.tv_sec - start.tv_sec) + (double)(finish.tv_nsec - start.tv_nsec) / 1e9;
+    double per_frame = seconds / bench_frames;
+    printf("birds        %d\n", config.birds);
+    printf("flocks       %d\n", config.flocks);
+    printf("hawks        %d\n", config.hawks);
+    printf("viewport     %dx%d px\n", screen.width, screen.height);
+    printf("frames       %d\n", bench_frames);
+    printf("frame time   %.3f ms\n", per_frame * 1000.0);
+    printf("ceiling      %.0f fps\n", 1.0 / per_frame);
+    printf("bytes/frame  %.0f (%.1f KB)\n", bytes / bench_frames, bytes / bench_frames / 1024.0);
+    printf("at %d fps    %.1f MB/s\n", config.frame_rate,
+           bytes / bench_frames * config.frame_rate / 1e6);
+
+    kitty_graphics_destroy(&graphics);
+    spatial_grid_destroy(&grid);
+    free(snapshot);
+    free(birds);
+    return EXIT_SUCCESS;
+}
+
 int main(int argc, char **argv) {
     image_frame_t frames[ROTATION_FRAMES * (MAX_PALETTE_SHADES + 1)] = {0};
     kitty_graphics_t graphics;
     spatial_grid_t grid;
     struct timespec frame_start, frame_end;
     read_options(argc, argv);
+    if (bench_frames > 0) return run_benchmark();
     install_signal_handlers();
     atexit(restore_terminal);
 
@@ -1902,6 +2069,7 @@ int main(int argc, char **argv) {
                     kitty_graphics_status_string(graphics_status));
             exit(EXIT_FAILURE);
         }
+        size_t frame_bytes = graphics.length;
         while (running && graphics.length > 0) {
             graphics_status = kitty_graphics_flush_nonblocking(&graphics);
             if (graphics_status == KITTY_GRAPHICS_AGAIN) {
@@ -1921,12 +2089,33 @@ int main(int argc, char **argv) {
         if (!running) break;
         if (frame_limit > 0 && clock_state.frame >= frame_limit) break;
         clock_gettime(CLOCK_MONOTONIC, &frame_end);
+        /* Averaged over a second, because a number that changes sixty times a
+         * second is decoration rather than information. */
+        stats.window_ms += (double)elapsed_microseconds(&frame_start, &frame_end) / 1000.0;
+        stats.window_bytes += (double)frame_bytes;
+        stats.counted++;
+        if (clock_state.seconds - stats.window_started >= 1.0) {
+            double span = clock_state.seconds - stats.window_started;
+            stats.frame_ms = stats.window_ms / (double)stats.counted;
+            stats.bytes = stats.window_bytes / (double)stats.counted;
+            stats.rate = (double)stats.counted / span;
+            stats.window_started = clock_state.seconds;
+            stats.window_ms = stats.window_bytes = 0;
+            stats.counted = 0;
+        }
         long remaining =
             1000000L / config.frame_rate - elapsed_microseconds(&frame_start, &frame_end);
         if (remaining > 0) {
             struct timespec delay = {remaining / 1000000L, (remaining % 1000000L) * 1000L};
             nanosleep(&delay, NULL);
         }
+    }
+    if (snapshot_path != NULL) {
+        restore_terminal();
+        if (write_snapshot(snapshot_path, birds))
+            fprintf(stderr, "cbirds: wrote %s\n", snapshot_path);
+        else
+            fprintf(stderr, "cbirds: could not write %s\n", snapshot_path);
     }
     spatial_grid_destroy(&grid);
     kitty_graphics_destroy(&graphics);

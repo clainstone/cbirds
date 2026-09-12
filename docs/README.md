@@ -17,8 +17,8 @@ make
 # left on it would hold the flock out of a corner for no visible reason.
 ./cbirds --snapshot docs/hero.png        --frames 150 -n 1100 --color ember \
          --spell CBIRDS --spell-hold 0 --no-intro --no-panel
-./cbirds --snapshot docs/murmuration.png --frames 300 -n 900  --color ice \
-         --preset murmuration --trails --no-intro --no-panel
+./cbirds --snapshot docs/murmuration.png --frames 200 -n 900  --color ice \
+         --preset murmuration --trails --seed 7 --no-intro --no-panel
 ./cbirds --snapshot docs/matrix.png      --frames 200 -n 700  --matrix --no-intro --no-panel
 ./cbirds --snapshot docs/hawks.png       --frames 300 -n 800  --color acid \
          --hawks 2 --no-intro --no-panel

@@ -218,15 +218,21 @@ past without merging.
 rules and is kept out of the grid entirely, so the flocking arithmetic is
 untouched by its existence. It chooses a bird at least three hundred and forty
 pixels off — near enough and there is no chase to watch — and holds that one
-whatever drifts past in the meantime: about twenty frames, which is how long it
-takes to get there, and up to forty before it will reconsider. It aims where the
-bird will be rather than where it is, dives the last ninety pixels, and the strike
-counts only if it reaches the bird it chose. Then it flies straight out the far
-side for a quarter of a second before turning back for another. Two hawks never
-take the same bird and keep their distance from each other. Every bird within a
-hundred and fifty pixels flees, and part of that flee is sideways rather than
-straight away, which is what makes the flock stream around a hawk and close up
-behind it instead of bursting open.
+whatever drifts past in the meantime: about twenty-six frames, which is how long
+it takes to get there, and up to forty before it will reconsider. It aims where
+the bird will be rather than where it is, dives the last ninety pixels, and the
+strike counts only if it reaches the bird it chose — measured along the whole of
+the frame's travel, so how often it catches anything does not depend on the frame
+rate. Four chases in five end in a strike. Then it flies straight out the far side
+for a quarter of a second before turning back for another. Two hawks never take
+the same bird and keep their distance from each other. Every bird within a hundred
+and fifty pixels flees, and part of that flee is sideways rather than straight
+away, which is what makes the flock stream around a hawk and close up behind it
+instead of bursting open.
+
+It is scarlet, or a hot white, or an electric cyan: whichever of the three stands
+furthest from the colours the flock is wearing. On the ember ramp a scarlet hawk
+is just another ember, which is a predator nobody can find.
 
 A predator that could throw the flock off the screen would be a bug in a costume,
 so the flee is weaker than the edge: with four hawks up, the share of birds out of

@@ -203,6 +203,12 @@ options_status_t options_parse(const option_t *table, size_t count, int argc, ch
 
         /* Short form, and flags cluster: -qv, -qn800, -qn 800. */
         for (const char *c = argument + 1; *c != '\0'; c++) {
+            /* h and V are not in the table — they are answered before any of it
+             * is read — so they have to be answered here too, or `-help`, which
+             * is a cluster of h e l p, is met with "unknown option '-h'": the
+             * program denying its own flag over the commonest typo there is. */
+            if (*c == 'h') return OPTIONS_HELP;
+            if (*c == 'V') return OPTIONS_VERSION;
             const option_t *option = find_short(table, count, *c);
             if (option == NULL) {
                 fail(error, error_size, "unknown option '-%c'", *c);

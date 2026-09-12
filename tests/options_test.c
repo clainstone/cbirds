@@ -152,6 +152,12 @@ static void test_help_and_version(void) {
     /* Asked for anywhere, it wins over whatever else is on the line. */
     assert(parse(error, sizeof(error), "-n", "10", "--help", NULL) == OPTIONS_HELP_FULL);
 
+    /* And inside a cluster, which is what -help and -hV are: a typo for the help
+     * flag should not be answered with "unknown option '-h'". */
+    assert(parse(error, sizeof(error), "-help", NULL) == OPTIONS_HELP);
+    assert(parse(error, sizeof(error), "-hV", NULL) == OPTIONS_HELP);
+    assert(parse(error, sizeof(error), "-Vh", NULL) == OPTIONS_VERSION);
+
     /* --completion leaves the shell in the buffer for the caller to act on. */
     assert(parse(error, sizeof(error), "--completion", "fish", NULL) == OPTIONS_COMPLETION);
     assert(strcmp(error, "fish") == 0);

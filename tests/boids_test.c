@@ -387,6 +387,21 @@ static void test_legend_panel_layout(void) {
 
     /* A rectangle, every row exactly as wide as the panel claims to be. */
     for (int row = 0; row < LEGEND_ROWS; row++) assert(legend_cells(lines[row]) == LEGEND_COLUMNS);
+
+    /* With --stats too: that row used to come out four cells short and put a
+     * notch in the panel's right hand side, and this test never set the flag. */
+    show_stats = 1;
+    stats.frame_ms = 2.125;
+    stats.bytes = 31000;
+    stats.rate = 60;
+    build_legend(lines);
+    for (int row = 0; row < LEGEND_ROWS; row++) assert(legend_cells(lines[row]) == LEGEND_COLUMNS);
+    assert(strstr(lines[7], "frame") != NULL);
+    assert(strstr(lines[7], "ms") != NULL); /* Numbers with their units on. */
+    assert(strstr(lines[7], "KB") != NULL);
+    assert(strstr(lines[7], "fps") != NULL);
+    show_stats = 0;
+    build_legend(lines);
     assert(strstr(lines[0], "\u256d") == lines[0]);
     assert(strstr(lines[0], "\u256e") != NULL);
     assert(strstr(lines[LEGEND_ROWS - 1], "\u2570") == lines[LEGEND_ROWS - 1]);
@@ -1593,6 +1608,94 @@ static void test_shade_follows_the_chosen_mode(void) {
     reset_test_config();
 }
 
+/* A hawk has to be findable in one glance, in every palette. Scarlet did that
+ * everywhere except on the warm ramps, where it is just another ember. */
+static void test_the_hawk_is_never_the_colour_of_the_flock(void) {
+    for (config.palette = 0; config.palette < PALETTE_COUNT; config.palette++) {
+        if (palette_follows_the_theme()) {
+            static const uint8_t ACCENT[3] = {205, 0, 0}, GROUND[3] = {18, 18, 24};
+            ramp_between(ACCENT, GROUND);
+        }
+        const uint8_t *hawk = hawk_colour();
+        double nearest = 1e9;
+        for (int shade = 0; shade < palette()->shades; shade++) {
+            const uint8_t *tint =
+                palette()->tints != NULL ? palette()->tints[shade] : SPRITE_OWN_COLOUR;
+            double gap = colour_distance(hawk, tint);
+            if (gap < nearest) nearest = gap;
+        }
+        /* Two hundred is about the distance from scarlet to a mid grey: further
+         * than any two shades of one ramp ever are from each other. */
+        assert(nearest > 200);
+
+        /* And the sprite is actually painted with it. */
+        png_image_t feather = {0, 0, NULL};
+        assert(png_image_alloc(&feather, 1, 1) == PNG_OK);
+        feather.pixels[3] = 255;
+        hawk_tint(&feather);
+        assert(feather.pixels[0] == hawk[0]);
+        assert(feather.pixels[1] == hawk[1]);
+        assert(feather.pixels[2] == hawk[2]);
+        png_image_free(&feather);
+
+        /* And it is the best of the candidates, not merely an acceptable one. */
+        for (int candidate = 0; candidate < HAWK_COLOUR_COUNT; candidate++) {
+            double other = 1e9;
+            for (int shade = 0; shade < palette()->shades; shade++) {
+                const uint8_t *tint =
+                    palette()->tints != NULL ? palette()->tints[shade] : SPRITE_OWN_COLOUR;
+                double gap = colour_distance(HAWK_COLOURS[candidate], tint);
+                if (gap < other) other = gap;
+            }
+            assert(other <= nearest);
+        }
+    }
+    reset_test_config();
+}
+
+/* The one colour a bird must never be is the colour of the sky behind it. The
+ * ramp used to end exactly on the terminal's background: a fifth of the flock was
+ * invisible on every scheme, and with three flocks up one whole flock was. */
+static void test_the_theme_ramp_never_reaches_the_background(void) {
+    static const uint8_t GROUNDS[][3] = {
+        {0, 0, 0}, {18, 18, 24}, {40, 42, 54}, {0, 43, 54}, {253, 246, 227},
+    };
+    static const uint8_t ACCENTS[][3] = {
+        {205, 0, 0}, {0, 0, 238}, {189, 147, 249}, {251, 73, 52}, {42, 161, 152},
+    };
+    for (size_t g = 0; g < sizeof(GROUNDS) / sizeof(*GROUNDS); g++)
+        for (size_t a = 0; a < sizeof(ACCENTS) / sizeof(*ACCENTS); a++) {
+            ramp_between(ACCENTS[a], GROUNDS[g]);
+            for (int shade = 0; shade < 5; shade++) {
+                assert(memcmp(theme_tints[shade], GROUNDS[g], 3) != 0);
+                /* And not merely different: the far end stops short of two thirds
+                 * of the way there, so there is always some of the accent left. */
+                for (int c = 0; c < 3; c++) {
+                    int travelled = abs((int)theme_tints[shade][c] - (int)ACCENTS[a][c]);
+                    int whole = abs((int)GROUNDS[g][c] - (int)ACCENTS[a][c]);
+                    assert(travelled * 3 <= whole * 2 + 1);
+                }
+            }
+            /* And it is still a ramp: every step is nearer the ground than the
+             * one before it, or the five shades are not a ramp at all. */
+            for (int shade = 1; shade < 5; shade++) {
+                double near = contrast_between(theme_tints[shade - 1], GROUNDS[g]);
+                double far = contrast_between(theme_tints[shade], GROUNDS[g]);
+                assert(far <= near);
+            }
+        }
+
+    /* On the common ground — a dark terminal — and with an accent the terminal
+     * can actually show, every shade stands off it. */
+    static const uint8_t DARK[3] = {18, 18, 24};
+    for (size_t a = 0; a < sizeof(ACCENTS) / sizeof(*ACCENTS); a++) {
+        if (contrast_between(ACCENTS[a], DARK) < 3) continue;
+        ramp_between(ACCENTS[a], DARK);
+        for (int shade = 0; shade < 5; shade++)
+            assert(contrast_between(theme_tints[shade], DARK) > 1.3);
+    }
+}
+
 static void test_theme_colours_are_parsed(void) {
     uint8_t rgb[3];
 
@@ -1677,11 +1780,15 @@ static void test_the_matrix_keeps_the_flocks_apart(void) {
     reset_test_config();
 }
 
-/* A GIF has no panel in it, so it must not have a hole where one would be. */
+/* A GIF has no panel in it, so it must not have a hole where one would be — and
+ * it is drawn without a terminal, so the palette that asks the terminal what
+ * colours it uses has to fall back to one that has colours in it. */
 static void test_recording_gives_the_whole_frame_to_the_flock(void) {
     char path[] = "/tmp/cbirds_record_test.gif";
     legend_enabled = 1;
     reset_test_config();
+    config.palette = palette_named("theme");
+    assert(palette_follows_the_theme());
     config.birds = 40;
     record_path = path;
     record_fps = 25;
@@ -1699,6 +1806,10 @@ static void test_recording_gives_the_whole_frame_to_the_flock(void) {
     close(saved);
     clearerr(stdout);
     assert(status == EXIT_SUCCESS);
+    /* Black birds on a black ground was what `cbirds --record flock.gif` wrote:
+     * the theme's ramp is learned from the terminal, and there is no terminal. */
+    assert(!palette_follows_the_theme());
+    assert(palette_shades() > 1);
     assert(legend_enabled == 0);
     assert(screen.legend_width == 0 && screen.legend_height == 0);
     remove(path);
@@ -2129,6 +2240,8 @@ int main(void) {
     test_a_notch_survives_the_round_trip();
     test_the_pointer_moves_the_flock();
     test_shade_follows_the_chosen_mode();
+    test_the_hawk_is_never_the_colour_of_the_flock();
+    test_the_theme_ramp_never_reaches_the_background();
     test_theme_colours_are_parsed();
     test_each_flock_flies_at_its_own_pace();
     test_the_matrix_keeps_the_flocks_apart();

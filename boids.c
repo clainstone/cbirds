@@ -46,7 +46,10 @@ enum {
     TRAIL_LENGTH = 4,
     INTRO_SECONDS = 3,
     MAX_HAWKS = 8,
-    HAWK_REACH = 180,
+    HAWK_REACH = 150,
+    HAWK_COMMITMENT = 45, /* Frames it stays after one bird before reconsidering. */
+    HAWK_GIVE_UP = 420,   /* Pixels at which the chase is lost. */
+    HAWK_PASS = 22,       /* Frames it flies straight after a pass. */
     /* A GIF's delay is in hundredths of a second, so the rates it can express are
      * 100/1, 100/2, 100/3 and so on. Viewers also clamp anything under two
      * hundredths up to a tenth of a second, which puts the real ceiling at fifty:
@@ -110,7 +113,16 @@ static const double LEGEND_PUSH = 100000.0;
  * rather than shatters. */
 static const double MOUSE_WEIGHT = 4.0;
 static const double HAWK_WEIGHT = 6.0;
-static const double HAWK_SPEED = 1.15;
+static const double HAWK_SPEED = 1.10;
+/* Sharper than a bird's bank, because a raptor is more agile, but a limit all the
+ * same: without one it turned forty degrees a frame and read as a glitch. */
+static const double HAWK_TURN = 0.22;
+static const double HAWK_LEAD = 3.0; /* Frames ahead of the prey it aims. */
+/* Inside the dive it accelerates and stops leading: a bird that flees is only a
+ * tenth slower than a cruising hawk, so without this the chase never closes and
+ * there is no moment to watch. */
+static const double HAWK_DIVE = 240.0;
+static const double HAWK_DIVE_SPEED = 1.45;
 /* A breeze the whole flock leans into. Enough to shape it, not enough to carry
  * it off: at the top notch it is about a third of the alignment weight. */
 static const double WIND_WEIGHT = 0.5;
@@ -578,6 +590,13 @@ static int palette_shades(void) {
     return palette()->shades;
 }
 
+/* A hawk is not one of the flock's shades. It gets a dark silhouette whatever the
+ * palette is, because what has to read instantly is that this one is different,
+ * and dark against a lit flock is the fastest way to say so. */
+static void hawk_tint(png_image_t *image) {
+    png_tint(image, 26, 22, 28, PNG_TINT_REPLACE);
+}
+
 /* Shade zero of a tinted palette is still a tint: the list is the whole ramp. */
 static void palette_tint(png_image_t *image, int shade) {
     const palette_t *chosen = palette();
@@ -711,7 +730,7 @@ static png_status_t load_sprite(png_image_t *out) {
  * rotation is the expensive half and it does not depend on the colour, so each
  * angle is rotated once and then tinted and encoded per shade: the second shade
  * costs a few hundred microseconds, not another fifty milliseconds. */
-static void build_rotation_frames(image_frame_t *frames, int shades, int size) {
+static void build_rotation_frames(image_frame_t *frames, int shades, int size, int hawk) {
     png_image_t source = {0, 0, NULL}, canvas = {0, 0, NULL};
     png_status_t status = load_sprite(&source);
     if (status != PNG_OK) {
@@ -738,7 +757,10 @@ static void build_rotation_frames(image_frame_t *frames, int shades, int size) {
             status = png_image_alloc(&tinted, frame.width, frame.height);
             if (status == PNG_OK) {
                 memcpy(tinted.pixels, frame.pixels, (size_t)frame.width * (size_t)frame.height * 4);
-                palette_tint(&tinted, shade);
+                if (hawk)
+                    hawk_tint(&tinted);
+                else
+                    palette_tint(&tinted, shade);
                 status = png_encode(&tinted, &encoded, &encoded_length);
             }
             png_image_free(&tinted);
@@ -933,6 +955,36 @@ static vector_t wind_vector(void) {
 }
 
 /*
+ * Turning inertia.
+ *
+ * A bird that can turn any amount in one frame moves like a particle: the flock
+ * comes out as a blob that changes shape instantly. Cap the turn and it banks
+ * instead, which gives the flock curved fronts, a leading edge, and the look of
+ * something with mass. This is the single change that makes it read as birds
+ * rather than as points, which is why the default is eight of twelve rather than
+ * the twelve it used to effectively be.
+ *
+ * Writing is exempt. It already overrules the flocking rules, and a bird that
+ * cannot turn sharply cannot land on a letter: it would circle one instead, and
+ * the crispness of the letters is the whole point of them.
+ */
+static double turn_towards(double from, double to, double most) {
+    double delta = atan2(sin(to - from), cos(to - from));
+    if (delta > most) delta = most;
+    if (delta < -most) delta = -most;
+    double turned = from + delta;
+    if (turned < 0) turned += 2 * M_PI;
+    if (turned >= 2 * M_PI) turned -= 2 * M_PI;
+    return turned;
+}
+
+/* Twelve is instant, zero is a straight line and nothing in between is either. */
+static double turn_limit(void) {
+    if (config.turning_notch >= LEGEND_BAR_CELLS) return 2 * M_PI;
+    return M_PI * config.turning_notch / LEGEND_BAR_CELLS / 2.0;
+}
+
+/*
  * Hawks.
  *
  * A predator is what gives a clip a story: the flock splits, streams around it
@@ -944,6 +996,9 @@ static vector_t wind_vector(void) {
 typedef struct {
     double x, y, direction;
     int frame;
+    int prey;       /* Index of the bird it is chasing, negative for none. */
+    int commitment; /* Frames left before it is allowed to change its mind. */
+    int passing;    /* Frames left of a straight run out of the flock. */
 } hawk_t;
 
 static hawk_t hawks[MAX_HAWKS];
@@ -956,37 +1011,118 @@ static void place_hawks(void) {
         hawks[i].y = screen.height * (i % 2 ? 0.75 : 0.25);
         hawks[i].direction = 2 * M_PI * random_unit();
         hawks[i].frame = direction_frame(hawks[i].direction);
+        hawks[i].prey = -1;
+        hawks[i].commitment = 0;
+        hawks[i].passing = 0;
     }
 }
 
-/* Brute force over the flock, because eight hawks against four thousand birds is
- * a few tens of thousands of comparisons: less than one percent of a frame, and
- * it needs no grid of its own. */
+/* The nearest bird, by brute force: eight hawks against four thousand birds is a
+ * few tens of thousands of comparisons, well under a percent of a frame, and it
+ * needs no structure of its own. */
+static int nearest_bird(const bird_t *birds, double x, double y) {
+    int best = -1;
+    double best_distance = 0;
+    for (int b = 0; b < config.birds; b++) {
+        double dx = birds[b].x - x, dy = birds[b].y - y;
+        double distance = dx * dx + dy * dy;
+        if (best < 0 || distance < best_distance) {
+            best_distance = distance;
+            best = b;
+        }
+    }
+    return best;
+}
+
+/*
+ * The chase.
+ *
+ * A hawk that re-picks the nearest bird every frame does not look like it is
+ * hunting: in a dense flock the nearest bird changes constantly and the hawk
+ * flips between them, turning forty degrees a frame and reading as a glitch. So
+ * it picks one bird and commits to it, for a fixed number of frames or until it
+ * is caught or lost, and only then looks for another.
+ *
+ * It aims where the bird is going rather than where it is, which is what makes
+ * the pursuit look intelligent instead of trailing. And it banks: a limit on the
+ * turn per frame, looser than a bird's because a raptor is more agile, but a
+ * limit all the same.
+ */
 static void hunt(const bird_t *birds) {
     for (int i = 0; i < config.hawks; i++) {
-        double best = -1, best_x = 0, best_y = 0;
-        for (int b = 0; b < config.birds; b++) {
-            double dx = birds[b].x - hawks[i].x, dy = birds[b].y - hawks[i].y;
-            double squared = dx * dx + dy * dy;
-            if (best < 0 || squared < best) {
-                best = squared;
-                best_x = birds[b].x;
-                best_y = birds[b].y;
+        hawk_t *hawk = &hawks[i];
+
+        /* Mid pass: flying straight out of the flock it just went through, which
+         * is what a stoop looks like from outside. It steers at nothing until it
+         * is clear, and then turns back for another. */
+        if (hawk->passing > 0) {
+            hawk->passing--;
+            hawk->prey = -1;
+        } else {
+            /* A pass is being among them, not catching the one it set out after:
+             * the bird it chose is fleeing, so what it actually flies through is
+             * whichever birds are there when it arrives. */
+            int closest = nearest_bird(birds, hawk->x, hawk->y);
+            if (closest >= 0) {
+                double dx = birds[closest].x - hawk->x, dy = birds[closest].y - hawk->y;
+                if (dx * dx + dy * dy <
+                    (double)(config.bird_size * 2) * (double)(config.bird_size * 2)) {
+                    hawk->prey = -1;
+                    hawk->passing = HAWK_PASS; /* Through and out the other side. */
+                }
+            }
+            /* And a chase that has gone too far is over. */
+            if (hawk->prey >= 0 && hawk->prey < config.birds) {
+                double dx = birds[hawk->prey].x - hawk->x, dy = birds[hawk->prey].y - hawk->y;
+                if (dx * dx + dy * dy > HAWK_GIVE_UP * HAWK_GIVE_UP) hawk->prey = -1;
+            } else if (hawk->passing == 0) {
+                hawk->prey = -1;
+            }
+            if (hawk->commitment > 0) hawk->commitment--;
+            if (hawk->prey < 0 && hawk->passing == 0) {
+                hawk->prey = nearest_bird(birds, hawk->x, hawk->y);
+                hawk->commitment = HAWK_COMMITMENT;
             }
         }
-        if (best >= 0) {
-            double to_x = best_x - hawks[i].x, to_y = best_y - hawks[i].y;
-            if (to_x * to_x + to_y * to_y > 1e-9) hawks[i].direction = normalized_angle(to_y, to_x);
+
+        double pace = HAWK_SPEED;
+        if (hawk->prey >= 0) {
+            /* Where it will be, not where it is: the prey's own heading, a few
+             * frames ahead, which is what a raptor is actually doing. Close in, it
+             * stops leading and goes straight at the bird, faster. */
+            const bird_t *prey = &birds[hawk->prey];
+            double gap_x = prey->x - hawk->x, gap_y = prey->y - hawk->y;
+            double gap = sqrt(gap_x * gap_x + gap_y * gap_y);
+            double lead = config.speed * HAWK_LEAD;
+            if (gap < HAWK_DIVE) {
+                pace = HAWK_DIVE_SPEED;
+                lead *= gap / HAWK_DIVE;
+            }
+            double to_x = prey->x + cos(prey->direction) * lead - hawk->x;
+            double to_y = prey->y + sin(prey->direction) * lead - hawk->y;
+            if (to_x * to_x + to_y * to_y > 1e-9)
+                hawk->direction =
+                    turn_towards(hawk->direction, normalized_angle(to_y, to_x), HAWK_TURN);
         }
-        /* Faster than its prey, or it would never catch up and the chase would
-         * never look like one. Turned back at the edges like everything else. */
-        hawks[i].x += config.speed * HAWK_SPEED * cos(hawks[i].direction);
-        hawks[i].y += config.speed * HAWK_SPEED * sin(hawks[i].direction);
-        if (hawks[i].x < 0) hawks[i].x = 0;
-        if (hawks[i].x > screen.width) hawks[i].x = screen.width;
-        if (hawks[i].y < 0) hawks[i].y = 0;
-        if (hawks[i].y > screen.height) hawks[i].y = screen.height;
-        hawks[i].frame = direction_frame(hawks[i].direction);
+
+        hawk->x += config.speed * pace * cos(hawk->direction);
+        hawk->y += config.speed * pace * sin(hawk->direction);
+
+        /* Turned back at the walls rather than pinned against them: a clamp left
+         * it sliding along an edge for a quarter of every run. */
+        if (hawk->x < 0 || hawk->x > screen.width) {
+            hawk->x = hawk->x < 0 ? 0 : screen.width;
+            hawk->direction = normalized_angle(sin(hawk->direction), -cos(hawk->direction));
+            hawk->prey = -1; /* Whatever it was after, it is not that way now. */
+            hawk->passing = 0;
+        }
+        if (hawk->y < 0 || hawk->y > screen.height) {
+            hawk->y = hawk->y < 0 ? 0 : screen.height;
+            hawk->direction = normalized_angle(-sin(hawk->direction), cos(hawk->direction));
+            hawk->prey = -1;
+            hawk->passing = 0;
+        }
+        hawk->frame = direction_frame(hawk->direction);
     }
 }
 
@@ -1217,36 +1353,6 @@ static void wrap_position(bird_t *bird) {
     if (bird->x >= width) bird->x -= width;
     if (bird->y < 0) bird->y += height;
     if (bird->y >= height) bird->y -= height;
-}
-
-/*
- * Turning inertia.
- *
- * A bird that can turn any amount in one frame moves like a particle: the flock
- * comes out as a blob that changes shape instantly. Cap the turn and it banks
- * instead, which gives the flock curved fronts, a leading edge, and the look of
- * something with mass. This is the single change that makes it read as birds
- * rather than as points, which is why the default is eight of twelve rather than
- * the twelve it used to effectively be.
- *
- * Writing is exempt. It already overrules the flocking rules, and a bird that
- * cannot turn sharply cannot land on a letter: it would circle one instead, and
- * the crispness of the letters is the whole point of them.
- */
-static double turn_towards(double from, double to, double most) {
-    double delta = atan2(sin(to - from), cos(to - from));
-    if (delta > most) delta = most;
-    if (delta < -most) delta = -most;
-    double turned = from + delta;
-    if (turned < 0) turned += 2 * M_PI;
-    if (turned >= 2 * M_PI) turned -= 2 * M_PI;
-    return turned;
-}
-
-/* Twelve is instant, zero is a straight line and nothing in between is either. */
-static double turn_limit(void) {
-    if (config.turning_notch >= LEGEND_BAR_CELLS) return 2 * M_PI;
-    return M_PI * config.turning_notch / LEGEND_BAR_CELLS / 2.0;
 }
 
 static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_grid_t *grid) {
@@ -1525,6 +1631,8 @@ static char spell_buffer[256];
 static int requested_perception = DEFAULT_VISION_RADIUS;
 static int requested_seed = -1;
 static int requested_preset = -1;
+static int requested_colour_by = -1;
+static int colour_by_was_asked;
 
 /*
  * A preset is the six notches together, because the interesting settings are
@@ -1605,7 +1713,7 @@ static const option_t OPTIONS[] = {
 
     {'c', "color", "palette", OPTION_ENUM, &config.palette, 0, 0, PALETTE_NAMES, "RAMP",
      "theme, original, ember, ice, acid, paper, matrix", "Look", 1},
-    {0, "color-by", NULL, OPTION_ENUM, &config.colour_by, 0, 0, COLOUR_BY_NAMES, "MODE",
+    {0, "color-by", NULL, OPTION_ENUM, &requested_colour_by, 0, 0, COLOUR_BY_NAMES, "MODE",
      "what picks a shade: heading, density, flock, fixed", "Look", 0},
     {0, "shape", NULL, OPTION_ENUM, &config.shape, 0, 0, SHAPE_NAMES, "NAME",
      "bird, arrow, plane, fish, bat, dot", "Look", 1},
@@ -2006,25 +2114,46 @@ static void blend_sprite(png_image_t *canvas, const png_image_t *sprite, int at_
 
 /* The rotated sprites as pixels, which is what compositing needs and the
  * renderer never does, because Kitty does it. */
-static png_status_t rasterise_sprites(png_image_t frames[ROTATION_FRAMES]) {
-    png_image_t source = {0, 0, NULL}, canvas_sprite = {0, 0, NULL};
-
+/*
+ * Every shade, and the hawks' bigger silhouette after them, laid out exactly as
+ * the image ids are: shade major, then the hawk set. A snapshot that rasterised
+ * one shade and used it for every bird was a picture of a flock that does not
+ * exist, which is what the README's stills and the demo were until now.
+ */
+static png_status_t rasterise_sprites(png_image_t *frames) {
+    png_image_t source = {0, 0, NULL};
     png_status_t status = load_sprite(&source);
     if (status != PNG_OK) return status;
-    int work = config.bird_size * SPRITE_SUPERSAMPLE;
-    if (work > SPRITE_WORK_MAX) work = SPRITE_WORK_MAX;
-    if (work > source.width) work = source.width;
-    status = png_resize(&source, work, work, &canvas_sprite);
-    png_image_free(&source);
-    if (status != PNG_OK) return status;
 
-    for (int i = 0; i < ROTATION_FRAMES && status == PNG_OK; i++) {
-        status = png_rotate_resize(&canvas_sprite, i * FRAME_ANGLE * M_PI / 180.0, config.bird_size,
-                                   config.bird_size, &frames[i]);
-        if (status == PNG_OK) palette_tint(&frames[i], 0);
+    int hawk_size = config.bird_size * 2 > MAX_BIRD_SIZE ? MAX_BIRD_SIZE : config.bird_size * 2;
+    int sets = palette_shades() + 1;
+    for (int set = 0; set < sets && status == PNG_OK; set++) {
+        int hawk = set == palette_shades();
+        int size = hawk ? hawk_size : config.bird_size;
+        png_image_t canvas_sprite = {0, 0, NULL};
+        int work = size * SPRITE_SUPERSAMPLE;
+        if (work > SPRITE_WORK_MAX) work = SPRITE_WORK_MAX;
+        if (work > source.width) work = source.width;
+        status = png_resize(&source, work, work, &canvas_sprite);
+
+        for (int i = 0; i < ROTATION_FRAMES && status == PNG_OK; i++) {
+            png_image_t *frame = &frames[set * ROTATION_FRAMES + i];
+            status = png_rotate_resize(&canvas_sprite, i * FRAME_ANGLE * M_PI / 180.0, size, size,
+                                       frame);
+            if (status != PNG_OK) break;
+            if (hawk)
+                hawk_tint(frame);
+            else
+                palette_tint(frame, set);
+        }
+        png_image_free(&canvas_sprite);
     }
-    png_image_free(&canvas_sprite);
+    png_image_free(&source);
     return status;
+}
+
+static void free_sprites(png_image_t *frames) {
+    for (int i = 0; i < ROTATION_FRAMES * (MAX_PALETTE_SHADES + 1); i++) png_image_free(&frames[i]);
 }
 
 /* The ground, opaque, so a picture looks like the terminal it was taken in
@@ -2038,19 +2167,43 @@ static void fill_ground(png_image_t *canvas) {
     }
 }
 
-static void compose(png_image_t *canvas, const png_image_t frames[ROTATION_FRAMES],
-                    const bird_t *birds) {
+/* The same order the live renderer places in: tails, then the flock, then the
+ * hawks over the top. */
+static void compose(png_image_t *canvas, const png_image_t *frames, const bird_t *birds) {
+    int shades = palette_shades();
     fill_ground(canvas);
+
+    if (config.trails && shades > 1) {
+        for (int i = 0; i < config.birds; i += TRAIL_EVERY)
+            for (int step = 0; step < birds[i].trail_held; step++) {
+                const png_image_t *sprite =
+                    &frames[(shades - 1) * ROTATION_FRAMES + birds[i].frame % ROTATION_FRAMES];
+                if (sprite->pixels != NULL)
+                    blend_sprite(canvas, sprite, (int)birds[i].trail_x[step],
+                                 (int)birds[i].trail_y[step]);
+            }
+    }
     for (int i = 0; i < config.birds; i++) {
-        int frame = birds[i].frame % ROTATION_FRAMES;
-        if (frames[frame].pixels == NULL) continue;
-        blend_sprite(canvas, &frames[frame], (int)birds[i].x, (int)birds[i].y);
+        int shade = birds[i].shade % shades;
+        const png_image_t *sprite =
+            &frames[shade * ROTATION_FRAMES + birds[i].frame % ROTATION_FRAMES];
+        if (sprite->pixels == NULL) continue;
+        blend_sprite(canvas, sprite, (int)birds[i].x, (int)birds[i].y);
+    }
+    for (int i = 0; i < config.hawks; i++) {
+        const png_image_t *sprite =
+            &frames[shades * ROTATION_FRAMES + hawks[i].frame % ROTATION_FRAMES];
+        if (sprite->pixels == NULL) continue;
+        /* Drawn from its middle, because it is twice the size of a bird and a
+         * corner would put it half a bird off where it actually is. */
+        blend_sprite(canvas, sprite, (int)hawks[i].x - sprite->width / 4,
+                     (int)hawks[i].y - sprite->height / 4);
     }
 }
 
 static int write_snapshot(const char *path, const bird_t *birds) {
     png_image_t canvas = {0, 0, NULL};
-    png_image_t frames[ROTATION_FRAMES] = {{0, 0, NULL}};
+    static png_image_t frames[ROTATION_FRAMES * (MAX_PALETTE_SHADES + 1)];
     uint8_t *encoded = NULL;
     size_t encoded_length = 0;
     int written = 0;
@@ -2061,7 +2214,7 @@ static int write_snapshot(const char *path, const bird_t *birds) {
         compose(&canvas, frames, birds);
         status = png_encode(&canvas, &encoded, &encoded_length);
     }
-    for (int i = 0; i < ROTATION_FRAMES; i++) png_image_free(&frames[i]);
+    free_sprites(frames);
     png_image_free(&canvas);
 
     if (status == PNG_OK) {
@@ -2175,7 +2328,15 @@ static void read_options(int argc, char **argv) {
         }
         png_image_free(&probe);
     }
+    if (requested_colour_by >= 0) {
+        config.colour_by = requested_colour_by;
+        colour_by_was_asked = 1;
+    }
     requested_spell = read_spell_text(requested_spell);
+    /* Splitting the flock is pointless if you cannot see the split, so more than
+     * one flock colours by flock unless the colour was asked for explicitly. */
+    if (config.flocks > 1 && config.colour_by == COLOUR_BY_HEADING && !colour_by_was_asked)
+        config.colour_by = COLOUR_BY_FLOCK;
     /* It is raining birds: green, falling, wrapping, with tails. Every part of it
      * is a switch that already existed, which is the whole joke. */
     if (matrix_mode) {
@@ -2244,7 +2405,7 @@ static int record_delay_for(int fps) {
  * handed to the GIF writer.
  */
 static int run_recording(void) {
-    png_image_t frames[ROTATION_FRAMES] = {{0, 0, NULL}};
+    static png_image_t frames[ROTATION_FRAMES * (MAX_PALETTE_SHADES + 1)];
     png_image_t canvas = {0, 0, NULL};
     spatial_grid_t grid;
     gif_writer_t *gif = NULL;
@@ -2314,7 +2475,7 @@ static int run_recording(void) {
 
     gif_status_t closed = gif_close(gif, &bytes, &written);
     if (gif_status == GIF_OK) gif_status = closed;
-    for (int i = 0; i < ROTATION_FRAMES; i++) png_image_free(&frames[i]);
+    free_sprites(frames);
     png_image_free(&canvas);
     spatial_grid_destroy(&grid);
     free(snapshot);
@@ -2431,12 +2592,12 @@ int main(int argc, char **argv) {
                 spatial_grid_status_string(grid_status));
         exit(EXIT_FAILURE);
     }
-    build_rotation_frames(frames, palette_shades(), config.bird_size);
+    build_rotation_frames(frames, palette_shades(), config.bird_size, 0);
     /* A hawk has to read as a bigger bird at a glance, so it gets its own set at
      * twice the size, one shade, uploaded straight after the flock's. */
     build_rotation_frames(
         frames + palette_shades() * ROTATION_FRAMES, 1,
-        config.bird_size * 2 > MAX_BIRD_SIZE ? MAX_BIRD_SIZE : config.bird_size * 2);
+        config.bird_size * 2 > MAX_BIRD_SIZE ? MAX_BIRD_SIZE : config.bird_size * 2, 1);
     hawk_sets_built = 1;
 
     bird_t *birds = calloc((size_t)config.birds, sizeof(*birds));

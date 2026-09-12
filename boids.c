@@ -104,6 +104,10 @@ static const double ALIGNMENT_MAX = NOTCH_CEILING(0.1, DEFAULT_ALIGNMENT_W);
 #define CURSOR_HIDE "\033[?25l"
 #define CURSOR_SHOW "\033[?25h"
 #define SYNC_UPDATE_END "\033[?2026l"
+/* Any event tracking plus SGR coordinates: 1003 reports plain motion as well as
+ * clicks, and 1006 lifts the 223 column ceiling of the original encoding. */
+#define MOUSE_ON "\033[?1003h\033[?1006h"
+#define MOUSE_OFF "\033[?1006l\033[?1003l"
 
 typedef struct {
     double x, y;
@@ -161,6 +165,15 @@ static config_t config = {
 };
 static screen_t screen;
 static int legend_enabled = 1; /* Cleared by --no-legend, never at runtime. */
+static int mouse_enabled = 1;  /* Cleared by --no-mouse, never at runtime. */
+
+/* Where the pointer is, in pixels, and whether it has ever been seen. The
+ * terminal reports cells, so the position is the middle of the cell it names:
+ * that is as precise as the protocol gets. */
+static struct {
+    int present;
+    double x, y;
+} mouse;
 /* Whether the panel is currently on screen. The panel is anchored at the origin
  * and constant in cells, so it never leaves text behind by moving: the only row
  * ever needing an erase is one it occupied before being switched off. Clearing
@@ -191,6 +204,7 @@ static void restore_terminal(void) {
         tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios);
         terminal_is_raw = 0;
     }
+    write_all(MOUSE_OFF, sizeof(MOUSE_OFF) - 1);
     write_all(SYNC_UPDATE_END, sizeof(SYNC_UPDATE_END) - 1);
     write_all(CURSOR_SHOW, sizeof(CURSOR_SHOW) - 1);
     write_all(ALT_SCREEN_OFF, sizeof(ALT_SCREEN_OFF) - 1);
@@ -217,6 +231,7 @@ static int enter_terminal(void) {
     struct termios raw;
     write_all(ALT_SCREEN_ON, sizeof(ALT_SCREEN_ON) - 1);
     write_all(CURSOR_HIDE, sizeof(CURSOR_HIDE) - 1);
+    if (mouse_enabled) write_all(MOUSE_ON, sizeof(MOUSE_ON) - 1);
     if (tcgetattr(STDIN_FILENO, &raw) < 0) return -1;
     saved_termios = raw;
     raw.c_iflag &= (tcflag_t) ~(tcflag_t)(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
@@ -730,23 +745,46 @@ static void apply_notches(void) {
     update_speed();
 }
 
+/* CSI < button ; column ; row M or m, one based, as mode 1006 sends it. */
+static void read_mouse_report(const char *sequence) {
+    int button, column, row;
+    if (sequence[0] != '<') return;
+    if (sscanf(sequence + 1, "%d;%d;%d", &button, &column, &row) != 3) return;
+    if (column < 1 || row < 1) return;
+    mouse.x = (column - 0.5) * screen.cell_width;
+    mouse.y = (row - 0.5) * screen.cell_height;
+    mouse.present = 1;
+}
+
 static int handle_input(void) {
     enum { INPUT_NORMAL, INPUT_ESCAPE, INPUT_SEQUENCE };
     static int input_state = INPUT_NORMAL;
+    static char sequence[32];
+    static size_t sequence_length;
     char input[INPUT_BUFFER_SIZE];
     ssize_t length = read(STDIN_FILENO, input, sizeof(input));
     for (ssize_t i = 0; i < length; i++) {
         unsigned char key = (unsigned char)input[i];
         int *notch = NULL, step = 0;
         if (input_state == INPUT_ESCAPE) {
-            if (key == '[' || key == 'O')
+            if (key == '[' || key == 'O') {
                 input_state = INPUT_SEQUENCE;
-            else if (key != '\033')
+                sequence_length = 0;
+            } else if (key != '\033') {
                 input_state = INPUT_NORMAL;
+            }
             continue;
         }
         if (input_state == INPUT_SEQUENCE) {
-            if (key >= 0x40 && key <= 0x7e) input_state = INPUT_NORMAL;
+            /* A final byte ends the sequence; everything before it is its body.
+             * Anything longer than the buffer is not a report we know. */
+            if (key >= 0x40 && key <= 0x7e) {
+                input_state = INPUT_NORMAL;
+                sequence[sequence_length] = '\0';
+                if (key == 'M' || key == 'm') read_mouse_report(sequence);
+                continue;
+            }
+            if (sequence_length + 1 < sizeof(sequence)) sequence[sequence_length++] = (char)key;
             continue;
         }
         if (key == '\033') {
@@ -845,6 +883,8 @@ static const option_t OPTIONS[] = {
      "frames a second, snapped to a notch (default 60)", "Display"},
     {'l', "legend", OPTION_FLAG, &legend_enabled, 0, 0, NULL, NULL,
      "show the parameter panel, on by default", "Display"},
+    {'m', "mouse", OPTION_FLAG, &mouse_enabled, 0, 0, NULL, NULL,
+     "follow the pointer, on by default", "Interaction"},
 };
 enum { OPTION_COUNT = sizeof(OPTIONS) / sizeof(*OPTIONS) };
 

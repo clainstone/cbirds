@@ -2,13 +2,14 @@ CC        = gcc
 CFLAGS    = -Wall -Wextra -O3 -g
 LDLIBS    = -lm
 TARGET    = cbirds
-SRC       = boids.c kitty_graphics.c png.c spatial_grid.c
-HDR       = kitty_graphics.h png.h spatial_grid.h sprite_png.h
+SRC       = boids.c kitty_graphics.c options.c png.c spatial_grid.c
+HDR       = kitty_graphics.h options.h png.h spatial_grid.h sprite_png.h
 ASSET     = sprite_png.h
 ASSET_SRC = matrix.png
 MKASSET   = mkasset
 TESTDIR   = tests
-TESTS     = $(TESTDIR)/kitty_graphics_test $(TESTDIR)/spatial_grid_test $(TESTDIR)/boids_test
+TESTS     = $(TESTDIR)/kitty_graphics_test $(TESTDIR)/options_test \
+            $(TESTDIR)/spatial_grid_test $(TESTDIR)/boids_test
 
 .PHONY: all clean run asset test
 
@@ -35,11 +36,14 @@ test: $(TESTS)
 $(TESTDIR)/kitty_graphics_test: $(TESTDIR)/kitty_graphics_test.c kitty_graphics.c kitty_graphics.h
 	$(CC) $(CFLAGS) $< kitty_graphics.c -o $@
 
+$(TESTDIR)/options_test: $(TESTDIR)/options_test.c options.c options.h
+	$(CC) $(CFLAGS) $< options.c -o $@
+
 $(TESTDIR)/spatial_grid_test: $(TESTDIR)/spatial_grid_test.c spatial_grid.c spatial_grid.h
 	$(CC) $(CFLAGS) $< spatial_grid.c -o $@ $(LDLIBS)
 
 $(TESTDIR)/boids_test: $(TESTDIR)/boids_test.c $(SRC) $(HDR)
-	$(CC) $(CFLAGS) $< kitty_graphics.c png.c spatial_grid.c -o $@ $(LDLIBS)
+	$(CC) $(CFLAGS) $< kitty_graphics.c options.c png.c spatial_grid.c -o $@ $(LDLIBS)
 
 clean:
 	rm -f $(TARGET) $(MKASSET) $(TESTS) *.o *~

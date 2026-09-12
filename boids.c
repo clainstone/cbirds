@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include "kitty_graphics.h"
+#include "options.h"
 #include "png.h"
 #include "spatial_grid.h"
 #include "sprite_png.h"
@@ -743,73 +744,60 @@ static int wait_for_terminal_io(void) {
     return result < 0 ? -1 : 0;
 }
 
-static void usage(const char *program) {
-    fprintf(stderr,
-            "Usage: %s [-n BIRDS] [-f FPS] [-s SIZE] [--no-legend]\n"
-            "  -n NUMBER    number of boids (default 800, max %d)\n"
-            "  -f FPS       frame rate (default %d, from %d to %d, snapped to a step)\n"
-            "  -s SIZE      bird size in pixels (default %d, from %d to %d)\n"
-            "  --no-legend  hide the parameter panel, the flock keeps the corner\n"
-            "  -h           show this help\n",
-            program, MAX_BIRDS, DEFAULT_FRAME_RATE, MIN_FRAME_RATE, MAX_FRAME_RATE,
-            DEFAULT_BIRD_SIZE, MIN_BIRD_SIZE, MAX_BIRD_SIZE);
+#define CBIRDS_VERSION "1.0.0"
+
+/* The option table: the parser and the help text both come off this, so adding a
+ * switch is one row and never a second place to keep in step. */
+static int requested_frame_rate = DEFAULT_FRAME_RATE;
+
+static const option_t OPTIONS[] = {
+    {'n', "birds", OPTION_INT, &config.birds, 1, MAX_BIRDS, NULL, "COUNT",
+     "how many boids to fly (default 800)", "Flock"},
+    {'s', "size", OPTION_INT, &config.bird_size, MIN_BIRD_SIZE, MAX_BIRD_SIZE, NULL, "PIXELS",
+     "sprite size in pixels (default 15)", "Flock"},
+    {'f', "fps", OPTION_INT, &requested_frame_rate, MIN_FRAME_RATE, MAX_FRAME_RATE, NULL, "RATE",
+     "frames a second, snapped to a notch (default 60)", "Display"},
+    {'l', "legend", OPTION_FLAG, &legend_enabled, 0, 0, NULL, NULL,
+     "show the parameter panel, on by default", "Display"},
+};
+enum { OPTION_COUNT = sizeof(OPTIONS) / sizeof(*OPTIONS) };
+
+static const char *const EXAMPLES[] = {
+    "cbirds                      a flock, and nothing to read",
+    "cbirds -n 2000 -f 120       more of them, faster",
+    "cbirds --no-legend          hide the panel, the flock keeps the corner",
+    NULL,
+};
+
+static void usage(FILE *out, const char *program) {
+    options_usage(out, program, "cbirds \u2014 a flock of birds in your terminal.", EXAMPLES,
+                  OPTIONS, OPTION_COUNT);
 }
 
 static void read_options(int argc, char **argv) {
-    for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
-            usage(argv[0]);
-            exit(EXIT_SUCCESS);
-        }
-        if (!strcmp(argv[i], "--no-legend")) {
-            legend_enabled = 0;
-            continue;
-        }
-        if (strlen(argv[i]) != 2 || argv[i][0] != '-' || !strchr("nfs", argv[i][1])) {
-            fprintf(stderr, "Unknown option: %s\n", argv[i]);
-            usage(argv[0]);
-            exit(EXIT_FAILURE);
-        }
-        char option = argv[i][1];
-        if (++i >= argc) {
-            fprintf(stderr, "Missing value for -%c\n", option);
-            usage(argv[0]);
-            exit(EXIT_FAILURE);
-        }
-        char *end;
-        errno = 0;
-        long value = strtol(argv[i], &end, 10);
-        if (errno == ERANGE || end == argv[i] || *end || value <= 0) {
-            fprintf(stderr, "Invalid value for -%c: %s\n", option, argv[i]);
-            exit(EXIT_FAILURE);
-        }
-        if (option == 'n') {
-            if (value > MAX_BIRDS) {
-                fprintf(stderr, "Birds number capped to %d\n", MAX_BIRDS);
-                value = MAX_BIRDS;
-            }
-            config.birds = (int)value;
-        } else if (option == 'f') {
-            if (value < MIN_FRAME_RATE || value > MAX_FRAME_RATE) {
-                fprintf(stderr, "Frame rate must be between %d and %d\n", MIN_FRAME_RATE,
-                        MAX_FRAME_RATE);
-                exit(EXIT_FAILURE);
-            }
-            /* Snapped to the nearest notch: the notch is the state the keys
-             * move, so a frame rate off that grid could not be one. */
-            config.rate_notch = (int)(((value - MIN_FRAME_RATE) * LEGEND_BAR_CELLS +
-                                       (MAX_FRAME_RATE - MIN_FRAME_RATE) / 2) /
-                                      (MAX_FRAME_RATE - MIN_FRAME_RATE));
-            apply_notches();
-        } else {
-            if (value < MIN_BIRD_SIZE || value > MAX_BIRD_SIZE) {
-                fprintf(stderr, "Bird size must be between %d and %d\n", MIN_BIRD_SIZE,
-                        MAX_BIRD_SIZE);
-                exit(EXIT_FAILURE);
-            }
-            config.bird_size = (int)value;
-        }
+    char error[160];
+    options_status_t status =
+        options_parse(OPTIONS, OPTION_COUNT, argc, argv, error, sizeof(error));
+
+    if (status == OPTIONS_HELP) {
+        usage(stdout, argv[0]);
+        exit(EXIT_SUCCESS);
     }
+    if (status == OPTIONS_VERSION) {
+        printf("cbirds %s\n", CBIRDS_VERSION);
+        exit(EXIT_SUCCESS);
+    }
+    if (status != OPTIONS_OK) {
+        fprintf(stderr, "%s: %s\n", argv[0], error);
+        fprintf(stderr, "Try '%s --help'.\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+    /* The notch is the state the keys move, so a rate off that grid could not be
+     * one: snap what was asked for to the nearest. */
+    config.rate_notch = ((requested_frame_rate - MIN_FRAME_RATE) * LEGEND_BAR_CELLS +
+                         (MAX_FRAME_RATE - MIN_FRAME_RATE) / 2) /
+                        (MAX_FRAME_RATE - MIN_FRAME_RATE);
+    apply_notches();
 }
 
 static long elapsed_microseconds(const struct timespec *start, const struct timespec *end) {

@@ -27,7 +27,19 @@
 #include "sprite_png.h"
 
 enum {
-    ROTATION_FRAMES = 90,
+    /* Sixty rotations, six degrees apart. It was ninety, and at four degrees a
+     * fifteen pixel bird moves less than a pixel between frames; with wing beats
+     * and a second layer there are four times the images to build, and six
+     * degrees is still smoother than any sprite sheet a game ever shipped. */
+    ROTATION_FRAMES = 60,
+    /* Wings out, wings half, wings folded: three pictures, beaten in a cycle of
+     * four so the flap goes out and back. */
+    WING_PHASES = 3,
+    WING_CYCLE = 4,
+    /* Near and far. A far bird is smaller, dimmer and slower, flocks only with
+     * other far birds, and is drawn underneath: two planes, and the parallax
+     * between them is what makes a flat screen read as a sky with depth in it. */
+    LAYERS = 2,
     MAX_PALETTE_SHADES = 8,
     /* Three is as many as a five step ramp can tell apart: at four the two nearest
      * shades are closer to each other than two birds are wide. */
@@ -42,8 +54,8 @@ enum {
     /* Only every sixteenth bird leaves one, because a tail behind all of them is
      * three times the bandwidth for a picture that reads as mud. Fifty comets in
      * a flock of eight hundred is what says "moving" in a still frame. */
-    TRAIL_EVERY = 16,
-    TRAIL_LENGTH = 4,
+    TRAIL_EVERY = 4,
+    TRAIL_LENGTH = 3,
     INTRO_SECONDS = 3,
     /* Four is as many as the sky holds: past that they overlap each other, crowd
      * the flock into the edges and stop reading as separate animals. */
@@ -63,7 +75,7 @@ enum {
     AUTOPILOT_YIELD = 3,  /* Seconds it keeps its hands off after a keypress. */
     OUTRO_FRAMES = 40,
     FRAME_ANGLE = 360 / ROTATION_FRAMES,
-    SPRITE_SUPERSAMPLE = 8,
+    SPRITE_SUPERSAMPLE = 6,
     SPRITE_WORK_MAX = 256,
     MIN_BIRD_SIZE = 4,
     MAX_BIRD_SIZE = 64,
@@ -150,6 +162,27 @@ static const double HAWK_LEAD = 3.0; /* Frames ahead of the prey it aims. */
  * tenth slower than a cruising hawk, so without this the chase never closes and
  * there is no moment to watch. */
 static const double HAWK_DIVE = 90.0;
+/* Wing beats a second, for the birds; a starling manages about eight, and six
+ * reads as effort without reading as panic. A bird glides now and then — wings
+ * out and still for half a second or so — because a flock in which every wing is
+ * always beating looks like a machine. */
+static const double WING_HZ = 6.0;
+static const double GLIDE_CHANCE = 0.06; /* Per beat completed. */
+static const double GLIDE_SECONDS_MIN = 0.4, GLIDE_SECONDS_MAX = 1.2;
+/* How the far layer differs from the near: smaller, slower — the parallax — and
+ * dimmed toward the ground, which is what distance does to colour. */
+static const double FAR_SHARE = 0.35;
+static const double FAR_SIZE = 0.62;
+static const double FAR_PACE = 0.72;
+static const double FAR_DIM = 0.40; /* How far toward the ground its tint goes. */
+/* What a wing at each phase does to the span: seen from above, a beat is the
+ * wings foreshortening, not a new drawing. */
+static const double WING_SPAN[WING_PHASES] = {1.0, 0.72, 0.45};
+static const int WING_SEQUENCE[WING_CYCLE] = {0, 1, 2, 1};
+/* Tails: three ghosts behind every fourth bird, each fainter and a touch smaller
+ * than the last, so a tail is a fade and not a queue. */
+static const double TRAIL_ALPHA[TRAIL_LENGTH] = {0.40, 0.25, 0.12};
+static const double TRAIL_SIZE = 0.85;
 static const double HAWK_DIVE_SPEED = 1.45;
 /* How much of the flee is sideways rather than straight away. Purely radial and
  * the flock bursts like a firework and is gone; with a curl to it the birds peel
@@ -215,6 +248,10 @@ typedef struct {
     int frame;
     int shade; /* Index into the palette, and half of the image id. */
     int flock; /* Which flock it reads: separation ignores this, the rest does not. */
+    int layer; /* Near or far; the two never see each other. */
+    int wing;  /* Where in the beat it is: an index into WING_SEQUENCE. */
+    double wing_clock;
+    int gliding; /* Frames of wings held out and still. */
     double trail_x[TRAIL_LENGTH], trail_y[TRAIL_LENGTH];
     int trail_at, trail_held;
 } bird_t;
@@ -294,6 +331,8 @@ typedef enum {
 static const char *const RENDER_NAMES[] = {"auto",    "kitty",    "sixel",  "iterm",
                                            "braille", "sextants", "blocks", NULL};
 static int render_mode = RENDER_AUTO;
+/* --flat: one plane, every bird the same size. The default is two. */
+static int flat_look;
 
 static int drawing_with_text(void) {
     return render_mode == RENDER_BRAILLE || render_mode == RENDER_SEXTANTS ||
@@ -920,86 +959,26 @@ static png_status_t load_sprite(png_image_t *out) {
     return png_decode(sprite_png, sprite_png_len, out);
 }
 
-/* Kitty has no per placement tint, so a colour is a second set of images. The
- * rotation is the expensive half and it does not depend on the colour, so each
- * angle is rotated once and then tinted and encoded per shade: the second shade
- * costs a few hundred microseconds, not another fifty milliseconds. */
-static void build_rotation_frames(image_frame_t *frames, int shades, int size, int hawk) {
-    png_image_t source = {0, 0, NULL}, canvas = {0, 0, NULL};
-    png_status_t status = load_sprite(&source);
-    if (status != PNG_OK) {
-        fprintf(stderr, "cbirds: cannot read the sprite: %s\n", png_status_string(status));
-        exit(EXIT_FAILURE);
-    }
-    int canvas_size = size * SPRITE_SUPERSAMPLE;
-    if (canvas_size > SPRITE_WORK_MAX) canvas_size = SPRITE_WORK_MAX;
-    if (canvas_size > source.width) canvas_size = source.width;
-    status = png_resize(&source, canvas_size, canvas_size, &canvas);
-    png_image_free(&source);
-    if (status != PNG_OK) {
-        fprintf(stderr, "Cannot scale the embedded sprite: %s\n", png_status_string(status));
-        exit(EXIT_FAILURE);
-    }
-    for (int i = 0; i < ROTATION_FRAMES; i++) {
-        png_image_t frame = {0, 0, NULL};
-        double radians = i * FRAME_ANGLE * M_PI / 180.0;
-        status = png_rotate_resize(&canvas, radians, size, size, &frame);
-        for (int shade = 0; status == PNG_OK && shade < shades; shade++) {
-            png_image_t tinted = {0, 0, NULL};
-            uint8_t *encoded = NULL;
-            size_t encoded_length = 0;
-            status = png_image_alloc(&tinted, frame.width, frame.height);
-            if (status == PNG_OK) {
-                memcpy(tinted.pixels, frame.pixels, (size_t)frame.width * (size_t)frame.height * 4);
-                if (hawk)
-                    hawk_tint(&tinted);
-                else
-                    palette_tint(&tinted, shade);
-                status = png_encode(&tinted, &encoded, &encoded_length);
-            }
-            png_image_free(&tinted);
-            if (status != PNG_OK) break;
-            frames[shade * ROTATION_FRAMES + i].data = encoded;
-            frames[shade * ROTATION_FRAMES + i].length = encoded_length;
-        }
-        png_image_free(&frame);
-        if (status != PNG_OK) {
-            fprintf(stderr, "Cannot build the rotation frames: %s\n", png_status_string(status));
-            exit(EXIT_FAILURE);
-        }
-    }
-    png_image_free(&canvas);
-}
+static int sprite_set_count(void);
 
-/* Image ids run shade major: shade * ROTATION_FRAMES + frame + 1, so a bird's
- * image is a multiply and an add away from its heading and its shade. */
-static uint32_t sprite_image_id(int shade, int frame) {
-    return (uint32_t)(shade * ROTATION_FRAMES + frame) + 1;
-}
-
-/* The hawks' own set, uploaded after the flock's, so one arithmetic rule covers
- * every placement the program makes. */
-static uint32_t hawk_image_id(int frame) {
-    return (uint32_t)(palette_shades() * ROTATION_FRAMES + frame) + 1;
-}
-
-static kitty_graphics_status_t upload_rotation_frames(kitty_graphics_t *graphics,
-                                                      const image_frame_t *frames, int shades) {
-    for (int i = 0; i < ROTATION_FRAMES * shades; i++) {
+/* Kitty draws only what has been uploaded, so every set is encoded to PNG and
+ * sent before the first frame. The images are the very ones the other renderers
+ * read pixels from; nothing is built twice. */
+static kitty_graphics_status_t upload_sprite_sets(kitty_graphics_t *graphics,
+                                                  const png_image_t *frames) {
+    int images = sprite_set_count() * ROTATION_FRAMES;
+    for (int i = 0; i < images; i++) {
+        if (frames[i].pixels == NULL) continue;
+        uint8_t *encoded = NULL;
+        size_t length = 0;
+        if (png_encode(&frames[i], &encoded, &length) != PNG_OK) return KITTY_GRAPHICS_ERR_MEMORY;
         kitty_graphics_status_t status =
-            kitty_graphics_upload_png(graphics, (uint32_t)i + 1, frames[i].data, frames[i].length);
+            kitty_graphics_upload_png(graphics, (uint32_t)i + 1, encoded, length);
+        free(encoded);
         if (status != KITTY_GRAPHICS_OK) return status;
     }
     kitty_graphics_status_t status = kitty_graphics_delete_all_placements(graphics);
     return status == KITTY_GRAPHICS_OK ? kitty_graphics_flush(graphics) : status;
-}
-
-static void free_rotation_frames(image_frame_t *frames, int shades) {
-    for (int i = 0; i < ROTATION_FRAMES * shades; i++) {
-        free(frames[i].data);
-        frames[i].data = NULL;
-        frames[i].length = 0;
-    }
 }
 
 static double random_unit(void) {
@@ -1213,11 +1192,53 @@ typedef struct {
     int prey;       /* Index of the bird it is chasing, negative for none. */
     int commitment; /* Frames left before it is allowed to change its mind. */
     int passing;    /* Frames left of a straight run out of the flock. */
+    int wing;       /* A hawk soars, wings out, and beats them only in the dive. */
+    double wing_clock;
 } hawk_t;
 
 static hawk_t hawks[MAX_HAWKS];
 /* The hawks' images always go up, so k can summon one at any time. */
 static int hawk_sets_built;
+
+/*
+ * The catalogue of sprite sets. One set is ROTATION_FRAMES images of one thing:
+ * a near bird of one shade at one wing phase; a far bird of one shade, wings out
+ * (it is too small to be seen flapping); a hawk at one wing phase; a ghost of a
+ * tail at one step of fading. Every renderer indexes the same catalogue, and a
+ * Kitty image id is the set's position times ROTATION_FRAMES plus the frame,
+ * plus one, because zero is not an id.
+ */
+enum { MAX_SPRITE_SETS = MAX_PALETTE_SHADES * (WING_PHASES + 1) + WING_PHASES + TRAIL_LENGTH };
+
+static int flock_set(int shade, int wing, int layer) {
+    if (layer > 0) return palette_shades() * WING_PHASES + shade;
+    return shade * WING_PHASES + wing;
+}
+
+static int hawk_set(int wing) {
+    return palette_shades() * (WING_PHASES + 1) + wing;
+}
+
+static int trail_set(int step) {
+    return palette_shades() * (WING_PHASES + 1) + WING_PHASES + step;
+}
+
+static int sprite_set_count(void) {
+    return trail_set(TRAIL_LENGTH);
+}
+
+static uint32_t set_image_id(int set, int frame) {
+    return (uint32_t)(set * ROTATION_FRAMES + frame) + 1;
+}
+
+static uint32_t sprite_image_id(const bird_t *bird) {
+    return set_image_id(flock_set(bird->shade, WING_SEQUENCE[bird->wing % WING_CYCLE], bird->layer),
+                        bird->frame);
+}
+
+static uint32_t hawk_image_id(const hawk_t *hawk) {
+    return set_image_id(hawk_set(WING_SEQUENCE[hawk->wing % WING_CYCLE]), hawk->frame);
+}
 
 /* One hawk, so that summoning one with k leaves the hawks already hunting exactly
  * where they are instead of teleporting the lot of them. */
@@ -1229,6 +1250,8 @@ static void place_one_hawk(int i) {
     hawks[i].prey = -1;
     hawks[i].commitment = 0;
     hawks[i].passing = 0;
+    hawks[i].wing = 0;
+    hawks[i].wing_clock = 0;
 }
 
 static void place_hawks(void) {
@@ -1246,6 +1269,7 @@ static int nearest_bird(const bird_t *birds, double x, double y, int self, int u
     double best_distance = 0;
     double floor_squared = no_nearer_than * no_nearer_than;
     for (int b = 0; b < config.birds; b++) {
+        if (birds[b].layer > 0) continue; /* The hawk hunts its own sky. */
         if (unclaimed) {
             int taken = 0;
             for (int h = 0; h < config.hawks && !taken; h++)
@@ -1459,6 +1483,16 @@ static void hunt(const bird_t *birds) {
             const bird_t *prey = &birds[hawk->prey];
             double gap = distance_to_bird(birds, hawk, hawk->prey);
             if (gap < HAWK_DIVE) pace = HAWK_DIVE_SPEED;
+            /* It soars until the dive, and then it beats. */
+            if (gap < HAWK_DIVE || hawk->passing > 0) {
+                hawk->wing_clock += WING_HZ * WING_CYCLE / config.frame_rate;
+                while (hawk->wing_clock >= 1.0) {
+                    hawk->wing_clock -= 1.0;
+                    hawk->wing = (hawk->wing + 1) % WING_CYCLE;
+                }
+            } else {
+                hawk->wing = 0;
+            }
             /* Aim where the bird will be when the hawk gets there, not a fixed
              * distance ahead: close in, that is almost no lead at all, and a fixed
              * one had it cutting across in front of the bird and out the far side,
@@ -1527,6 +1561,7 @@ static double hawk_reach(void) {
  * which is the shape worth recording. */
 static vector_t hawk_vector(const bird_t *bird) {
     vector_t force = {0, 0};
+    if (bird->layer > 0) return force; /* Another sky; nothing to fear. */
     for (int i = 0; i < config.hawks; i++) {
         double reach = hawk_reach();
         double dx = bird->x - hawks[i].x, dy = bird->y - hawks[i].y;
@@ -1615,6 +1650,12 @@ static void place_one_bird(bird_t *bird, int index) {
     }
     bird->direction = 2 * M_PI * random_unit();
     bird->frame = direction_frame(bird->direction);
+    /* A plane of its own, and a place in the beat of its own, or every wing in
+     * the sky would go up and down together. */
+    bird->layer = !flat_look && random_unit() < FAR_SHARE ? 1 : 0;
+    bird->wing = (int)(random_unit() * WING_CYCLE) % WING_CYCLE;
+    bird->wing_clock = random_unit();
+    bird->gliding = 0;
     /* When there is more than one flock the palette follows them: a colour per
      * flock is what makes two of them legible as two. */
     bird->shade = config.flocks > 1 ? shade_for_flock(bird->flock)
@@ -1838,6 +1879,8 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
                 const bird_t *other = &birds[i];
                 double dx = target->x - other->x, dy = target->y - other->y;
                 if (dx * dx + dy * dy >= config.vision_radius_squared) continue;
+                /* The far layer is another sky: a bird sees nothing in the other. */
+                if (other->layer != target->layer) continue;
                 /* Separation is physical and applies to every bird in reach.
                  * Alignment and cohesion are social, and a bird only reads its
                  * own flock: two flocks pass through each other, swirl, and
@@ -1922,6 +1965,26 @@ static void wrap_position(bird_t *bird) {
     if (bird->y >= height) bird->y -= height;
 }
 
+/* One frame of wing: the clock runs at WING_HZ beats a second whatever the frame
+ * rate, and a bird that has just finished a beat sometimes stops to glide. */
+static void beat_wings(bird_t *bird) {
+    if (bird->gliding > 0) {
+        bird->gliding--;
+        bird->wing = 0;
+        return;
+    }
+    bird->wing_clock += WING_HZ * WING_CYCLE / config.frame_rate;
+    while (bird->wing_clock >= 1.0) {
+        bird->wing_clock -= 1.0;
+        bird->wing = (bird->wing + 1) % WING_CYCLE;
+        if (bird->wing == 0 && random_unit() < GLIDE_CHANCE) {
+            double seconds =
+                GLIDE_SECONDS_MIN + (GLIDE_SECONDS_MAX - GLIDE_SECONDS_MIN) * random_unit();
+            bird->gliding = (int)(seconds * config.frame_rate);
+        }
+    }
+}
+
 static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_grid_t *grid) {
     measure_flocks(snapshot);
     for (int i = 0; i < config.birds; i++) {
@@ -1939,6 +2002,7 @@ static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_gr
         /* Never past the target: the last step is the distance left, which is
          * what makes a letter crisp instead of a cloud orbiting one. */
         double step = config.speed * flock_pace(snapshot[i].flock);
+        if (snapshot[i].layer > 0) step *= FAR_PACE; /* Further away moves slower: parallax. */
         double want_x, want_y;
         if (spell_target_of(i, &want_x, &want_y)) {
             double dx = want_x - birds[i].x, dy = want_y - birds[i].y;
@@ -1949,6 +2013,7 @@ static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_gr
         birds[i].y += step * sin(direction);
         if (the_rain_is_falling) wrap_position(&birds[i]);
         birds[i].shade = shade_for(&birds[i]);
+        beat_wings(&birds[i]);
         if (config.trails && i % TRAIL_EVERY == 0) {
             /* Where it was, not where it is: a tail behind, never under. */
             birds[i].trail_x[birds[i].trail_at] = snapshot[i].x;
@@ -1969,13 +2034,13 @@ static int bird_placement(const bird_t *bird, kitty_graphics_placement_t *placem
     if (column >= screen.cols || row >= screen.rows) return 0;
 
     *placement = (kitty_graphics_placement_t){
-        .image_id = sprite_image_id(bird->shade, bird->frame),
+        .image_id = sprite_image_id(bird),
         .placement_id = 0,
         .row = row,
         .column = column,
         .x_offset = pixel_x % screen.cell_width,
         .y_offset = pixel_y % screen.cell_height,
-        .z_index = 0,
+        .z_index = bird->layer > 0 ? -1 : 0, /* The far layer underneath. */
     };
     return 1;
 }
@@ -2121,26 +2186,33 @@ static kitty_graphics_status_t queue_render_frame(kitty_graphics_t *graphics, co
     if (drawing_a_picture_a_frame()) return queue_picture_frame(graphics, birds);
     kitty_graphics_status_t status = kitty_graphics_begin_synchronized_update(graphics);
     if (status == KITTY_GRAPHICS_OK) status = kitty_graphics_delete_all_placements(graphics);
-    if (config.trails && palette_shades() > 1) {
-        int faint = palette_shades() - 1; /* The far end of the ramp. */
-        for (int i = 0; status == KITTY_GRAPHICS_OK; i += TRAIL_EVERY) {
-            if (i >= config.birds) break;
-            for (int step = 0; step < birds[i].trail_held; step++) {
-                bird_t ghost = birds[i];
-                ghost.x = birds[i].trail_x[step];
-                ghost.y = birds[i].trail_y[step];
-                ghost.shade = faint;
-                kitty_graphics_placement_t placement;
-                if (bird_placement(&ghost, &placement))
-                    status = kitty_graphics_place(graphics, &placement);
-                if (status != KITTY_GRAPHICS_OK) break;
+    /* Far birds first and underneath, then the tails, the near birds, the hawks. */
+    for (int layer = LAYERS - 1; layer >= 0 && status == KITTY_GRAPHICS_OK; layer--) {
+        if (layer == 0 && config.trails) {
+            for (int i = 0; status == KITTY_GRAPHICS_OK && i < config.birds; i += TRAIL_EVERY) {
+                if (birds[i].layer != 0) continue;
+                for (int step = 0; step < birds[i].trail_held && status == KITTY_GRAPHICS_OK;
+                     step++) {
+                    /* The newest ghost is the strongest: steps count back from the
+                     * write position, oldest first in the ring. */
+                    int age = (birds[i].trail_at - 1 - step + TRAIL_LENGTH) % TRAIL_LENGTH;
+                    bird_t ghost = birds[i];
+                    ghost.x = birds[i].trail_x[age];
+                    ghost.y = birds[i].trail_y[age];
+                    kitty_graphics_placement_t placement;
+                    if (bird_placement(&ghost, &placement)) {
+                        placement.image_id = set_image_id(trail_set(step), ghost.frame);
+                        status = kitty_graphics_place(graphics, &placement);
+                    }
+                }
             }
         }
-    }
-    for (int i = 0; status == KITTY_GRAPHICS_OK && i < config.birds; i++) {
-        kitty_graphics_placement_t placement;
-        if (bird_placement(&birds[i], &placement))
-            status = kitty_graphics_place(graphics, &placement);
+        for (int i = 0; status == KITTY_GRAPHICS_OK && i < config.birds; i++) {
+            if (birds[i].layer != layer) continue;
+            kitty_graphics_placement_t placement;
+            if (bird_placement(&birds[i], &placement))
+                status = kitty_graphics_place(graphics, &placement);
+        }
     }
     for (int i = 0; status == KITTY_GRAPHICS_OK && i < config.hawks; i++) {
         bird_t as_bird = {.x = hawks[i].x - hawk_draw_offset(),
@@ -2148,7 +2220,7 @@ static kitty_graphics_status_t queue_render_frame(kitty_graphics_t *graphics, co
                           .frame = hawks[i].frame};
         kitty_graphics_placement_t placement;
         if (bird_placement(&as_bird, &placement)) {
-            placement.image_id = hawk_image_id(hawks[i].frame);
+            placement.image_id = hawk_image_id(&hawks[i]);
             status = kitty_graphics_place(graphics, &placement);
         }
     }
@@ -2165,7 +2237,7 @@ static png_status_t rasterise_sprites(png_image_t *frames);
 static void compose_onto(png_image_t *canvas, const png_image_t *frames, const bird_t *birds,
                          int with_ground);
 
-static png_image_t text_sprites[ROTATION_FRAMES * (MAX_PALETTE_SHADES + 1)];
+static png_image_t text_sprites[ROTATION_FRAMES * MAX_SPRITE_SETS];
 static png_image_t text_canvas;
 static cells_t text_cells;
 static int text_legend_was_drawn;
@@ -2479,6 +2551,8 @@ static const option_t OPTIONS[] = {
      "a PNG of your own, kept in its own colours", "Look", 0},
     {'e', "trails", NULL, OPTION_FLAG, &config.trails, 0, 0, NULL, NULL,
      "faint tails behind the flock", "Look", 0},
+    {0, "flat", NULL, OPTION_FLAG, &flat_look, 0, 0, NULL, NULL,
+     "one plane of birds, none further away", "Look", 0},
     {'l', "no-panel", "no-legend", OPTION_OFF, &legend_enabled, 0, 0, NULL, NULL,
      "hide the sliders in the corner", "Look", 1},
 
@@ -2878,40 +2952,143 @@ static void blend_sprite(png_image_t *canvas, const png_image_t *sprite, int at_
  * one shade and used it for every bird was a picture of a flock that does not
  * exist, which is what the README's stills and the demo were until now.
  */
+/* A wing beat, seen from above, is the span foreshortening: the sprite is
+ * squashed across the axis of flight and set back in the middle of its square. */
+static png_status_t squash_wings(const png_image_t *square, double span, png_image_t *out) {
+    int height = (int)(square->height * span + 0.5);
+    if (height < 1) height = 1;
+    png_image_t narrow = {0, 0, NULL};
+    png_status_t status = png_resize(square, square->width, height, &narrow);
+    if (status == PNG_OK) status = png_image_alloc(out, square->width, square->height);
+    if (status == PNG_OK) {
+        int top = (square->height - height) / 2;
+        for (int y = 0; y < height; y++)
+            memcpy(out->pixels + ((size_t)(top + y) * (size_t)out->width) * 4,
+                   narrow.pixels + (size_t)y * (size_t)narrow.width * 4, (size_t)narrow.width * 4);
+    }
+    png_image_free(&narrow);
+    return status;
+}
+
+static void fade_alpha(png_image_t *image, double factor) {
+    size_t count = (size_t)image->width * (size_t)image->height;
+    for (size_t i = 0; i < count; i++)
+        image->pixels[i * 4 + 3] = (uint8_t)(image->pixels[i * 4 + 3] * factor + 0.5);
+}
+
+/* A far bird's tint: the shade's own, pulled toward the ground. */
+static void far_tint(png_image_t *image, int shade) {
+    const palette_t *chosen = palette();
+    if (sprite_path != NULL || chosen->tints == NULL) {
+        /* Artwork of somebody's own keeps its colours and is only dimmed. */
+        png_tint(image, 150, 150, 150, PNG_TINT_MULTIPLY);
+        return;
+    }
+    if (shade >= chosen->shades) shade = chosen->shades - 1;
+    uint8_t rgb[3];
+    for (int c = 0; c < 3; c++)
+        rgb[c] = (uint8_t)(chosen->tints[shade][c] +
+                           (PICTURE_GROUND[c] - chosen->tints[shade][c]) * FAR_DIM + 0.5);
+    png_tint(image, rgb[0], rgb[1], rgb[2], chosen->mode);
+}
+
+/* One geometry — a size and a wing span — rotated once per frame, and every set
+ * that shares it copied and tinted from that. Rotation is the expensive half and
+ * does not depend on the colour. */
+typedef void (*tint_fn)(png_image_t *image, int argument);
+
+static void tint_flock(png_image_t *image, int shade) {
+    palette_tint(image, shade);
+}
+static void tint_hawk(png_image_t *image, int unused) {
+    (void)unused;
+    hawk_tint(image);
+}
+static void tint_trail(png_image_t *image, int step) {
+    palette_tint(image, palette_shades() / 2);
+    fade_alpha(image, TRAIL_ALPHA[step]);
+}
+
+static png_status_t rasterise_geometry(const png_image_t *source, png_image_t *frames, int size,
+                                       double span, const int *sets, const int *arguments,
+                                       int count, tint_fn tint) {
+    png_image_t square = {0, 0, NULL}, squashed = {0, 0, NULL};
+    int work = size * SPRITE_SUPERSAMPLE;
+    if (work > SPRITE_WORK_MAX) work = SPRITE_WORK_MAX;
+    if (work > source->width) work = source->width;
+    png_status_t status = png_resize(source, work, work, &square);
+    if (status == PNG_OK && span < 1.0) {
+        status = squash_wings(&square, span, &squashed);
+        png_image_free(&square);
+        square = squashed;
+    }
+    for (int i = 0; i < ROTATION_FRAMES && status == PNG_OK; i++) {
+        png_image_t base = {0, 0, NULL};
+        status = png_rotate_resize(&square, i * FRAME_ANGLE * M_PI / 180.0, size, size, &base);
+        for (int k = 0; k < count && status == PNG_OK; k++) {
+            png_image_t *frame = &frames[sets[k] * ROTATION_FRAMES + i];
+            status = png_image_alloc(frame, base.width, base.height);
+            if (status != PNG_OK) break;
+            memcpy(frame->pixels, base.pixels, (size_t)base.width * (size_t)base.height * 4);
+            tint(frame, arguments[k]);
+        }
+        png_image_free(&base);
+    }
+    png_image_free(&square);
+    return status;
+}
+
 static png_status_t rasterise_sprites(png_image_t *frames) {
     png_image_t source = {0, 0, NULL};
     png_status_t status = load_sprite(&source);
     if (status != PNG_OK) return status;
+    int shades = palette_shades();
+    int sets[MAX_PALETTE_SHADES], arguments[MAX_PALETTE_SHADES];
 
-    int hawk_size = hawk_sprite_size();
-    int sets = palette_shades() + 1;
-    for (int set = 0; set < sets && status == PNG_OK; set++) {
-        int hawk = set == palette_shades();
-        int size = hawk ? hawk_size : config.bird_size;
-        png_image_t canvas_sprite = {0, 0, NULL};
-        int work = size * SPRITE_SUPERSAMPLE;
-        if (work > SPRITE_WORK_MAX) work = SPRITE_WORK_MAX;
-        if (work > source.width) work = source.width;
-        status = png_resize(&source, work, work, &canvas_sprite);
-
-        for (int i = 0; i < ROTATION_FRAMES && status == PNG_OK; i++) {
-            png_image_t *frame = &frames[set * ROTATION_FRAMES + i];
-            status = png_rotate_resize(&canvas_sprite, i * FRAME_ANGLE * M_PI / 180.0, size, size,
-                                       frame);
-            if (status != PNG_OK) break;
-            if (hawk)
-                hawk_tint(frame);
-            else
-                palette_tint(frame, set);
+    /* Near birds: one geometry a wing phase, every shade off each. */
+    for (int wing = 0; wing < WING_PHASES && status == PNG_OK; wing++) {
+        for (int shade = 0; shade < shades; shade++) {
+            sets[shade] = flock_set(shade, wing, 0);
+            arguments[shade] = shade;
         }
-        png_image_free(&canvas_sprite);
+        status = rasterise_geometry(&source, frames, config.bird_size, WING_SPAN[wing], sets,
+                                    arguments, shades, tint_flock);
+    }
+    /* Far birds: smaller, wings out, dimmed. */
+    if (status == PNG_OK) {
+        int far_size = (int)(config.bird_size * FAR_SIZE + 0.5);
+        if (far_size < MIN_BIRD_SIZE) far_size = MIN_BIRD_SIZE;
+        for (int shade = 0; shade < shades; shade++) {
+            sets[shade] = flock_set(shade, 0, 1);
+            arguments[shade] = shade;
+        }
+        status =
+            rasterise_geometry(&source, frames, far_size, 1.0, sets, arguments, shades, far_tint);
+    }
+    /* Hawks, at twice the size, at each wing phase. */
+    for (int wing = 0; wing < WING_PHASES && status == PNG_OK; wing++) {
+        int set = hawk_set(wing), argument = 0;
+        status = rasterise_geometry(&source, frames, hawk_sprite_size(), WING_SPAN[wing], &set,
+                                    &argument, 1, tint_hawk);
+    }
+    /* Tails: one geometry, a set a step of fading. */
+    if (status == PNG_OK) {
+        int trail_size = (int)(config.bird_size * TRAIL_SIZE + 0.5);
+        if (trail_size < MIN_BIRD_SIZE) trail_size = MIN_BIRD_SIZE;
+        int trail_sets[TRAIL_LENGTH], steps[TRAIL_LENGTH];
+        for (int step = 0; step < TRAIL_LENGTH; step++) {
+            trail_sets[step] = trail_set(step);
+            steps[step] = step;
+        }
+        status = rasterise_geometry(&source, frames, trail_size, 1.0, trail_sets, steps,
+                                    TRAIL_LENGTH, tint_trail);
     }
     png_image_free(&source);
     return status;
 }
 
 static void free_sprites(png_image_t *frames) {
-    for (int i = 0; i < ROTATION_FRAMES * (MAX_PALETTE_SHADES + 1); i++) png_image_free(&frames[i]);
+    for (int i = 0; i < ROTATION_FRAMES * MAX_SPRITE_SETS; i++) png_image_free(&frames[i]);
 }
 
 /* The ground, opaque, so a picture looks like the terminal it was taken in
@@ -2936,26 +3113,34 @@ static void compose_onto(png_image_t *canvas, const png_image_t *frames, const b
     else
         memset(canvas->pixels, 0, (size_t)canvas->width * (size_t)canvas->height * 4);
 
-    if (config.trails && shades > 1) {
-        for (int i = 0; i < config.birds; i += TRAIL_EVERY)
-            for (int step = 0; step < birds[i].trail_held; step++) {
-                const png_image_t *sprite =
-                    &frames[(shades - 1) * ROTATION_FRAMES + birds[i].frame % ROTATION_FRAMES];
-                if (sprite->pixels != NULL)
-                    blend_sprite(canvas, sprite, (int)birds[i].trail_x[step],
-                                 (int)birds[i].trail_y[step], with_ground);
+    for (int layer = LAYERS - 1; layer >= 0; layer--) {
+        if (layer == 0 && config.trails) {
+            for (int i = 0; i < config.birds; i += TRAIL_EVERY) {
+                if (birds[i].layer != 0) continue;
+                for (int step = 0; step < birds[i].trail_held; step++) {
+                    int age = (birds[i].trail_at - 1 - step + TRAIL_LENGTH) % TRAIL_LENGTH;
+                    const png_image_t *sprite = &frames[trail_set(step) * ROTATION_FRAMES +
+                                                        birds[i].frame % ROTATION_FRAMES];
+                    if (sprite->pixels != NULL)
+                        blend_sprite(canvas, sprite, (int)birds[i].trail_x[age],
+                                     (int)birds[i].trail_y[age], with_ground);
+                }
             }
-    }
-    for (int i = 0; i < config.birds; i++) {
-        int shade = birds[i].shade % shades;
-        const png_image_t *sprite =
-            &frames[shade * ROTATION_FRAMES + birds[i].frame % ROTATION_FRAMES];
-        if (sprite->pixels == NULL) continue;
-        blend_sprite(canvas, sprite, (int)birds[i].x, (int)birds[i].y, with_ground);
+        }
+        for (int i = 0; i < config.birds; i++) {
+            if (birds[i].layer != layer) continue;
+            int set = flock_set(birds[i].shade % shades, WING_SEQUENCE[birds[i].wing % WING_CYCLE],
+                                birds[i].layer);
+            const png_image_t *sprite =
+                &frames[set * ROTATION_FRAMES + birds[i].frame % ROTATION_FRAMES];
+            if (sprite->pixels == NULL) continue;
+            blend_sprite(canvas, sprite, (int)birds[i].x, (int)birds[i].y, with_ground);
+        }
     }
     for (int i = 0; i < config.hawks; i++) {
+        int set = hawk_set(WING_SEQUENCE[hawks[i].wing % WING_CYCLE]);
         const png_image_t *sprite =
-            &frames[shades * ROTATION_FRAMES + hawks[i].frame % ROTATION_FRAMES];
+            &frames[set * ROTATION_FRAMES + hawks[i].frame % ROTATION_FRAMES];
         if (sprite->pixels == NULL) continue;
         blend_sprite(canvas, sprite, (int)hawks[i].x - hawk_draw_offset(),
                      (int)hawks[i].y - hawk_draw_offset(), with_ground);
@@ -2968,7 +3153,7 @@ static void compose_onto(png_image_t *canvas, const png_image_t *frames, const b
  * would be a picture of something nobody saw. */
 static int write_snapshot(const char *path, const bird_t *birds) {
     png_image_t canvas = {0, 0, NULL};
-    static png_image_t frames[ROTATION_FRAMES * (MAX_PALETTE_SHADES + 1)];
+    static png_image_t frames[ROTATION_FRAMES * MAX_SPRITE_SETS];
     uint8_t *encoded = NULL;
     size_t encoded_length = 0;
     int written = 0;
@@ -3314,7 +3499,7 @@ static int run_cast_recording(void) {
 }
 
 static int run_recording(void) {
-    static png_image_t frames[ROTATION_FRAMES * (MAX_PALETTE_SHADES + 1)];
+    static png_image_t frames[ROTATION_FRAMES * MAX_SPRITE_SETS];
     png_image_t canvas = {0, 0, NULL};
     spatial_grid_t grid;
     gif_writer_t *gif = NULL;
@@ -3477,7 +3662,6 @@ static int run_benchmark(void) {
 }
 
 int main(int argc, char **argv) {
-    image_frame_t frames[ROTATION_FRAMES * (MAX_PALETTE_SHADES + 1)] = {0};
     kitty_graphics_t graphics;
     spatial_grid_t grid;
     struct timespec frame_start, frame_end;
@@ -3525,8 +3709,10 @@ int main(int argc, char **argv) {
                 spatial_grid_status_string(grid_status));
         exit(EXIT_FAILURE);
     }
+    /* The sprites, once, as pixels: the text renderers read them back as cells
+     * every frame, the picture renderers composite them, and Kitty is sent them
+     * encoded and then places them by id. */
     if (drawing_with_text()) {
-        /* The sprites stay pixels, to be read back as cells every frame. */
         if (!prepare_text_renderer()) {
             fprintf(stderr, "%s: cannot build the sprites to draw with\n", program_name);
             exit(EXIT_FAILURE);
@@ -3541,12 +3727,9 @@ int main(int argc, char **argv) {
          * moves the cursor nowhere, which is the one thing a full screen animation
          * needs a sixel terminal to do. */
         if (render_mode == RENDER_SIXEL) write_all("\033[?80h", 6);
-    } else {
-        build_rotation_frames(frames, palette_shades(), config.bird_size, 0);
-        /* A hawk has to read as a bigger bird at a glance, so it gets its own set
-         * at twice the size, one shade, uploaded straight after the flock's. */
-        build_rotation_frames(frames + palette_shades() * ROTATION_FRAMES, 1, hawk_sprite_size(),
-                              1);
+    } else if (rasterise_sprites(text_sprites) != PNG_OK) {
+        fprintf(stderr, "%s: cannot build the sprites to draw with\n", program_name);
+        exit(EXIT_FAILURE);
     }
     hawk_sets_built = 1;
 
@@ -3576,9 +3759,8 @@ int main(int argc, char **argv) {
         spell.until = INTRO_SECONDS;
     }
     if (render_mode == RENDER_KITTY) {
-        int sprite_sets = palette_shades() + 1;
-        graphics_status = upload_rotation_frames(&graphics, frames, sprite_sets);
-        free_rotation_frames(frames, sprite_sets);
+        graphics_status = upload_sprite_sets(&graphics, text_sprites);
+        free_sprites(text_sprites);
         if (graphics_status != KITTY_GRAPHICS_OK) {
             fprintf(stderr, "Cannot upload Kitty graphics: %s\n",
                     kitty_graphics_status_string(graphics_status));

@@ -56,7 +56,7 @@ cbirds --color ember      # or pick a ramp
 cbirds --preset murmuration --trails    # the starling look, with tails
 cbirds --turning 2                      # long, lazy banking turns
 cbirds --hawks 2                        # give the clip a story
-cbirds --flocks 3 --color ice           # three flocks that will not merge
+cbirds --flocks 3 --color ice           # three flocks, each keeping to its own
 cbirds --clock                          # the flock is the time
 cbirds --screensaver                    # for a terminal left open
 cbirds --matrix                         # it is raining birds
@@ -65,13 +65,19 @@ cbirds --shape fish --wrap              # or a school, off one edge and onto the
 
 <table>
 <tr>
-<td width="33%"><img src="docs/murmuration.png" alt="A murmuration"></td>
-<td width="33%"><img src="docs/hawks.png" alt="Two hawks scattering the flock"></td>
-<td width="33%"><img src="docs/matrix.png" alt="Matrix rain, as birds"></td>
+<td width="50%"><img src="docs/murmuration.png" alt="A murmuration"></td>
+<td width="50%"><img src="docs/hawks.png" alt="Two hawks scattering the flock"></td>
 </tr>
 <tr>
 <td align="center"><code>--preset murmuration --trails</code></td>
 <td align="center"><code>--hawks 2 --color acid</code></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/flocks.png" alt="Three flocks, each keeping to its own"></td>
+<td width="50%"><img src="docs/matrix.png" alt="Matrix rain, as birds"></td>
+</tr>
+<tr>
+<td align="center"><code>--flocks 3 --color ember</code></td>
 <td align="center"><code>--matrix</code></td>
 </tr>
 </table>
@@ -102,7 +108,8 @@ The flock cannot fly through it. The panel's rectangle carries an edge force of
 100000, far above every other term in the model, aimed at whichever of its two
 open sides is nearer — and the force acts on the panel grown by one frame of
 travel, which is what makes it unreachable rather than merely unwelcoming. Over
-**784,000 placements across seven configurations**, not one landed on it.
+**5.3 million placements across eight configurations** — every combination of the
+turning limit's extremes and the frame rate's — not one landed on it.
 
 | key | | key | |
 |---|---|---|---|
@@ -185,11 +192,45 @@ it rather than circle it, and a bird inside the panel's turn zone, whose push is
 a constraint rather than a force — the proof that the panel is unreachable
 assumes a bird can turn away at once.
 
+**The edges.** A band a third of the screen wide on each side, in which the push
+inwards grows with the square of how deep into it a bird has gone, so a bird that
+brushes the edge is nudged and a bird that is leaving is turned. Past the screen
+itself the boundary slider stops having a vote: the push is the same at notch
+zero as at notch twelve, which is what makes a soft boundary mean *turns late*
+rather than *leaves*. Before this the band pushed with a fixed unit vector and
+the flocking terms outvoted it: on the calm preset 94% of the flock was off the
+screen at any moment, parked out there for good. It is now 9%, all of it birds
+brushing the edge and coming straight back — no bird is out of frame for more
+than seven frames, a ninth of a second. At the default it is 1%.
+
 **The flocking.** Separation, alignment and cohesion, from the same immutable
 snapshot for every bird, so the order they are updated in cannot matter. Flocks
 are social, not physical: separation applies to every bird in reach, alignment
-and cohesion only to your own flock, which is why three flocks interpenetrate
-and refuse to merge.
+and cohesion only to your own flock, which is why two flocks can pass through
+each other and come out as two. That alone will not make three flocks legible as
+three, because flocking is local — a bird sees sixty pixels at most — and nothing
+in the three rules holds a flock together across a whole screen. So each flock is
+also leashed to its own centre of gravity, and the centres shove each other
+apart: three flocks keep three corners of the sky, meet at the edges, and slide
+past without merging.
+
+**The hunt.** A hawk is not a boid. It has no neighbours, obeys none of the three
+rules and is kept out of the grid entirely, so the flocking arithmetic is
+untouched by its existence. It chooses a bird at least three hundred and forty
+pixels off — near enough and there is no chase to watch — and holds that one
+whatever drifts past in the meantime: about twenty frames, which is how long it
+takes to get there, and up to forty before it will reconsider. It aims where the
+bird will be rather than where it is, dives the last ninety pixels, and the strike
+counts only if it reaches the bird it chose. Then it flies straight out the far
+side for a quarter of a second before turning back for another. Two hawks never
+take the same bird and keep their distance from each other. Every bird within a
+hundred and fifty pixels flees, and part of that flee is sideways rather than
+straight away, which is what makes the flock stream around a hawk and close up
+behind it instead of bursting open.
+
+A predator that could throw the flock off the screen would be a bug in a costume,
+so the flee is weaker than the edge: with four hawks up, the share of birds out of
+frame goes from 2.9% to 5.5%, and none of them stays out.
 
 **The writing.** A 5×7 font, authored as rows of `#` so it can be corrected by
 eye. A target per lit cell, a bird per target round robin, and a bird with a
@@ -203,14 +244,19 @@ check them rather than take them on trust. Ryzen-class laptop, 1600×800 viewpor
 
 | birds | CPU per frame | ceiling | bytes per frame |
 |---|---|---|---|
-| 400 | 0.187 ms | 5335 fps | 11.9 KB |
-| 800 | 0.384 ms | 2607 fps | 21.0 KB |
-| 2000 | 1.084 ms | 923 fps | 50.5 KB |
-| 4096 | 2.756 ms | 363 fps | 93.7 KB |
+| 400 | 0.247 ms | 4041 fps | 15.8 KB |
+| 800 | 0.535 ms | 1870 fps | 30.8 KB |
+| 2000 | 1.679 ms | 596 fps | 75.7 KB |
+| 4096 | 4.562 ms | 219 fps | 153.7 KB |
 
 The simulation is not the bottleneck and has not been since the spatial grid
-landed. The limit is terminal bandwidth: 1.3 MB/s at the default, 5.6 MB/s at
+landed. The limit is terminal bandwidth: 1.9 MB/s at the default, 9.4 MB/s at
 four thousand birds.
+
+These went up by half when the edges were fixed, and the reason is worth stating:
+a third of the flock used to be off the screen, where a bird has few neighbours to
+read and no placement to send. The old numbers were partly measuring an empty
+sky.
 
 ## Requirements
 

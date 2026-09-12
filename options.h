@@ -53,14 +53,23 @@ typedef enum {
 options_status_t options_parse(const option_t *table, size_t count, int argc, char **argv,
                                char *error, size_t error_size);
 
+/* One worked line of the help: what to type, and what it gets you. Kept as two
+ * strings rather than one pre-padded line so the columns are aligned by the same
+ * arithmetic that aligns the options, and stay aligned when one is edited. */
+typedef struct {
+    const char *command;
+    const char *what;
+} option_example_t;
+
 /*
  * Groups in table order, columns aligned to the widest option. With everything
  * false only the rows marked essential are shown, which is what -h is for: one
  * screen a newcomer can read, against the full list for someone looking for a
  * particular switch.
  */
-void options_usage(FILE *out, const char *program, const char *tagline, const char *const *examples,
-                   const option_t *table, size_t count, int everything);
+void options_usage(FILE *out, const char *program, const char *tagline,
+                   const option_example_t *examples, const option_t *table, size_t count,
+                   int everything);
 
 /* Completions for bash, zsh or fish, off the same table. */
 int options_completion(FILE *out, const char *shell, const char *program, const option_t *table,

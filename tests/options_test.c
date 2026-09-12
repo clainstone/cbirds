@@ -159,7 +159,8 @@ static void test_help_and_version(void) {
 }
 
 static void test_usage_is_aligned(void) {
-    static const char *const EXAMPLES[] = {"cbirds -n 1500", NULL};
+    static const option_example_t EXAMPLES[] = {
+        {"cbirds -n 1500", "a bigger flock"}, {"cbirds", "the default"}, {NULL, NULL}};
     char buffer[4096] = {0};
     FILE *out = fmemopen(buffer, sizeof(buffer), "w");
     assert(out != NULL);
@@ -178,6 +179,10 @@ static void test_usage_is_aligned(void) {
     assert(strstr(buffer, "-h, --help") != NULL);
     assert(strstr(buffer, "-V, --version") != NULL);
     assert(strstr(buffer, "Examples") != NULL);
+    /* The examples are columns too, aligned to the widest command rather than
+     * padded by hand, which is how they came to be misaligned in the first place. */
+    assert(strstr(buffer, "  cbirds -n 1500  a bigger flock\n") != NULL);
+    assert(strstr(buffer, "  cbirds          the default\n") != NULL);
     assert(strstr(buffer, "cbirds -n 1500") != NULL);
 
     /* Every help text starts at the same column. */

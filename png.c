@@ -744,6 +744,189 @@ fail:
     return status;
 }
 
+/*=============================== Deflate ===================================
+ *
+ * LZ77 with fixed Huffman codes (RFC 1951, 3.2.6). The inflater above has always
+ * been able to read this; the encoder only ever wrote stored blocks, because the
+ * sprites are a few hundred bytes each and the ratio did not matter. Then a
+ * snapshot of a 1600x800 screen turned out to be four megabytes, and a run at
+ * --size 64 spent seconds pushing ten megabytes of base64 at the terminal before
+ * the first frame. It matters now.
+ *
+ * Fixed codes rather than dynamic: no tree to build, no second pass, and on this
+ * data, which is long runs of one colour and long runs of transparency, it gets
+ * within a few percent of what a dynamic tree would. Stored blocks remain the
+ * fallback for anything that comes out larger than it went in.
+ */
+enum {
+    DEFLATE_WINDOW = 32768,
+    DEFLATE_MIN_MATCH = 3,
+    DEFLATE_MAX_MATCH = 258,
+    DEFLATE_HASH_BITS = 15,
+    DEFLATE_HASH_SIZE = 1 << DEFLATE_HASH_BITS,
+    DEFLATE_CHAIN_LIMIT = 160 /* Matches tried per position: quality against time. */
+};
+
+typedef struct {
+    uint8_t *out;
+    size_t length, capacity;
+    uint32_t bits;
+    int bit_count;
+    int failed;
+} bitwriter_t;
+
+static void bits_reserve(bitwriter_t *w, size_t extra) {
+    if (w->failed) return;
+    if (w->length + extra <= w->capacity) return;
+    size_t capacity = w->capacity ? w->capacity : 4096;
+    while (capacity < w->length + extra) capacity *= 2;
+    uint8_t *grown = (uint8_t *)realloc(w->out, capacity);
+    if (grown == NULL) {
+        w->failed = 1;
+        return;
+    }
+    w->out = grown;
+    w->capacity = capacity;
+}
+
+/* The bit stream is least significant bit first within each byte. */
+static void put_bits(bitwriter_t *w, uint32_t value, int count) {
+    w->bits |= (value & ((1u << count) - 1u)) << w->bit_count;
+    w->bit_count += count;
+    while (w->bit_count >= 8) {
+        bits_reserve(w, 1);
+        if (w->failed) return;
+        w->out[w->length++] = (uint8_t)(w->bits & 0xff);
+        w->bits >>= 8;
+        w->bit_count -= 8;
+    }
+}
+
+/* Huffman codes are defined most significant bit first, so they go in reversed. */
+static void put_code(bitwriter_t *w, uint32_t code, int length) {
+    uint32_t reversed = 0;
+    for (int i = 0; i < length; i++) reversed |= ((code >> i) & 1u) << (length - 1 - i);
+    put_bits(w, reversed, length);
+}
+
+static void put_literal(bitwriter_t *w, int symbol) {
+    if (symbol < 144)
+        put_code(w, (uint32_t)(0x30 + symbol), 8);
+    else
+        put_code(w, (uint32_t)(0x190 + symbol - 144), 9);
+}
+
+static void put_end_of_block(bitwriter_t *w) {
+    put_code(w, 0, 7); /* Symbol 256. */
+}
+
+static void put_length(bitwriter_t *w, int length) {
+    int index = 28;
+    while (index > 0 && length < length_base[index]) index--;
+    int symbol = 257 + index;
+    /* 256 to 279 are seven bits, 280 to 287 are eight: the fixed table. */
+    if (symbol <= 279)
+        put_code(w, (uint32_t)(symbol - 256), 7);
+    else
+        put_code(w, (uint32_t)(0xc0 + symbol - 280), 8);
+    if (length_extra[index])
+        put_bits(w, (uint32_t)(length - length_base[index]), length_extra[index]);
+}
+
+static void put_distance(bitwriter_t *w, int distance) {
+    int symbol = 29;
+    while (symbol > 0 && distance < dist_base[symbol]) symbol--;
+    put_code(w, (uint32_t)symbol, 5);
+    if (dist_extra[symbol])
+        put_bits(w, (uint32_t)(distance - dist_base[symbol]), dist_extra[symbol]);
+}
+
+static uint32_t deflate_hash(const uint8_t *at) {
+    return (uint32_t)(((at[0] << 10) ^ (at[1] << 5) ^ at[2]) & (DEFLATE_HASH_SIZE - 1));
+}
+
+/* Longest match for the bytes at `at`, searched back along the hash chain. */
+static int longest_match(const uint8_t *data, size_t length, size_t at, const int *head,
+                         const int *prev, int *best_distance) {
+    int best = 0;
+    size_t limit = length - at;
+    if (limit > DEFLATE_MAX_MATCH) limit = DEFLATE_MAX_MATCH;
+    if (limit < DEFLATE_MIN_MATCH) return 0;
+
+    int candidate = head[deflate_hash(data + at)];
+    for (int tries = 0; candidate >= 0 && tries < DEFLATE_CHAIN_LIMIT; tries++) {
+        size_t distance = at - (size_t)candidate;
+        if (distance == 0 || distance > DEFLATE_WINDOW) break;
+        if (data[(size_t)candidate + (size_t)best] == data[at + (size_t)best]) {
+            size_t run = 0;
+            while (run < limit && data[(size_t)candidate + run] == data[at + run]) run++;
+            if ((int)run > best) {
+                best = (int)run;
+                *best_distance = (int)distance;
+                if (best >= (int)limit) break; /* Cannot do better than the limit. */
+            }
+        }
+        candidate = prev[candidate & (DEFLATE_WINDOW - 1)];
+    }
+    return best >= DEFLATE_MIN_MATCH ? best : 0;
+}
+
+/* One fixed Huffman block, final. NULL out on failure. */
+static void deflate_fixed(const uint8_t *data, size_t length, uint8_t **out, size_t *out_length) {
+    bitwriter_t w = {NULL, 0, 0, 0, 0, 0};
+    int *head = (int *)malloc(DEFLATE_HASH_SIZE * sizeof(*head));
+    int *prev = (int *)malloc(DEFLATE_WINDOW * sizeof(*prev));
+
+    *out = NULL;
+    *out_length = 0;
+    if (head == NULL || prev == NULL) {
+        free(head);
+        free(prev);
+        return;
+    }
+    for (int i = 0; i < DEFLATE_HASH_SIZE; i++) head[i] = -1;
+    for (int i = 0; i < DEFLATE_WINDOW; i++) prev[i] = -1;
+
+    put_bits(&w, 1, 1); /* Final block. */
+    put_bits(&w, 1, 2); /* Fixed Huffman. */
+
+    size_t at = 0;
+    while (at < length) {
+        int distance = 0, match = 0;
+        if (at + DEFLATE_MIN_MATCH <= length)
+            match = longest_match(data, length, at, head, prev, &distance);
+
+        if (match >= DEFLATE_MIN_MATCH) {
+            put_length(&w, match);
+            put_distance(&w, distance);
+        } else {
+            put_literal(&w, data[at]);
+            match = 1;
+        }
+        /* Every position the match covered still goes in the chains, or the next
+         * search starts blind. */
+        for (int i = 0; i < match && at + (size_t)i + DEFLATE_MIN_MATCH <= length; i++) {
+            size_t here = at + (size_t)i;
+            uint32_t slot = deflate_hash(data + here);
+            prev[here & (DEFLATE_WINDOW - 1)] = head[slot];
+            head[slot] = (int)here;
+        }
+        at += (size_t)match;
+        if (w.failed) break;
+    }
+    put_end_of_block(&w);
+    if (w.bit_count > 0) put_bits(&w, 0, 8 - w.bit_count);
+
+    free(head);
+    free(prev);
+    if (w.failed) {
+        free(w.out);
+        return;
+    }
+    *out = w.out;
+    *out_length = w.length;
+}
+
 /*============================== PNG encoding ===============================
  *
  * The zlib stream is written with stored (uncompressed) DEFLATE blocks : it
@@ -776,26 +959,44 @@ png_status_t png_encode(const png_image_t *image, uint8_t **out_data, size_t *ou
                (size_t)image->width * 4);
     }
 
+    /* Compressed if it helps, stored if it does not: incompressible data must not
+     * come out larger than it went in. */
+    uint8_t *squeezed = NULL;
+    size_t squeezed_len = 0;
+    deflate_fixed(raw, raw_len, &squeezed, &squeezed_len);
+    if (squeezed != NULL && squeezed_len >= raw_len) {
+        free(squeezed);
+        squeezed = NULL;
+    }
+
     size_t blocks = (raw_len + DEFLATE_MAX_BLOCK - 1) / DEFLATE_MAX_BLOCK;
     if (blocks == 0) blocks = 1;
-    size_t zlib_len = 2 + blocks * 5 + raw_len + 4;
+    size_t zlib_len = squeezed != NULL ? 2 + squeezed_len + 4 : 2 + blocks * 5 + raw_len + 4;
     size_t total = sizeof(png_signature) + (12 + 13) + (12 + zlib_len) + 12;
 
     uint8_t *png = (uint8_t *)malloc(total);
     if (png == NULL) {
         free(raw);
+        free(squeezed);
         return PNG_ERR_MEMORY;
     }
     uint8_t *zlib = (uint8_t *)malloc(zlib_len);
     if (zlib == NULL) {
         free(raw);
         free(png);
+        free(squeezed);
         return PNG_ERR_MEMORY;
     }
 
     zlib[0] = 0x78; /*deflate, 32k window*/
     zlib[1] = 0x01; /*no dictionary, checksum of the two bytes is a multiple of 31*/
     size_t zp = 2, offset = 0;
+    if (squeezed != NULL) {
+        memcpy(zlib + zp, squeezed, squeezed_len);
+        zp += squeezed_len;
+        offset = raw_len;
+        blocks = 0;
+    }
     for (size_t i = 0; i < blocks; i++) {
         size_t chunk = raw_len - offset;
         if (chunk > DEFLATE_MAX_BLOCK) chunk = DEFLATE_MAX_BLOCK;
@@ -829,6 +1030,7 @@ png_status_t png_encode(const png_image_t *image, uint8_t **out_data, size_t *ou
     p = write_chunk(p, "IEND", NULL, 0);
 
     free(zlib);
+    free(squeezed);
     free(raw);
     *out_data = png;
     *out_length = (size_t)(p - png);

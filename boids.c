@@ -1515,86 +1515,110 @@ static void apply_preset(int which) {
 /* The option table: the parser and the help text both come off this, so adding a
  * switch is one row and never a second place to keep in step. */
 static const option_t OPTIONS[] = {
-    {'n', "birds", OPTION_INT, &config.birds, 1, MAX_BIRDS, NULL, "COUNT",
-     "how many boids to fly (default 800)", "Flock"},
-    {'s', "size", OPTION_INT, &config.bird_size, MIN_BIRD_SIZE, MAX_BIRD_SIZE, NULL, "PIXELS",
-     "sprite size in pixels (default 15)", "Flock"},
-    {'k', "flocks", OPTION_INT, &config.flocks, 1, MAX_FLOCKS, NULL, "COUNT",
-     "split into this many flocks that will not merge (default 1)", "Flock"},
-    {'c', "color", OPTION_ENUM, &config.palette, 0, 0, PALETTE_NAMES, "RAMP",
-     "theme, original, ember, ice, acid, paper, matrix", "Colour"},
-    {0, "color-by", OPTION_ENUM, &config.colour_by, 0, 0, COLOUR_BY_NAMES, "MODE",
-     "what picks a bird's shade: heading, density, flock, fixed", "Colour"},
-    {0, "preset", OPTION_ENUM, &requested_preset, 0, 0, PRESET_NAMES, "NAME",
-     "murmuration, swarm, school, storm, calm", "Flock"},
-    {0, "seed", OPTION_INT, &requested_seed, 0, 2147483647, NULL, "N",
-     "the same seed gives the same flock", "Flock"},
-    {0, "shape", OPTION_ENUM, &config.shape, 0, 0, SHAPE_NAMES, "NAME",
-     "bird, arrow, plane, fish, bat, dot (default bird)", "Colour"},
-    {0, "sprite", OPTION_STRING, &sprite_path, 0, 0, NULL, "FILE",
-     "a PNG of your own, decoded by our own decoder", "Colour"},
-    {0, "hawks", OPTION_INT, &config.hawks, 0, MAX_HAWKS, NULL, "COUNT",
-     "predators hunting the flock (default 0)", "Flock"},
-    {0, "spell", OPTION_STRING, &requested_spell, 0, 0, NULL, "TEXT",
-     "the flock writes TEXT, then lets go; - reads stdin", "World"},
-    {0, "spell-hold", OPTION_INT, &spell_hold, 0, 600, NULL, "SECONDS",
-     "how long it holds the writing (default 6, 0 forever)", "World"},
-    {0, "clock", OPTION_FLAG, &clock_mode, 0, 0, NULL, NULL,
-     "the flock is the time, re-formed on the minute", "World"},
-    {0, "intro", OPTION_FLAG, &show_intro, 0, 0, NULL, NULL,
-     "open by writing the name, on by default", "Modes"},
-    {0, "outro", OPTION_FLAG, &show_outro, 0, 0, NULL, NULL,
-     "fly away on q instead of vanishing, on by default", "Modes"},
-    {'a', "auto", OPTION_FLAG, &autopilot, 0, 0, NULL, NULL, "the sliders wander by themselves",
-     "Modes"},
-    {0, "idle", OPTION_INT, &idle_seconds, 0, 3600, NULL, "SECONDS",
-     "autopilot after this long untouched (default 60, 0 off)", "Modes"},
-    {0, "matrix", OPTION_FLAG, &matrix_mode, 0, 0, NULL, NULL, "it is raining birds", "Oddities"},
-    {0, "screensaver", OPTION_FLAG, &screensaver, 0, 0, NULL, NULL,
-     "no panel, autopilot, any key or movement quits", "Modes"},
-    {0, "frames", OPTION_INT, &frame_limit, 0, 1000000, NULL, "N",
-     "quit after N frames, for recording", "Output"},
-    {0, "stats", OPTION_FLAG, &show_stats, 0, 0, NULL, NULL,
-     "frame time, bytes and rate, in the panel", "Output"},
-    {0, "bench", OPTION_INT, &bench_frames, 0, 1000000, NULL, "N",
-     "run N frames with no terminal, print the numbers, quit", "Output"},
-    {0, "snapshot", OPTION_STRING, &snapshot_path, 0, 0, NULL, "FILE",
-     "write the last frame as a PNG, with our own encoder", "Output"},
-    {0, "boundary", OPTION_INT, &config.boundary_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
-     "how hard the edges push back, 0 to 12 (default 4)", "Sliders"},
-    {0, "separation", OPTION_INT, &config.separation_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
-     "how much a bird keeps its distance (default 4)", "Sliders"},
-    {0, "cohesion", OPTION_INT, &config.cohesion_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
-     "how much it seeks the crowd (default 4)", "Sliders"},
-    {0, "alignment", OPTION_INT, &config.alignment_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
-     "how much it matches its neighbours (default 4)", "Sliders"},
-    {0, "perception", OPTION_INT, &requested_perception, MIN_VISION_RADIUS, MAX_VISION_RADIUS, NULL,
-     "PIXELS", "how far it sees, 12 to 60 (default 36)", "Sliders"},
-    {'f', "fps", OPTION_INT, &requested_frame_rate, MIN_FRAME_RATE, MAX_FRAME_RATE, NULL, "RATE",
-     "frames a second, snapped to a notch (default 60)", "Sliders"},
-    {'l', "legend", OPTION_FLAG, &legend_enabled, 0, 0, NULL, NULL,
-     "show the parameter panel, on by default", "Display"},
-    {0, "wind", OPTION_INT, &config.wind_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
-     "a slow wandering breeze, 0 to 12 (default 0)", "Sliders"},
-    {'w', "wrap", OPTION_FLAG, &config.wrap, 0, 0, NULL, NULL,
-     "leave one edge, arrive from the other", "World"},
-    {'e', "trails", OPTION_FLAG, &config.trails, 0, 0, NULL, NULL, "faint tails behind the flock",
-     "World"},
-    {'m', "mouse", OPTION_ENUM, &config.mouse_mode, 0, 0, MOUSE_NAMES, "MODE",
-     "the pointer is: flee, follow, cat, off (default flee)", "Interaction"},
-    {0, "mouse-reach", OPTION_INT, &config.mouse_reach, 8, 600, NULL, "PIXELS",
-     "how far the pointer reaches (default 120)", "Interaction"},
-    {0, "mouse-reporting", OPTION_FLAG, &mouse_enabled, 0, 0, NULL, NULL,
-     "ask the terminal for pointer positions, on by default", "Interaction"},
-    {0, "force", OPTION_FLAG, &force_graphics, 0, 0, NULL, NULL,
-     "draw without asking the terminal whether it can", "General"},
+    /* short, long, alias, kind, target, min, max, names, metavar, help, group, on -h */
+    {'n', "birds", NULL, OPTION_INT, &config.birds, 1, MAX_BIRDS, NULL, "COUNT",
+     "how many birds (default 800)", "Flock", 1},
+    {'s', "size", NULL, OPTION_INT, &config.bird_size, MIN_BIRD_SIZE, MAX_BIRD_SIZE, NULL, "PIXELS",
+     "sprite size in pixels (default 15)", "Flock", 1},
+    {'k', "flocks", NULL, OPTION_INT, &config.flocks, 1, MAX_FLOCKS, NULL, "COUNT",
+     "flocks that keep to their own kind (default 1)", "Flock", 0},
+    {0, "hawks", NULL, OPTION_INT, &config.hawks, 0, MAX_HAWKS, NULL, "COUNT",
+     "predators hunting the flock (default 0)", "Flock", 0},
+    {0, "preset", NULL, OPTION_ENUM, &requested_preset, 0, 0, PRESET_NAMES, "NAME",
+     "murmuration, swarm, school, storm, calm", "Flock", 1},
+    {0, "seed", NULL, OPTION_INT, &requested_seed, 0, 2147483647, NULL, "N",
+     "the same seed gives the same flock", "Flock", 0},
+
+    {0, "boundary", NULL, OPTION_INT, &config.boundary_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
+     "how hard the edges push back (default 4)", "Sliders   0 to 12, as the panel shows them", 0},
+    {0, "separation", NULL, OPTION_INT, &config.separation_notch, 0, LEGEND_BAR_CELLS, NULL,
+     "NOTCH", "how much a bird keeps its distance (default 4)",
+     "Sliders   0 to 12, as the panel shows them", 0},
+    {0, "cohesion", NULL, OPTION_INT, &config.cohesion_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
+     "how much it seeks the crowd (default 4)", "Sliders   0 to 12, as the panel shows them", 0},
+    {0, "alignment", NULL, OPTION_INT, &config.alignment_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
+     "how much it matches its neighbours (default 4)", "Sliders   0 to 12, as the panel shows them",
+     0},
+    {0, "wind", NULL, OPTION_INT, &config.wind_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
+     "a slow wandering breeze (default 0)", "Sliders   0 to 12, as the panel shows them", 0},
+    {0, "perception", NULL, OPTION_INT, &requested_perception, MIN_VISION_RADIUS, MAX_VISION_RADIUS,
+     NULL, "PIXELS", "how far it sees, 12 to 60 (default 36)",
+     "Sliders   0 to 12, as the panel shows them", 0},
+    {'f', "fps", NULL, OPTION_INT, &requested_frame_rate, MIN_FRAME_RATE, MAX_FRAME_RATE, NULL,
+     "RATE", "frames a second, 30 to 120 (default 60)",
+     "Sliders   0 to 12, as the panel shows them", 1},
+
+    {'c', "color", "palette", OPTION_ENUM, &config.palette, 0, 0, PALETTE_NAMES, "RAMP",
+     "theme, original, ember, ice, acid, paper, matrix", "Look", 1},
+    {0, "color-by", NULL, OPTION_ENUM, &config.colour_by, 0, 0, COLOUR_BY_NAMES, "MODE",
+     "what picks a shade: heading, density, flock, fixed", "Look", 0},
+    {0, "shape", NULL, OPTION_ENUM, &config.shape, 0, 0, SHAPE_NAMES, "NAME",
+     "bird, arrow, plane, fish, bat, dot", "Look", 1},
+    {0, "sprite", NULL, OPTION_STRING, &sprite_path, 0, 0, NULL, "FILE",
+     "a PNG of your own, read by our own decoder", "Look", 0},
+    {'e', "trails", NULL, OPTION_FLAG, &config.trails, 0, 0, NULL, NULL,
+     "faint tails behind the flock", "Look", 0},
+    {'l', "panel", "legend", OPTION_FLAG, &legend_enabled, 0, 0, NULL, NULL,
+     "the sliders, in the corner, on by default", "Look", 1},
+
+    {'w', "wrap", NULL, OPTION_FLAG, &config.wrap, 0, 0, NULL, NULL,
+     "leave one edge, arrive from the other", "World", 0},
+    {0, "spell", NULL, OPTION_STRING, &requested_spell, 0, 0, NULL, "TEXT",
+     "the flock writes TEXT; - reads stdin", "World", 1},
+    {0, "spell-hold", NULL, OPTION_INT, &spell_hold, 0, 600, NULL, "SECONDS",
+     "how long it holds the writing (default 6, 0 forever)", "World", 0},
+    {0, "clock", NULL, OPTION_FLAG, &clock_mode, 0, 0, NULL, NULL,
+     "the flock is the time, re-formed on the minute", "World", 0},
+
+    {'m', "mouse", NULL, OPTION_ENUM, &config.mouse_mode, 0, 0, MOUSE_NAMES, "MODE",
+     "the pointer is: flee, follow, cat, off (default flee)", "Input", 1},
+    {0, "mouse-reach", NULL, OPTION_INT, &config.mouse_reach, 8, 600, NULL, "PIXELS",
+     "how far the pointer reaches (default 120)", "Input", 0},
+    {0, "mouse-reporting", NULL, OPTION_FLAG, &mouse_enabled, 0, 0, NULL, NULL,
+     "ask the terminal for the pointer, on by default", "Input", 0},
+
+    {'a', "auto", NULL, OPTION_FLAG, &autopilot, 0, 0, NULL, NULL,
+     "the sliders wander by themselves", "Modes", 0},
+    {0, "idle", NULL, OPTION_INT, &idle_seconds, 0, 3600, NULL, "SECONDS",
+     "autopilot after this long untouched (default 60, 0 off)", "Modes", 0},
+    {0, "screensaver", NULL, OPTION_FLAG, &screensaver, 0, 0, NULL, NULL,
+     "no panel, autopilot, any key quits", "Modes", 1},
+    {0, "intro", NULL, OPTION_FLAG, &show_intro, 0, 0, NULL, NULL,
+     "open by writing the name, on by default", "Modes", 0},
+    {0, "outro", NULL, OPTION_FLAG, &show_outro, 0, 0, NULL, NULL, "fly away on q, on by default",
+     "Modes", 0},
+
+    {0, "matrix", NULL, OPTION_FLAG, &matrix_mode, 0, 0, NULL, NULL, "it is raining birds",
+     "Oddities", 0},
+
+    {0, "stats", NULL, OPTION_FLAG, &show_stats, 0, 0, NULL, NULL,
+     "frame time, bytes and rate, in the panel", "Output", 0},
+    {0, "bench", NULL, OPTION_INT, &bench_frames, 0, 1000000, NULL, "N",
+     "run N frames with no terminal, print the numbers, quit", "Output", 0},
+    {0, "frames", NULL, OPTION_INT, &frame_limit, 0, 1000000, NULL, "N",
+     "quit after N frames, for recording", "Output", 0},
+    {0, "snapshot", NULL, OPTION_STRING, &snapshot_path, 0, 0, NULL, "FILE",
+     "write the last frame as a PNG, with our own encoder", "Output", 0},
+
+    {0, "force", NULL, OPTION_FLAG, &force_graphics, 0, 0, NULL, NULL,
+     "draw without asking the terminal whether it can", "General", 0},
 };
 enum { OPTION_COUNT = sizeof(OPTIONS) / sizeof(*OPTIONS) };
 
+/* The panel teaches the slider keys, so this only has to list the rest. */
+#define KEYS_HELP                                                      \
+    "\nKeys   b/B s/S c/C a/A p/P r/R   one notch down / up\n"         \
+    "       space pause   . step   0 reset   +/- birds   Tab preset\n" \
+    "       h panel   e trails   w wrap   k/K hawks   M mouse   L colour   q quit\n"
+
+enum { EXIT_USAGE = 2 }; /* A mistyped command is not a run that went wrong. */
+
 static const char *const EXAMPLES[] = {
-    "cbirds                      a flock, and nothing to read",
-    "cbirds -n 2000 -f 120       more of them, faster",
-    "cbirds --no-legend          hide the panel, the flock keeps the corner",
+    "cbirds                           a flock, and nothing to read",
+    "cbirds --preset murmuration        the starling look",
+    "fortune | cbirds --spell -         the flock writes whatever is piped in",
+    "cbirds --hawks 2 --color ember     something to watch",
+    "cbirds --screensaver               for a terminal left open",
     NULL,
 };
 
@@ -1961,13 +1985,13 @@ static int write_snapshot(const char *path, const bird_t *birds) {
     return written;
 }
 
-static void usage(FILE *out, const char *program) {
+static void usage(FILE *out, const char *program, int everything) {
     options_usage(out, program, "cbirds \u2014 a flock of birds in your terminal.", EXAMPLES,
-                  OPTIONS, OPTION_COUNT);
+                  OPTIONS, OPTION_COUNT, everything);
+    if (everything) fputs(KEYS_HELP, out);
 }
 
-/* "-" means stdin, so that fortune | cbirds --spell - works. Read before raw
- * mode, because after it a pipe and a terminal are told apart differently. */
+/* "-" means stdin, so that fortune | cbirds --spell - works. */
 static const char *read_spell_text(const char *given) {
     if (given == NULL || strcmp(given, "-") != 0) return given;
 
@@ -2002,8 +2026,15 @@ static void read_options(int argc, char **argv) {
     options_status_t status =
         options_parse(OPTIONS, OPTION_COUNT, argc, argv, error, sizeof(error));
 
-    if (status == OPTIONS_HELP) {
-        usage(stdout, program_name);
+    if (status == OPTIONS_HELP || status == OPTIONS_HELP_FULL) {
+        usage(stdout, program_name, status == OPTIONS_HELP_FULL);
+        exit(EXIT_SUCCESS);
+    }
+    if (status == OPTIONS_COMPLETION) {
+        if (!options_completion(stdout, error, "cbirds", OPTIONS, OPTION_COUNT)) {
+            fprintf(stderr, "%s: --completion wants bash, zsh or fish\n", program_name);
+            exit(EXIT_USAGE);
+        }
         exit(EXIT_SUCCESS);
     }
     if (status == OPTIONS_VERSION) {
@@ -2011,9 +2042,11 @@ static void read_options(int argc, char **argv) {
         exit(EXIT_SUCCESS);
     }
     if (status != OPTIONS_OK) {
+        /* Told what was wrong, and where to look, and exiting two rather than one
+         * so a script can tell a mistyped command from a run that went wrong. */
         fprintf(stderr, "%s: %s\n", program_name, error);
         fprintf(stderr, "Try '%s --help'.\n", program_name);
-        exit(EXIT_FAILURE);
+        exit(EXIT_USAGE);
     }
     /* A preset is expanded first so that a slider given after it still wins: the
      * table cannot express that order, so the parser's left to right reading is

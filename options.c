@@ -12,12 +12,56 @@ static void fail(char *error, size_t size, const char *format, ...) {
     va_end(arguments);
 }
 
+static int same_name(const char *candidate, const char *name, size_t length) {
+    return candidate != NULL && strlen(candidate) == length &&
+           strncmp(candidate, name, length) == 0;
+}
+
 static const option_t *find_long(const option_t *table, size_t count, const char *name,
                                  size_t length) {
     for (size_t i = 0; i < count; i++)
-        if (strlen(table[i].name) == length && strncmp(table[i].name, name, length) == 0)
+        if (same_name(table[i].name, name, length) || same_name(table[i].alias, name, length))
             return &table[i];
     return NULL;
+}
+
+/* Levenshtein, small and iterative, so a typo can be answered with the name the
+ * user probably meant instead of a bare refusal. */
+static size_t edit_distance(const char *a, const char *b) {
+    size_t la = strlen(a), lb = strlen(b);
+    size_t previous[64], current[64];
+    if (lb + 1 > 64) return 64;
+    for (size_t j = 0; j <= lb; j++) previous[j] = j;
+    for (size_t i = 1; i <= la; i++) {
+        current[0] = i;
+        for (size_t j = 1; j <= lb; j++) {
+            size_t cost = a[i - 1] == b[j - 1] ? 0 : 1;
+            size_t best = previous[j] + 1;
+            if (current[j - 1] + 1 < best) best = current[j - 1] + 1;
+            if (previous[j - 1] + cost < best) best = previous[j - 1] + cost;
+            current[j] = best;
+        }
+        memcpy(previous, current, (lb + 1) * sizeof(*previous));
+    }
+    return previous[lb];
+}
+
+static const char *nearest_name(const option_t *table, size_t count, const char *name,
+                                size_t length) {
+    char wanted[64];
+    const char *best = NULL;
+    size_t best_distance = 3; /* Further than two edits away is a different word. */
+    if (length + 1 > sizeof(wanted)) return NULL;
+    memcpy(wanted, name, length);
+    wanted[length] = '\0';
+    for (size_t i = 0; i < count; i++) {
+        size_t distance = edit_distance(wanted, table[i].name);
+        if (distance < best_distance) {
+            best_distance = distance;
+            best = table[i].name;
+        }
+    }
+    return best;
 }
 
 static const option_t *find_short(const option_t *table, size_t count, char shorthand) {
@@ -93,7 +137,16 @@ options_status_t options_parse(const option_t *table, size_t count, int argc, ch
             }
             return OPTIONS_OK;
         }
-        if (strcmp(argument, "-h") == 0 || strcmp(argument, "--help") == 0) return OPTIONS_HELP;
+        if (strcmp(argument, "-h") == 0) return OPTIONS_HELP;
+        if (strcmp(argument, "--help") == 0) return OPTIONS_HELP_FULL;
+        if (strcmp(argument, "--completion") == 0) {
+            if (i + 1 >= argc) {
+                fail(error, error_size, "--completion wants bash, zsh or fish");
+                return OPTIONS_ERROR;
+            }
+            snprintf(error, error_size, "%s", argv[i + 1]);
+            return OPTIONS_COMPLETION;
+        }
         if (strcmp(argument, "-V") == 0 || strcmp(argument, "--version") == 0)
             return OPTIONS_VERSION;
 
@@ -122,7 +175,12 @@ options_status_t options_parse(const option_t *table, size_t count, int argc, ch
 
             const option_t *option = find_long(table, count, name, length);
             if (option == NULL) {
-                fail(error, error_size, "unknown option '--%.*s'", (int)length, name);
+                const char *meant = nearest_name(table, count, name, length);
+                if (meant != NULL)
+                    fail(error, error_size, "unknown option '--%.*s', did you mean '--%s'?",
+                         (int)length, name, meant);
+                else
+                    fail(error, error_size, "unknown option '--%.*s'", (int)length, name);
                 return OPTIONS_ERROR;
             }
             if (option->kind == OPTION_FLAG) {
@@ -191,7 +249,7 @@ static void render_option(FILE *out, size_t column, char shorthand, const char *
 }
 
 void options_usage(FILE *out, const char *program, const char *tagline, const char *const *examples,
-                   const option_t *table, size_t count) {
+                   const option_t *table, size_t count, int everything) {
     size_t column = strlen("  -V, --version");
     for (size_t i = 0; i < count; i++) {
         size_t width = option_width(&table[i]);
@@ -205,6 +263,7 @@ void options_usage(FILE *out, const char *program, const char *tagline, const ch
     const char *group = NULL;
     for (size_t i = 0; i <= count; i++) {
         const option_t *option = i < count ? &table[i] : NULL;
+        if (option != NULL && !everything && !option->essential) continue;
         const char *next = option ? option->group : "General";
         if (group == NULL || strcmp(group, next) != 0) {
             fprintf(out, "\n%s\n", next);
@@ -215,13 +274,56 @@ void options_usage(FILE *out, const char *program, const char *tagline, const ch
         render_option(out, column, option->shorthand, option->name,
                       option->kind == OPTION_FLAG ? NULL : option->metavar, option->help);
     }
-    render_option(out, column, 'h', "help", NULL, "show this help and exit");
-    render_option(out, column, 'V', "version", NULL, "show the version and exit");
+    if (everything) {
+        render_option(out, column, 'h', "help", NULL, "the one screen help");
+        render_option(out, column, 0, "completion", "SHELL", "completions for bash, zsh or fish");
+        render_option(out, column, 'V', "version", NULL, "show the version and exit");
+    } else {
+        render_option(out, column, 0, "help", NULL, "every option, grouped");
+        render_option(out, column, 'V', "version", NULL, "show the version and exit");
+    }
 
-    if (examples != NULL) {
+    if (examples != NULL && everything) {
         fprintf(out, "\nExamples\n");
         for (size_t i = 0; examples[i] != NULL; i++) fprintf(out, "  %s\n", examples[i]);
     }
+}
+
+int options_completion(FILE *out, const char *shell, const char *program, const option_t *table,
+                       size_t count) {
+    if (shell == NULL) return 0;
+
+    if (strcmp(shell, "bash") == 0) {
+        fprintf(out, "# %s completions for bash\ncomplete -W \"", program);
+        for (size_t i = 0; i < count; i++) fprintf(out, "--%s ", table[i].name);
+        fprintf(out, "--help --version --completion\" %s\n", program);
+        return 1;
+    }
+    if (strcmp(shell, "zsh") == 0) {
+        fprintf(out, "#compdef %s\n_arguments \\\n", program);
+        for (size_t i = 0; i < count; i++)
+            fprintf(out, "  '--%s[%s]%s' \\\n", table[i].name, table[i].help,
+                    table[i].kind == OPTION_FLAG ? "" : ":value:");
+        fprintf(out, "  '--help[every option, grouped]' \\\n  '--version[show the version]'\n");
+        return 1;
+    }
+    if (strcmp(shell, "fish") == 0) {
+        for (size_t i = 0; i < count; i++) {
+            fprintf(out, "complete -c %s -l %s", program, table[i].name);
+            if (table[i].shorthand) fprintf(out, " -s %c", table[i].shorthand);
+            if (table[i].kind != OPTION_FLAG) fprintf(out, " -r");
+            if (table[i].kind == OPTION_ENUM && table[i].names != NULL) {
+                fprintf(out, " -a \"");
+                for (int k = 0; table[i].names[k] != NULL; k++)
+                    fprintf(out, "%s%s", k ? " " : "", table[i].names[k]);
+                fprintf(out, "\"");
+            }
+            fprintf(out, " -d \"%s\"\n", table[i].help);
+        }
+        fprintf(out, "complete -c %s -l help -d \"every option, grouped\"\n", program);
+        return 1;
+    }
+    return 0;
 }
 
 const char *options_status_string(options_status_t status) {
@@ -229,7 +331,10 @@ const char *options_status_string(options_status_t status) {
         case OPTIONS_OK:
             return "ok";
         case OPTIONS_HELP:
+        case OPTIONS_HELP_FULL:
             return "help requested";
+        case OPTIONS_COMPLETION:
+            return "completions requested";
         case OPTIONS_VERSION:
             return "version requested";
         case OPTIONS_ERROR:

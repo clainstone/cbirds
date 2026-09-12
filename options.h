@@ -21,8 +21,9 @@ typedef enum {
 } option_kind_t;
 
 typedef struct {
-    char shorthand;   /* 0 when the option is long only. */
-    const char *name; /* Long name without the dashes, never NULL. */
+    char shorthand;    /* 0 when the option is long only. */
+    const char *name;  /* Long name without the dashes, never NULL. */
+    const char *alias; /* An older name, accepted but never advertised. */
     option_kind_t kind;
     void *target;
     double minimum, maximum;  /* INT and DOUBLE only. */
@@ -30,13 +31,16 @@ typedef struct {
     const char *metavar;      /* "COUNT", "FPS", shown in --help. */
     const char *help;         /* One line, lower case, no trailing stop. */
     const char *group;        /* Section heading in --help. */
+    int essential;            /* Shown by -h as well as by --help. */
 } option_t;
 
 typedef enum {
     OPTIONS_OK = 0,
-    OPTIONS_HELP,    /* --help was asked for, print usage and exit zero. */
-    OPTIONS_VERSION, /* --version, likewise. */
-    OPTIONS_ERROR    /* Message written into the caller's buffer. */
+    OPTIONS_HELP,       /* -h: the one screen version. */
+    OPTIONS_HELP_FULL,  /* --help: everything, grouped. */
+    OPTIONS_VERSION,    /* --version. */
+    OPTIONS_COMPLETION, /* --completion SHELL, the shell left in the buffer. */
+    OPTIONS_ERROR       /* Message written into the caller's buffer. */
 } options_status_t;
 
 /*
@@ -49,9 +53,18 @@ typedef enum {
 options_status_t options_parse(const option_t *table, size_t count, int argc, char **argv,
                                char *error, size_t error_size);
 
-/* Groups in table order, columns aligned to the widest option. */
+/*
+ * Groups in table order, columns aligned to the widest option. With everything
+ * false only the rows marked essential are shown, which is what -h is for: one
+ * screen a newcomer can read, against the full list for someone looking for a
+ * particular switch.
+ */
 void options_usage(FILE *out, const char *program, const char *tagline, const char *const *examples,
-                   const option_t *table, size_t count);
+                   const option_t *table, size_t count, int everything);
+
+/* Completions for bash, zsh or fish, off the same table. */
+int options_completion(FILE *out, const char *shell, const char *program, const option_t *table,
+                       size_t count);
 
 const char *options_status_string(options_status_t status);
 

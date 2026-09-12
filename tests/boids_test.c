@@ -1768,7 +1768,8 @@ static void test_a_text_terminal_gets_the_flock_in_braille(void) {
     config.hawks = 1;
     apply_screen_size(60, 20, 480, 320);
     birds[0] = (bird_t){.x = 100, .y = 100, .direction = 0.3};
-    birds[1] = (bird_t){.x = 200, .y = 150, .direction = 2.0};
+    birds[1] =
+        (bird_t){.x = 104, .y = 103, .direction = 2.9, .shade = 4}; /* On top, another shade. */
     birds[2] = (bird_t){.x = 300, .y = 200, .direction = 4.0};
     place_hawks();
 
@@ -1787,7 +1788,30 @@ static void test_a_text_terminal_gets_the_flock_in_braille(void) {
     for (const unsigned char *c = (const unsigned char *)graphics.buffer; *c; c++)
         if (c[0] == 0xE2 && (c[1] & 0xFC) == 0xA0) braille++; /* U+2800..U+28FF. */
     assert(braille >= 3);                                     /* At least a dot cell per bird. */
-    assert(strstr(graphics.buffer, "\033[2J") == NULL);       /* The rule holds here too. */
+    /* And underneath, every pixel of ink on the canvas the cells were read from
+     * is one bird's own colour: where two birds overlap the more opaque one takes
+     * the pixel rather than blending, or a shared cell would be a colour that is
+     * neither bird's and different in every cell. */
+    for (size_t px = 0; px < (size_t)text_canvas.width * (size_t)text_canvas.height; px++) {
+        const uint8_t *pixel = &text_canvas.pixels[px * 4];
+        if (pixel[3] == 0) continue;
+        int own = memcmp(pixel, hawk_colour(), 3) == 0;
+        for (int shade = 0; shade < palette_shades() && !own; shade++)
+            own = memcmp(pixel, palette()->tints[shade], 3) == 0;
+        assert(own);
+    }
+    /* Every colour on the screen is one of the palette's own, or the hawk's: a
+     * cell two birds share is not painted a third colour that is neither. */
+    for (const char *at = graphics.buffer; (at = strstr(at, "\033[38;2;")) != NULL; at++) {
+        int r, g, b;
+        assert(sscanf(at, "\033[38;2;%d;%d;%dm", &r, &g, &b) == 3);
+        uint8_t seen[3] = {(uint8_t)r, (uint8_t)g, (uint8_t)b};
+        int known = memcmp(seen, hawk_colour(), 3) == 0;
+        for (int shade = 0; shade < palette_shades() && !known; shade++)
+            known = memcmp(seen, palette()->tints[shade], 3) == 0;
+        assert(known);
+    }
+    assert(strstr(graphics.buffer, "\033[2J") == NULL); /* The rule holds here too. */
 
     /* The same frame again is nothing but the brackets: only changes are sent. */
     size_t first = graphics.length;
@@ -1902,6 +1926,60 @@ static void test_a_sixel_or_iterm_terminal_gets_a_picture_a_frame(void) {
     free_sprites(text_sprites);
     render_mode = RENDER_KITTY;
     legend_enabled = 1;
+    reset_test_config();
+}
+
+/* A recording named .cast is text: an asciinema file, a JSON header and a line
+ * of escape text per frame, playable in any terminal and a fraction of a GIF. */
+static void test_a_cast_is_the_flock_as_text(void) {
+    char path[] = "/tmp/cbirds_record_test.cast";
+    reset_test_config();
+    config.birds = 60;
+    config.palette = palette_named("ember");
+    record_path = path;
+    record_fps = 20;
+    record_seconds = 1;
+    record_columns = 60;
+    record_rows = 20;
+    fflush(stdout);
+    int saved = dup(STDOUT_FILENO);
+    assert(freopen("/dev/null", "w", stdout) != NULL);
+    int status = run_recording();
+    fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+    clearerr(stdout);
+    assert(status == EXIT_SUCCESS);
+
+    FILE *file = fopen(path, "r");
+    assert(file != NULL);
+    static char line[1 << 16];
+    /* The header names the version and the size of the terminal it was made for. */
+    assert(fgets(line, sizeof(line), file) != NULL);
+    assert(strstr(line, "{\"version\": 2, \"width\": 60, \"height\": 20,") == line);
+    int events = 0, braille = 0, raw_escapes = 0;
+    while (fgets(line, sizeof(line), file) != NULL) {
+        events++;
+        assert(line[0] == '[');
+        assert(strstr(line, ", \"o\", \"") != NULL);
+        /* Escape characters are spelled out for JSON; the braille is left as the
+         * UTF-8 it is, which is what keeps the file readable and small. */
+        assert(strstr(line, "\\u001b") != NULL);
+        for (const char *c = line; *c; c++) {
+            if (*c == '\033') raw_escapes++;
+            if ((unsigned char)c[0] == 0xE2 && ((unsigned char)c[1] & 0xFC) == 0xA0) braille++;
+        }
+    }
+    fclose(file);
+    remove(path);
+    assert(raw_escapes == 0);
+    assert(events == 20 + 2); /* Twenty frames, an opening and a closing. */
+    assert(braille > 60);     /* Sixty birds leave more than sixty dots behind. */
+
+    record_path = NULL;
+    record_fps = 25;
+    record_seconds = 6;
+    render_mode = RENDER_KITTY;
     reset_test_config();
 }
 
@@ -2374,6 +2452,7 @@ int main(void) {
     test_the_matrix_is_the_only_thing_that_rains();
     test_a_text_terminal_gets_the_flock_in_braille();
     test_a_sixel_or_iterm_terminal_gets_a_picture_a_frame();
+    test_a_cast_is_the_flock_as_text();
     test_recording_gives_the_whole_frame_to_the_flock();
     test_flocks_keep_to_their_own_side_of_the_sky();
     test_flocks_do_not_align_with_each_other();

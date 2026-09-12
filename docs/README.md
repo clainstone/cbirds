@@ -42,6 +42,16 @@ screen and how big they are, not by the length. Seven hundred at thirteen pixels
 is the compromise. It was a sixth of this before the edges were fixed, when most
 of the flock was outside the frame and the encoder had nothing to store.
 
+A recording named `.cast` is an asciinema file instead: the same flock as the
+braille renderer sends it, one line of escape text per frame, playable with
+`asciinema play docs/demo.cast` in any terminal, at less than half the size of
+the GIF for a clip half as long again.
+
+```sh
+./cbirds --record docs/demo.cast --record-fps 30 --record-seconds 8 \
+         --record-size 96x26 -n 700 --color ember --hawks 2 --seed 5
+```
+
 `--record` needs no terminal at all. The `--snapshot` runs do, because they
 photograph a live frame; any terminal will do, and the picture is of whatever
 that terminal was shown — sprites under Kitty, dots or blocks anywhere else.

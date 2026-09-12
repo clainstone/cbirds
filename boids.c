@@ -2506,9 +2506,9 @@ static const option_t OPTIONS[] = {
     {0, "snapshot", NULL, OPTION_STRING, &snapshot_path, 0, 0, NULL, "FILE",
      "write the last frame as a PNG", "Output", 0},
     {0, "record", NULL, OPTION_STRING, &record_path, 0, 0, NULL, "FILE",
-     "record an animated GIF with no terminal, and quit", "Output", 0},
-    {0, "record-fps", NULL, OPTION_INT, &record_fps, 2, MAX_RECORD_FPS, NULL, "RATE",
-     "frames a second in the GIF, up to 50 (default 25)", "Output", 0},
+     "record a GIF, or a .cast for asciinema, with no terminal, and quit", "Output", 0},
+    {0, "record-fps", NULL, OPTION_INT, &record_fps, 2, MAX_FRAME_RATE, NULL, "RATE",
+     "frames a second; a GIF can carry up to 50 (default 25)", "Output", 0},
     {0, "record-seconds", NULL, OPTION_INT, &record_seconds, 1, 120, NULL, "SECONDS",
      "how long the GIF runs (default 6)", "Output", 0},
     {0, "record-size", NULL, OPTION_STRING, &requested_record_size, 0, 0, NULL, "COLSxROWS",
@@ -2826,7 +2826,13 @@ static int wait_for_terminal_io(void) {
  * megabytes for a still, which is a fair price for a picture that the README can
  * honestly say the program drew of itself.
  */
-static void blend_sprite(png_image_t *canvas, const png_image_t *sprite, int at_x, int at_y) {
+/* `mix` blends the sprite's edges with what is under them, which is what a
+ * picture wants. Without it the more opaque pixel simply takes the place: what a
+ * text terminal wants, because a cell's colour is read back from its pixels and
+ * a blend of two tints where two birds overlap is a colour that is neither —
+ * ten thousand of them a recording, each a colour sequence of its own. */
+static void blend_sprite(png_image_t *canvas, const png_image_t *sprite, int at_x, int at_y,
+                         int mix) {
     for (int y = 0; y < sprite->height; y++) {
         int cy = at_y + y;
         if (cy < 0 || cy >= canvas->height) continue;
@@ -2838,9 +2844,21 @@ static void blend_sprite(png_image_t *canvas, const png_image_t *sprite, int at_
             uint8_t *dst = canvas->pixels + ((size_t)cy * (size_t)canvas->width + (size_t)cx) * 4;
             unsigned alpha = src[3];
             if (alpha == 0) continue;
+            if (!mix) {
+                if (alpha > dst[3]) memcpy(dst, src, 4);
+                continue;
+            }
+            /* Straight alpha over, done properly: the colour underneath counts
+             * only for as much of it as is there. Blending against a transparent
+             * pixel as if it were opaque black darkened every anti-aliased edge,
+             * which on a text terminal — where the cell's colour is the mean of
+             * its pixels — made every bird a slightly different shade and every
+             * cell a fresh colour sequence. */
+            unsigned under = dst[3] * (255 - alpha) / 255;
+            unsigned out_alpha = alpha + under;
             for (int c = 0; c < 3; c++)
-                dst[c] = (uint8_t)((src[c] * alpha + dst[c] * (255 - alpha)) / 255);
-            dst[3] = (uint8_t)(alpha + dst[3] * (255 - alpha) / 255);
+                dst[c] = (uint8_t)((src[c] * alpha + dst[c] * under) / out_alpha);
+            dst[3] = (uint8_t)out_alpha;
         }
     }
 }
@@ -2918,7 +2936,7 @@ static void compose_onto(png_image_t *canvas, const png_image_t *frames, const b
                     &frames[(shades - 1) * ROTATION_FRAMES + birds[i].frame % ROTATION_FRAMES];
                 if (sprite->pixels != NULL)
                     blend_sprite(canvas, sprite, (int)birds[i].trail_x[step],
-                                 (int)birds[i].trail_y[step]);
+                                 (int)birds[i].trail_y[step], with_ground);
             }
     }
     for (int i = 0; i < config.birds; i++) {
@@ -2926,14 +2944,14 @@ static void compose_onto(png_image_t *canvas, const png_image_t *frames, const b
         const png_image_t *sprite =
             &frames[shade * ROTATION_FRAMES + birds[i].frame % ROTATION_FRAMES];
         if (sprite->pixels == NULL) continue;
-        blend_sprite(canvas, sprite, (int)birds[i].x, (int)birds[i].y);
+        blend_sprite(canvas, sprite, (int)birds[i].x, (int)birds[i].y, with_ground);
     }
     for (int i = 0; i < config.hawks; i++) {
         const png_image_t *sprite =
             &frames[shades * ROTATION_FRAMES + hawks[i].frame % ROTATION_FRAMES];
         if (sprite->pixels == NULL) continue;
         blend_sprite(canvas, sprite, (int)hawks[i].x - hawk_draw_offset(),
-                     (int)hawks[i].y - hawk_draw_offset());
+                     (int)hawks[i].y - hawk_draw_offset(), with_ground);
     }
 }
 
@@ -3164,6 +3182,130 @@ static void settle_the_palette_without_a_terminal(void) {
     if (palette_follows_the_theme()) config.palette = FALLBACK_PALETTE;
 }
 
+/* JSON needs its control characters spelled out, and an escape sequence is
+ * nothing but control characters and text. Everything else, braille included,
+ * goes through as the UTF-8 it already is. */
+static void write_json_string(FILE *out, const char *text, size_t length) {
+    fputc('"', out);
+    for (size_t i = 0; i < length; i++) {
+        unsigned char c = (unsigned char)text[i];
+        if (c == '"' || c == '\\')
+            fprintf(out, "\\%c", c);
+        else if (c < 0x20)
+            fprintf(out, "\\u%04x", c);
+        else
+            fputc(c, out);
+    }
+    fputc('"', out);
+}
+
+/*
+ * The recording as text: an asciinema cast, which is a JSON header and then
+ * one line per frame of what the braille renderer would have sent a terminal.
+ * It plays back in any terminal with `asciinema play`, embeds anywhere the
+ * player does, and a five second flock is a few hundred kilobytes where the
+ * GIF of it is five megabytes — because only the cells that changed are in it.
+ */
+static int run_cast_recording(void) {
+    spatial_grid_t grid;
+    int total = record_fps * record_seconds;
+    settle_the_palette_without_a_terminal();
+    config.speed = (double)DEFAULT_SPEED * DEFAULT_FRAME_RATE / record_fps;
+    legend_enabled = 0;
+    render_mode = RENDER_BRAILLE;
+    apply_screen_size(record_columns, record_rows, record_columns * DEFAULT_CELL_WIDTH,
+                      record_rows * DEFAULT_CELL_HEIGHT);
+    if (spatial_grid_init(&grid, SPATIAL_CELL_SIZE) != SPATIAL_GRID_OK) return EXIT_FAILURE;
+    if (spatial_grid_prepare(&grid, screen.width, screen.height, config.birds) != SPATIAL_GRID_OK)
+        return EXIT_FAILURE;
+    if (!prepare_text_renderer() || !text_renderer_fits_the_screen()) {
+        fprintf(stderr, "%s: cannot build the sprites to record with\n", program_name);
+        return EXIT_FAILURE;
+    }
+    /* A cast is played in somebody else's terminal, whose colours are unknown:
+     * 24 bit colour is what every player of casts understands. */
+    text_cells.truecolor = 1;
+
+    FILE *out = fopen(record_path, "w");
+    if (out == NULL) {
+        fprintf(stderr, "%s: %s: %s\n", program_name, record_path, strerror(errno));
+        return EXIT_FAILURE;
+    }
+    fprintf(out,
+            "{\"version\": 2, \"width\": %d, \"height\": %d, \"timestamp\": %ld, "
+            "\"title\": \"cbirds\", \"env\": {\"TERM\": \"xterm-256color\", \"SHELL\": "
+            "\"/bin/sh\"}}\n",
+            screen.cols, screen.rows, (long)time(NULL));
+
+    bird_t *birds = calloc((size_t)config.birds, sizeof(*birds));
+    bird_t *snapshot = malloc(sizeof(*snapshot) * (size_t)config.birds);
+    if (birds == NULL || snapshot == NULL) return EXIT_FAILURE;
+    srand(requested_seed >= 0 ? (unsigned)requested_seed : 1u);
+    initialize_birds(birds);
+    place_hawks();
+    if (requested_spell != NULL && spell_layout(requested_spell))
+        spell.until = spell_hold > 0 ? (double)spell_hold : -1.0;
+
+    /* Hidden cursor and a clean slate first; the pen put back at the end. */
+    static const char opening[] = "\033[?25l\033[2J";
+    fprintf(out, "[0, \"o\", ");
+    write_json_string(out, opening, sizeof(opening) - 1);
+    fprintf(out, "]\n");
+
+    long bytes = 0;
+    for (int frame = 0; frame < total; frame++) {
+        clock_state.frame = frame;
+        clock_state.seconds = (double)frame / record_fps;
+        if (spell.writing && spell.until >= 0 && clock_state.seconds >= spell.until) spell_clear();
+        maybe_tell_the_time();
+        maybe_drift();
+
+        memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
+        spatial_grid_build(&grid, config.birds, read_bird_position, snapshot);
+        hunt(snapshot);
+        update_birds(birds, snapshot, &grid);
+        for (int i = 0; i < config.birds; i++) birds[i].frame = direction_frame(birds[i].direction);
+
+        compose_onto(&text_canvas, text_sprites, birds, 0);
+        cells_read(&text_cells, CELLS_BRAILLE, &text_canvas, screen.cell_width, screen.cell_height);
+        if (cells_emit(&text_cells) != CELLS_OK) break;
+        /* Inside a synchronized update, for the players that honour it. */
+        fprintf(out, "[%.4f, \"o\", ", clock_state.seconds);
+        fputs("\"\\u001b[?2026h", out);
+        for (size_t i = 0; i < text_cells.length; i++) {
+            unsigned char c = (unsigned char)text_cells.text[i];
+            if (c == '"' || c == '\\')
+                fprintf(out, "\\%c", c);
+            else if (c < 0x20)
+                fprintf(out, "\\u%04x", c);
+            else
+                fputc(c, out);
+        }
+        fputs("\\u001b[?2026l\"]\n", out);
+        bytes += (long)text_cells.length;
+    }
+    static const char closing[] = "\033[0m\033[?25h";
+    fprintf(out, "[%.4f, \"o\", ", (double)total / record_fps);
+    write_json_string(out, closing, sizeof(closing) - 1);
+    fprintf(out, "]\n");
+    int closed = fclose(out) == 0;
+
+    cells_destroy(&text_cells);
+    png_image_free(&text_canvas);
+    free_sprites(text_sprites);
+    spatial_grid_destroy(&grid);
+    free(snapshot);
+    free(birds);
+    if (!closed) {
+        fprintf(stderr, "%s: %s: %s\n", program_name, record_path, strerror(errno));
+        return EXIT_FAILURE;
+    }
+    printf("%s: %d frames, %dx%d cells, %d fps, %.1fs, %.1f KB of braille\n", record_path, total,
+           screen.cols, screen.rows, record_fps, (double)total / record_fps,
+           (double)bytes / 1024.0);
+    return EXIT_SUCCESS;
+}
+
 static int run_recording(void) {
     static png_image_t frames[ROTATION_FRAMES * (MAX_PALETTE_SHADES + 1)];
     png_image_t canvas = {0, 0, NULL};
@@ -3171,6 +3313,10 @@ static int run_recording(void) {
     gif_writer_t *gif = NULL;
     size_t bytes = 0;
     int written = 0;
+    /* The name says which: a .cast is text, anything else is a GIF. */
+    size_t name_length = strlen(record_path);
+    if (name_length > 5 && strcmp(record_path + name_length - 5, ".cast") == 0)
+        return run_cast_recording();
     /* The delay is whole hundredths, so the rate asked for is rounded to one the
      * format can carry and the rate actually achieved is reported rather than
      * claimed. Every simulated frame is recorded, and the simulation steps at the

@@ -180,6 +180,35 @@ static void test_half_blocks_never_paint_the_sky(void) {
     cells_destroy(&cells);
 }
 
+/* A hop along the row the cursor is already on is a cursor forward, not a fresh
+ * absolute position: half the bytes, over a frame of scattered changes. */
+static void test_a_hop_along_the_row_is_a_cursor_forward(void) {
+    cells_t cells;
+    assert(cells_init(&cells, 1) == CELLS_OK);
+    assert(cells_resize(&cells, 12, 2) == CELLS_OK);
+    png_image_t canvas = blank(12, 2);
+    paint(&canvas, 0, 0, 8, 16, 9, 9, 9);
+    paint(&canvas, 5 * 8, 0, 8, 16, 9, 9, 9);
+    paint(&canvas, 3 * 8, 16, 8, 16, 9, 9, 9);
+    cells_read(&cells, CELLS_BRAILLE, &canvas, 8, 16);
+    assert(cells_emit(&cells) == CELLS_OK); /* Everything, first time. */
+    /* Now move the two birds on the top row one cell right each. */
+    memset(canvas.pixels, 0, (size_t)canvas.width * (size_t)canvas.height * 4);
+    paint(&canvas, 8, 0, 8, 16, 9, 9, 9);
+    paint(&canvas, 6 * 8, 0, 8, 16, 9, 9, 9);
+    paint(&canvas, 3 * 8, 16, 8, 16, 9, 9, 9);
+    cells_read(&cells, CELLS_BRAILLE, &canvas, 8, 16);
+    assert(cells_emit(&cells) == CELLS_OK);
+    /* Row one: an absolute move to the start, then cells 0 and 1 in a run, then
+     * a cursor forward of three to cell 5, then cells 5 and 6. Row two: nothing. */
+    assert(strstr(cells.text, "\033[1;1H") != NULL);
+    assert(strstr(cells.text, "\033[3C") != NULL);
+    assert(strstr(cells.text, "\033[1;6H") == NULL);
+    assert(strstr(cells.text, "\033[2;") == NULL);
+    png_image_free(&canvas);
+    cells_destroy(&cells);
+}
+
 static void test_the_pen_is_not_reset_between_cells_of_one_colour(void) {
     cells_t cells;
     assert(cells_init(&cells, 1) == CELLS_OK);
@@ -265,14 +294,39 @@ static void test_painting_shows_what_the_terminal_showed(void) {
     cells_destroy(&cells);
 }
 
+/* Two birds in one cell: the cell wears the colour of the one that fills more of
+ * it, not a blend that is neither and different in every cell. */
+static void test_a_shared_cell_wears_the_bigger_bird(void) {
+    cells_t cells;
+    assert(cells_init(&cells, 1) == CELLS_OK);
+    assert(cells_resize(&cells, 1, 1) == CELLS_OK);
+    png_image_t canvas = blank(1, 1);
+    paint(&canvas, 0, 0, 8, 10, 200, 0, 0); /* Red, ten rows of sixteen. */
+    paint(&canvas, 0, 10, 8, 6, 0, 0, 200); /* Blue, six. */
+    cells_read(&cells, CELLS_BRAILLE, &canvas, 8, 16);
+    assert(cells_emit(&cells) == CELLS_OK);
+    const cell_t *cell = &cells.before[0];
+    assert(cell->fg[0] == 200 && cell->fg[1] == 0 && cell->fg[2] == 0);
+    /* Weighted by how much of each pixel is ink, not by pixels. */
+    for (int y = 0; y < 10; y++)
+        for (int x = 0; x < 8; x++) canvas.pixels[(y * 8 + x) * 4 + 3] = 60; /* Faint red. */
+    cells_read(&cells, CELLS_BRAILLE, &canvas, 8, 16);
+    assert(cells_emit(&cells) == CELLS_OK);
+    assert(cells.before[0].fg[2] == 200); /* Six solid rows of blue outweigh ten faint of red. */
+    png_image_free(&canvas);
+    cells_destroy(&cells);
+}
+
 int main(void) {
     test_painting_shows_what_the_terminal_showed();
+    test_a_shared_cell_wears_the_bigger_bird();
     test_braille_dot_numbering();
     test_ink_becomes_dots_in_the_ink_colour();
     test_a_faint_fringe_is_not_a_dot();
     test_only_what_changed_is_emitted();
     test_the_corner_left_to_the_panel_is_never_written();
     test_half_blocks_never_paint_the_sky();
+    test_a_hop_along_the_row_is_a_cursor_forward();
     test_the_pen_is_not_reset_between_cells_of_one_colour();
     test_without_truecolor_the_cube_is_used();
     test_a_resize_redraws_everything();

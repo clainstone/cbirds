@@ -350,6 +350,16 @@ fourth is a pull request with one function in it.
 perching along the bottom edge, V formations, a config file, tmux passthrough.
 Fifty were proposed and twenty were built; the rest are listed in `plan.md`.
 
+**Recording as text.** `cbirds --record flock.cast` writes an
+[asciinema](https://asciinema.org) cast instead of a GIF: the same flock the
+braille renderer draws, one line of escape text per frame, only the cells that
+changed. It plays back in any terminal with `asciinema play flock.cast`, embeds
+wherever the player does, and eight seconds of seven hundred birds at thirty
+frames a second is two megabytes, where five seconds of the GIF is five. Every
+cell wears one of the palette's own colours — the six in `docs/demo.cast` are
+the five embers and the hawk — so a run of birds costs one colour sequence, not
+one per cell.
+
 **And the ones taken back out.** Four testers went over every combination of
 flags. Eight of them turned out to be controls nobody could see working, modes
 that were duplicates of other modes, or settings that only made the flock worse:

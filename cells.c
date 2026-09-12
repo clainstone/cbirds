@@ -82,7 +82,14 @@ void cells_invalidate(cells_t *cells) {
 }
 
 /* The ink in one rectangle of the canvas: how much of it there is, and what
- * colour it is on average, weighted by how much of each pixel is ink. */
+ * colour it is. The colour is the one that fills most of the patch, not the
+ * average: two birds of different shades sharing a cell used to average into a
+ * colour that was neither, that changed a little every frame as they moved, and
+ * that was different from every other cell's — ten thousand distinct colours a
+ * recording, each costing a colour sequence. The sprites are flat tints, so the
+ * colours in a patch are few and exact; a small table sorts them. */
+enum { PATCH_COLOURS = 8 };
+
 typedef struct {
     double coverage; /* 0 to 255, mean alpha. */
     uint8_t rgb[3];
@@ -90,6 +97,9 @@ typedef struct {
 
 static patch_t read_patch(const png_image_t *canvas, int x0, int y0, int width, int height) {
     patch_t patch = {0, {0, 0, 0}};
+    uint8_t colour[PATCH_COLOURS][3];
+    double weight[PATCH_COLOURS] = {0};
+    int colours = 0;
     double alpha_sum = 0, red = 0, green = 0, blue = 0;
     long counted = 0;
     for (int y = y0; y < y0 + height; y++) {
@@ -99,16 +109,28 @@ static patch_t read_patch(const png_image_t *canvas, int x0, int y0, int width, 
             const uint8_t *px =
                 &canvas->pixels[((size_t)y * (size_t)canvas->width + (size_t)x) * 4];
             double a = px[3];
+            counted++;
             alpha_sum += a;
+            if (a == 0) continue;
             red += px[0] * a;
             green += px[1] * a;
             blue += px[2] * a;
-            counted++;
+            int slot = 0;
+            while (slot < colours && memcmp(colour[slot], px, 3) != 0) slot++;
+            if (slot == colours && colours < PATCH_COLOURS) memcpy(colour[colours++], px, 3);
+            if (slot < colours) weight[slot] += a;
         }
     }
-    if (counted == 0) return patch;
+    if (counted == 0 || alpha_sum == 0) return patch;
     patch.coverage = alpha_sum / (double)counted;
-    if (alpha_sum > 0) {
+    int best = -1;
+    for (int slot = 0; slot < colours; slot++)
+        if (best < 0 || weight[slot] > weight[best]) best = slot;
+    if (best >= 0 && colours < PATCH_COLOURS) {
+        memcpy(patch.rgb, colour[best], 3);
+    } else {
+        /* More colours than the table holds: a sprite of somebody's own, with
+         * shading of its own. The mean is the honest answer for that. */
         patch.rgb[0] = (uint8_t)(red / alpha_sum + 0.5);
         patch.rgb[1] = (uint8_t)(green / alpha_sum + 0.5);
         patch.rgb[2] = (uint8_t)(blue / alpha_sum + 0.5);
@@ -372,8 +394,13 @@ cells_status_t cells_emit(cells_t *cells) {
             }
             if (!cells->draw_everything && same_cell(cell, &cells->before[at])) continue;
             /* Position only when the cursor is not already here: a run of changed
-             * cells costs one move, not one per cell. */
-            if (cursor_col != col) status = put_format(cells, "\033[%d;%dH", row + 1, col + 1, 0);
+             * cells costs one move, not one per cell — and a short hop along the
+             * same row is a cursor forward, four bytes, rather than an absolute
+             * move at eight or nine. */
+            if (cursor_col >= 0 && col > cursor_col && col - cursor_col < 100)
+                status = put_format(cells, "\033[%dC", col - cursor_col, 0, 0);
+            else if (cursor_col != col)
+                status = put_format(cells, "\033[%d;%dH", row + 1, col + 1, 0);
             if (status == CELLS_OK) status = dress(cells, &pen, cell);
             if (status == CELLS_OK) status = put_glyph(cells, cell->glyph);
             cursor_col = col + 1;

@@ -169,6 +169,7 @@ static config_t config = {
 static screen_t screen;
 static int legend_enabled = 1; /* Cleared by --no-legend, never at runtime. */
 static int mouse_enabled = 1;  /* Cleared by --no-mouse, never at runtime. */
+static int force_graphics;     /* Set by --force: skip the protocol probe. */
 
 /* Where the pointer is, in pixels, and whether it has ever been seen. The
  * terminal reports cells, so the position is the middle of the cell it names:
@@ -193,6 +194,7 @@ static int legend_drawn;
 static struct termios saved_termios;
 static volatile sig_atomic_t terminal_is_raw;
 static volatile sig_atomic_t terminal_restored;
+static volatile sig_atomic_t alt_screen_is_on;
 
 static void write_all(const void *data, size_t length) {
     const char *bytes = data;
@@ -215,6 +217,7 @@ static void restore_terminal(void) {
         tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios);
         terminal_is_raw = 0;
     }
+    if (!alt_screen_is_on) return; /* The probe failed before we took the screen. */
     write_all(MOUSE_OFF, sizeof(MOUSE_OFF) - 1);
     write_all(SYNC_UPDATE_END, sizeof(SYNC_UPDATE_END) - 1);
     write_all(CURSOR_SHOW, sizeof(CURSOR_SHOW) - 1);
@@ -238,11 +241,75 @@ static void install_signal_handlers(void) {
         sigaction(signals[i], &action, NULL);
 }
 
-static int enter_terminal(void) {
-    struct termios raw;
+/* Sends a request and collects whatever comes back until a terminator or the
+ * deadline, whichever is first. Both the graphics probe and the colour queries
+ * are the same shape, asking the terminal a question that it may simply not
+ * answer, and neither may hang the startup path waiting for a reply that is
+ * never coming. Raw mode has to be on already, or the reply would be echoed and
+ * held until a newline. */
+static size_t terminal_query(const char *request, size_t request_length, char *reply,
+                             size_t reply_size, int milliseconds) {
+    struct timespec start, now;
+    size_t length = 0;
+
+    if (reply_size == 0) return 0;
+    reply[0] = '\0';
+    write_all(request, request_length);
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
+    for (;;) {
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        long spent = (now.tv_sec - start.tv_sec) * 1000L + (now.tv_nsec - start.tv_nsec) / 1000000L;
+        if (spent >= milliseconds) break;
+
+        struct pollfd wait = {.fd = STDIN_FILENO, .events = POLLIN};
+        int ready = poll(&wait, 1, (int)(milliseconds - spent));
+        if (ready < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (ready == 0) break;
+
+        ssize_t got = read(STDIN_FILENO, reply + length, reply_size - 1 - length);
+        if (got <= 0) break;
+        length += (size_t)got;
+        reply[length] = '\0';
+        /* Every reply this program asks for ends one of these three ways. */
+        if (memchr(reply, '\a', length) != NULL || strstr(reply, "\033\\") != NULL ||
+            memchr(reply, 'c', length) != NULL)
+            break;
+        if (length + 1 >= reply_size) break;
+    }
+    return length;
+}
+
+/*
+ * Ask whether the terminal speaks the graphics protocol, rather than drawing to
+ * a terminal that cannot show it and leaving a stranger with a black screen and
+ * a bad first impression. A one pixel image is offered for query only, which
+ * uploads nothing and displays nothing; a terminal that understands answers
+ * with an APC reply, and one that does not ignores it silently. The Primary
+ * Device Attributes request that follows is the control: every terminal answers
+ * that, so an answer to the second with none to the first is a clear no rather
+ * than a timeout.
+ */
+static int terminal_speaks_graphics(void) {
+    static const char probe[] = "\033_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\033\\\033[c";
+    char reply[128];
+    size_t length = terminal_query(probe, sizeof(probe) - 1, reply, sizeof(reply), 250);
+    if (length == 0) return 0; /* Answered nothing at all: assume the worst. */
+    return strstr(reply, "\033_G") != NULL;
+}
+
+static void enter_alt_screen(void) {
     write_all(ALT_SCREEN_ON, sizeof(ALT_SCREEN_ON) - 1);
     write_all(CURSOR_HIDE, sizeof(CURSOR_HIDE) - 1);
     if (mouse_enabled) write_all(MOUSE_ON, sizeof(MOUSE_ON) - 1);
+    alt_screen_is_on = 1;
+}
+
+static int enter_terminal(void) {
+    struct termios raw;
     if (tcgetattr(STDIN_FILENO, &raw) < 0) return -1;
     saved_termios = raw;
     raw.c_iflag &= (tcflag_t) ~(tcflag_t)(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
@@ -913,6 +980,8 @@ static const option_t OPTIONS[] = {
      "show the parameter panel, on by default", "Display"},
     {'m', "mouse", OPTION_FLAG, &mouse_enabled, 0, 0, NULL, NULL,
      "follow the pointer, on by default", "Interaction"},
+    {0, "force", OPTION_FLAG, &force_graphics, 0, 0, NULL, NULL,
+     "draw without asking the terminal whether it can", "General"},
 };
 enum { OPTION_COUNT = sizeof(OPTIONS) / sizeof(*OPTIONS) };
 
@@ -1000,6 +1069,17 @@ int main(int argc, char **argv) {
         perror("Can't enable raw mode");
         exit(EXIT_FAILURE);
     }
+    /* Asked before the screen is taken, so the answer can be a sentence on the
+     * user's own prompt rather than a black rectangle they have to kill. */
+    if (!force_graphics && !terminal_speaks_graphics()) {
+        restore_terminal();
+        fprintf(stderr,
+                "cbirds draws with the Kitty graphics protocol, and this terminal did not\n"
+                "answer for it. Kitty, WezTerm, Ghostty and recent Konsole all do.\n"
+                "Run it under one of those, or pass --force to try anyway.\n");
+        exit(EXIT_FAILURE);
+    }
+    enter_alt_screen();
     write_all("\x1b[J", sizeof("\x1b[J") - 1);
     update_screen_dimensions();
     initialize_birds(birds);

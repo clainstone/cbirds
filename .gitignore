@@ -15,6 +15,8 @@ core.*
 # Local tools, captures, editor and OS noise
 .claude/
 demo.txt
+legend.txt
+prompt.txt
 .idea/
 .vscode/
 *.swp

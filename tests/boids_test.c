@@ -1983,6 +1983,173 @@ static void test_a_cast_is_the_flock_as_text(void) {
     reset_test_config();
 }
 
+/* The catalogue of sprite sets: every kind of thing drawn has its own run of
+ * images, none of them overlap, and every renderer reaches the same one. */
+static void test_the_sprite_catalogue_has_a_place_for_everything(void) {
+    reset_test_config();
+    config.palette = palette_named("ember");
+    int shades = palette_shades();
+    int seen[MAX_SPRITE_SETS] = {0};
+    for (int shade = 0; shade < shades; shade++) {
+        for (int wing = 0; wing < WING_PHASES; wing++) seen[flock_set(shade, wing, 0)]++;
+        seen[flock_set(shade, 0, 1)]++;
+    }
+    for (int wing = 0; wing < WING_PHASES; wing++) seen[hawk_set(wing)]++;
+    for (int step = 0; step < TRAIL_LENGTH; step++) seen[trail_set(step)]++;
+    for (int set = 0; set < sprite_set_count(); set++) assert(seen[set] == 1);
+    assert(sprite_set_count() <= MAX_SPRITE_SETS);
+    /* Ids are one based and run one set after another without a gap. */
+    assert(set_image_id(0, 0) == 1);
+    assert(set_image_id(1, 0) == ROTATION_FRAMES + 1);
+    bird_t near = {.shade = 2, .wing = 1, .layer = 0, .frame = 7};
+    bird_t far = {.shade = 2, .wing = 1, .layer = 1, .frame = 7};
+    assert(sprite_image_id(&near) == set_image_id(flock_set(2, WING_SEQUENCE[1], 0), 7));
+    assert(sprite_image_id(&far) == set_image_id(flock_set(2, 0, 1), 7));
+    assert(sprite_image_id(&near) != sprite_image_id(&far));
+
+    /* And rasterising fills every set: a wing phase, a far bird, a hawk phase and
+     * a step of tail each have their pictures, the far and the tails smaller. */
+    static png_image_t frames[ROTATION_FRAMES * MAX_SPRITE_SETS];
+    assert(rasterise_sprites(frames) == PNG_OK);
+    for (int set = 0; set < sprite_set_count(); set++)
+        for (int frame = 0; frame < ROTATION_FRAMES; frame++)
+            assert(frames[set * ROTATION_FRAMES + frame].pixels != NULL);
+    assert(frames[flock_set(0, 0, 1) * ROTATION_FRAMES].width < config.bird_size);
+    assert(frames[trail_set(0) * ROTATION_FRAMES].width < config.bird_size);
+    assert(frames[hawk_set(0) * ROTATION_FRAMES].width == hawk_sprite_size());
+    /* A folded wing has less ink than a spread one. */
+    long spread = 0, folded = 0;
+    const png_image_t *open = &frames[flock_set(0, 0, 0) * ROTATION_FRAMES];
+    const png_image_t *shut = &frames[flock_set(0, WING_PHASES - 1, 0) * ROTATION_FRAMES];
+    for (int i = 0; i < open->width * open->height; i++) spread += open->pixels[i * 4 + 3];
+    for (int i = 0; i < shut->width * shut->height; i++) folded += shut->pixels[i * 4 + 3];
+    assert(folded < spread * 3 / 4);
+    /* Each step of tail is fainter than the one before it. */
+    long ink[TRAIL_LENGTH];
+    for (int step = 0; step < TRAIL_LENGTH; step++) {
+        const png_image_t *ghost = &frames[trail_set(step) * ROTATION_FRAMES];
+        ink[step] = 0;
+        for (int i = 0; i < ghost->width * ghost->height; i++)
+            ink[step] += ghost->pixels[i * 4 + 3];
+        if (step > 0) assert(ink[step] < ink[step - 1]);
+    }
+    /* And a far bird is dimmer than a near one of the same shade. */
+    const png_image_t *near_bird = &frames[flock_set(0, 0, 0) * ROTATION_FRAMES];
+    const png_image_t *far_bird = &frames[flock_set(0, 0, 1) * ROTATION_FRAMES];
+    int near_sum = 0, far_sum = 0, counted = 0;
+    for (int i = 0; i < near_bird->width * near_bird->height && !counted; i++)
+        if (near_bird->pixels[i * 4 + 3] == 255) {
+            near_sum = near_bird->pixels[i * 4] + near_bird->pixels[i * 4 + 1] +
+                       near_bird->pixels[i * 4 + 2];
+            counted = 1;
+        }
+    counted = 0;
+    for (int i = 0; i < far_bird->width * far_bird->height && !counted; i++)
+        if (far_bird->pixels[i * 4 + 3] == 255) {
+            far_sum =
+                far_bird->pixels[i * 4] + far_bird->pixels[i * 4 + 1] + far_bird->pixels[i * 4 + 2];
+            counted = 1;
+        }
+    assert(far_sum < near_sum);
+    free_sprites(frames);
+    reset_test_config();
+}
+
+/* Two planes: a far bird is smaller, slower, and neither sees nor is seen by a
+ * near one, and the hawk hunts only the near sky. */
+static void test_the_far_layer_is_another_sky(void) {
+    enum { BIRD_COUNT = 30 };
+    bird_t birds[BIRD_COUNT], snapshot[BIRD_COUNT];
+    spatial_grid_t grid;
+
+    reset_test_config();
+    legend_enabled = 0;
+    apply_screen_size(200, 50, 1600, 800);
+    config.birds = BIRD_COUNT;
+    /* A near bird heading east, on top of a crowd of far birds heading west. */
+    birds[0] = (bird_t){.x = 800, .y = 400, .direction = 0, .layer = 0};
+    for (int i = 1; i < BIRD_COUNT; i++)
+        birds[i] = (bird_t){.x = 800, .y = 400, .direction = M_PI, .layer = 1};
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRD_COUNT) == SPATIAL_GRID_OK);
+    assert(spatial_grid_build(&grid, BIRD_COUNT, read_bird_position, birds) == SPATIAL_GRID_OK);
+    measure_flocks(birds);
+    assert(flock_direction(birds, &grid, 0) == 0.0); /* Not pushed, not aligned, nothing. */
+
+    /* Slower: the same step for both planes is a different distance. */
+    birds[1] = (bird_t){.x = 800, .y = 600, .direction = 0, .layer = 1};
+    memcpy(snapshot, birds, sizeof(birds));
+    assert(spatial_grid_build(&grid, BIRD_COUNT, read_bird_position, snapshot) == SPATIAL_GRID_OK);
+    update_birds(birds, snapshot, &grid);
+    double near_step = birds[0].x - 800, far_step = birds[1].x - 800;
+    assert(near_step > 0 && far_step > 0);
+    assert(fabs(far_step - near_step * FAR_PACE) < 1e-6);
+
+    /* The hawk hunts only the near sky, and only the near sky fears it. */
+    config.hawks = 1;
+    place_hawks();
+    hawks[0].x = 100;
+    hawks[0].y = 400;
+    birds[0] = (bird_t){.x = 700, .y = 400, .layer = 0}; /* Near, further away. */
+    birds[1] = (bird_t){.x = 150, .y = 400, .layer = 1}; /* Far, right beside it. */
+    for (int i = 2; i < BIRD_COUNT; i++) birds[i] = (bird_t){.x = 1500, .y = 700, .layer = 1};
+    assert(nearest_bird(birds, hawks[0].x, hawks[0].y, 0, 0, 0) == 0);
+    assert(hawk_vector(&birds[1]).x == 0 && hawk_vector(&birds[1]).y == 0);
+    birds[1].layer = 0;
+    assert(hawk_vector(&birds[1]).x > 0);
+
+    /* Every bird is born into one plane or the other; --flat puts them all in one. */
+    config.hawks = 0;
+    int far = 0;
+    srand(3);
+    for (int i = 0; i < BIRD_COUNT; i++) {
+        place_one_bird(&birds[i], i);
+        far += birds[i].layer;
+    }
+    assert(far > 0 && far < BIRD_COUNT);
+    flat_look = 1;
+    for (int i = 0; i < BIRD_COUNT; i++) {
+        place_one_bird(&birds[i], i);
+        assert(birds[i].layer == 0);
+    }
+    flat_look = 0;
+    spatial_grid_destroy(&grid);
+    legend_enabled = 1;
+    reset_test_config();
+}
+
+/* Wings beat at WING_HZ whatever the frame rate, out and back through the
+ * sequence, and a bird sometimes stops to glide with them out. */
+static void test_wings_beat_and_sometimes_glide(void) {
+    reset_test_config();
+    config.frame_rate = 60;
+    bird_t bird = {.wing = 0, .wing_clock = 0, .gliding = 0};
+    /* One beat is WING_CYCLE phases; at sixty frames a second and six beats a
+     * second, that is ten frames a beat. */
+    int phases_seen[WING_CYCLE] = {0};
+    srand(1);
+    int frames = 0, beats = 0, glided = 0;
+    for (frames = 0; frames < 600; frames++) {
+        int before = bird.wing;
+        beat_wings(&bird);
+        phases_seen[bird.wing % WING_CYCLE]++;
+        if (bird.gliding > 0) glided++;
+        if (before == WING_CYCLE - 1 && bird.wing == 0) beats++;
+        /* Never a jump of more than one phase in a frame. */
+        assert(bird.wing == before || bird.wing == (before + 1) % WING_CYCLE ||
+               (bird.gliding > 0 && bird.wing == 0));
+    }
+    for (int p = 0; p < WING_CYCLE; p++) assert(phases_seen[p] > 0);
+    assert(beats >= 40 && beats <= 62); /* About six a second, less the glides. */
+    assert(glided > 0);                 /* It glided at some point... */
+    assert(glided < frames / 2);        /* ...and mostly did not. */
+    /* The sequence goes out, half, folded, half: the picture for phase 3 is the
+     * same as for phase 1. */
+    assert(WING_SEQUENCE[1] == WING_SEQUENCE[3]);
+    assert(WING_SEQUENCE[0] == 0 && WING_SEQUENCE[2] == WING_PHASES - 1);
+    reset_test_config();
+}
+
 /* A GIF has no panel in it, so it must not have a hole where one would be — and
  * it is drawn without a terminal, so the palette that asks the terminal what
  * colours it uses has to fall back to one that has colours in it. */
@@ -2450,6 +2617,9 @@ int main(void) {
     test_theme_colours_are_parsed();
     test_each_flock_flies_at_its_own_pace();
     test_the_matrix_is_the_only_thing_that_rains();
+    test_the_sprite_catalogue_has_a_place_for_everything();
+    test_the_far_layer_is_another_sky();
+    test_wings_beat_and_sometimes_glide();
     test_a_text_terminal_gets_the_flock_in_braille();
     test_a_sixel_or_iterm_terminal_gets_a_picture_a_frame();
     test_a_cast_is_the_flock_as_text();

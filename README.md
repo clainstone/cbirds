@@ -133,7 +133,7 @@ edges of what was left.
 | `space` | pause | `.` | one frame |
 | `0` | back to the defaults | `Tab` | next preset |
 | `+`/`-` | more or fewer birds | `k`/`K` | summon or dismiss a hawk |
-| `e` | trails | `M` | cycle the pointer's mode |
+| `e` | tails | `M` | cycle the pointer's mode |
 | `q` | quit, with a fly-away | | |
 
 There is also the Konami code. It is in `--help`, under **Oddities**, because an
@@ -160,7 +160,7 @@ Try 'cbirds --help'.
 
 **The sprite.** One PNG, compiled into the binary as a C array. At startup it is
 decoded, scaled up 8×, then rotated into 90 frames at 4° apart and re-encoded as
-90 PNGs in memory — 50 ms. Colour is a second set of images, because Kitty has
+1,560 PNGs in memory — two hundred milliseconds, most of it rotation. Colour is a second set of images, because Kitty has
 no per-placement tint; the rotation is the expensive half and does not depend on
 the colour, so each angle is rotated **once** and then tinted and encoded per
 shade. Five shades cost 35 ms, not 250.
@@ -224,6 +224,25 @@ background: an empty cell is the terminal's own, so the flock wears the theme.
 Terminals without 24 bit colour get the nearest of the 256 colour cube. The
 parameter panel is text either way, and the cells leave its corner alone.
 
+**The wings.** Every bird beats them: three pictures a heading — wings out,
+half, folded — beaten out and back at six a second whatever the frame rate, each
+bird at its own place in the beat, and now and then one stops to glide with its
+wings held out, because a flock in which every wing is always moving looks like
+a machine. Seen from above a beat is the wingspan foreshortening, so the pictures
+are the one sprite squashed across the line of flight, not new drawings. A hawk
+soars, and beats its wings only in the dive.
+
+**The depth.** Two planes. A third of the birds are far: smaller, slower — the
+parallax between the planes is what makes a flat screen read as a sky — dimmed
+toward the ground the way distance dims a colour, drawn underneath, and flocking
+only with each other. The hawk hunts the near sky and only the near sky fears it.
+`--flat` puts every bird in one plane.
+
+**The tails.** `-e` gives every fourth bird three ghosts of itself behind it,
+each fainter and a little smaller than the last: a fade, not a queue. They used
+to be full birds in the palette's darkest shade, which in a still read as some
+birds being a different colour and never as motion.
+
 **The edges.** A band a third of the screen wide on each side, in which the push
 inwards grows with the square of how deep into it a bird has gone, so a bird that
 brushes the edge is nudged and a bird that is leaving is turned. Past the screen
@@ -284,13 +303,13 @@ check them rather than take them on trust. Ryzen-class laptop, 1600×800 viewpor
 
 | birds | CPU per frame | ceiling | bytes per frame |
 |---|---|---|---|
-| 400 | 0.255 ms | 3920 fps | 15.8 KB |
-| 800 | 0.548 ms | 1825 fps | 30.8 KB |
-| 2000 | 1.741 ms | 574 fps | 75.7 KB |
-| 4096 | 4.541 ms | 220 fps | 153.9 KB |
+| 400 | 0.226 ms | 4426 fps | 16.6 KB |
+| 800 | 0.534 ms | 1874 fps | 32.5 KB |
+| 2000 | 1.688 ms | 592 fps | 80.1 KB |
+| 4096 | 4.397 ms | 227 fps | 163.1 KB |
 
 The simulation is not the bottleneck and has not been since the spatial grid
-landed. The limit is terminal bandwidth: 1.9 MB/s at the default, 9.4 MB/s at
+landed. The limit is terminal bandwidth: 2.0 MB/s at the default, 10 MB/s at
 four thousand birds.
 
 These went up by half when the edges were fixed, and the reason is worth stating:

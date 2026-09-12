@@ -22,6 +22,7 @@
 #include "kitty_graphics.h"
 #include "options.h"
 #include "png.h"
+#include "sixel.h"
 #include "spatial_grid.h"
 #include "sprite_png.h"
 
@@ -282,17 +283,30 @@ static int mouse_enabled = 1;  /* Cleared by --no-mouse, never at runtime. */
  * fine.
  */
 typedef enum {
-    RENDER_AUTO = 0, /* Kitty if the terminal answers for it, braille if not. */
+    RENDER_AUTO = 0, /* The best the terminal answers for; braille if it answers for none. */
     RENDER_KITTY,
+    RENDER_SIXEL, /* xterm, foot, mlterm, contour, mintty: a picture a frame. */
+    RENDER_ITERM, /* iTerm2's inline images: a PNG a frame. */
     RENDER_BRAILLE,
     RENDER_BLOCKS,
 } render_mode_t;
-static const char *const RENDER_NAMES[] = {"auto", "kitty", "braille", "blocks", NULL};
+static const char *const RENDER_NAMES[] = {"auto",    "kitty",  "sixel", "iterm",
+                                           "braille", "blocks", NULL};
 static int render_mode = RENDER_AUTO;
 
 static int drawing_with_text(void) {
     return render_mode == RENDER_BRAILLE || render_mode == RENDER_BLOCKS;
 }
+
+/* A whole picture every frame, rather than sprites placed or cells diffed. */
+static int drawing_a_picture_a_frame(void) {
+    return render_mode == RENDER_SIXEL || render_mode == RENDER_ITERM;
+}
+
+/* Thirty frames a second is what a picture a frame can afford: a sixel frame is
+ * tens of kilobytes and an inline PNG about a hundred, and a terminal decoding
+ * either sixty times a second falls behind and the flock stutters. */
+enum { PICTURE_FRAME_RATE_MAX = 30 };
 
 /* Where the pointer is, in pixels, and whether it has ever been seen. The
  * terminal reports cells, so the position is the middle of the cell it names:
@@ -349,6 +363,7 @@ static void restore_terminal(void) {
     }
     if (!alt_screen_is_on) return; /* The probe failed before we took the screen. */
     write_all(MOUSE_REPORT_OFF, sizeof(MOUSE_REPORT_OFF) - 1);
+    if (render_mode == RENDER_SIXEL) write_all("\033[?80l", 6);
     write_all(SYNC_UPDATE_END, sizeof(SYNC_UPDATE_END) - 1);
     write_all(CURSOR_SHOW, sizeof(CURSOR_SHOW) - 1);
     write_all(ALT_SCREEN_OFF, sizeof(ALT_SCREEN_OFF) - 1);
@@ -423,12 +438,35 @@ static size_t terminal_query(const char *request, size_t request_length, char *r
  * that, so an answer to the second with none to the first is a clear no rather
  * than a timeout.
  */
-static int terminal_speaks_graphics(void) {
+typedef struct {
+    int kitty; /* Answered the graphics query. */
+    int sixel; /* Listed 4 among its Primary Device Attributes. */
+} protocols_t;
+
+static protocols_t terminal_protocols(void) {
     static const char probe[] = "\033_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\033\\\033[c";
-    char reply[128];
+    char reply[256];
+    protocols_t answered = {0, 0};
     size_t length = terminal_query(probe, sizeof(probe) - 1, reply, sizeof(reply), 250);
-    if (length == 0) return 0; /* Answered nothing at all: assume the worst. */
-    return strstr(reply, "\033_G") != NULL;
+    if (length == 0) return answered; /* Answered nothing at all: assume the worst. */
+    answered.kitty = strstr(reply, "\033_G") != NULL;
+    /* DA1 is CSI ? 6x ; a ; b ; ... c, and the attribute for sixel is 4. It has
+     * to be its own field: 64 is a VT level, not a sixel. */
+    const char *da = strstr(reply, "\033[?");
+    if (da != NULL) {
+        for (const char *p = da + 3; *p != '\0' && *p != 'c'; p++) {
+            if (p[-1] == ';' && p[0] == '4' && (p[1] == ';' || p[1] == 'c')) answered.sixel = 1;
+        }
+    }
+    return answered;
+}
+
+/* iTerm2 does not answer for either protocol and has one of its own; it says
+ * who it is in the environment. */
+static int terminal_is_iterm(void) {
+    const char *program = getenv("TERM_PROGRAM"), *lc = getenv("LC_TERMINAL");
+    return (program != NULL && strcmp(program, "iTerm.app") == 0) ||
+           (lc != NULL && strcmp(lc, "iTerm2") == 0);
 }
 
 static void enter_alt_screen(void) {
@@ -2068,9 +2106,11 @@ static kitty_graphics_status_t queue_legend(kitty_graphics_t *graphics) {
 }
 
 static kitty_graphics_status_t queue_text_frame(kitty_graphics_t *graphics, const bird_t *birds);
+static kitty_graphics_status_t queue_picture_frame(kitty_graphics_t *graphics, const bird_t *birds);
 
 static kitty_graphics_status_t queue_render_frame(kitty_graphics_t *graphics, const bird_t *birds) {
     if (drawing_with_text()) return queue_text_frame(graphics, birds);
+    if (drawing_a_picture_a_frame()) return queue_picture_frame(graphics, birds);
     kitty_graphics_status_t status = kitty_graphics_begin_synchronized_update(graphics);
     if (status == KITTY_GRAPHICS_OK) status = kitty_graphics_delete_all_placements(graphics);
     if (config.trails && palette_shades() > 1) {
@@ -2135,6 +2175,103 @@ static int prepare_text_renderer(void) {
     if (rasterise_sprites(text_sprites) != PNG_OK) return 0;
     if (cells_init(&text_cells, terminal_has_truecolor()) != CELLS_OK) return 0;
     return 1;
+}
+
+/*
+ * A picture a frame, for the terminals that draw pixels but not Kitty's.
+ *
+ * Sixel gets the frame against a palette of what is actually in it — the ground,
+ * every tint of the ramp, the hawk, and each tint half way to the ground for
+ * the anti-aliased edges — so a frame is a dozen colours and tens of kilobytes
+ * rather than two hundred and fifty six colours and two hundred. iTerm2 gets a
+ * PNG through the same encoder the snapshots use.
+ */
+static sixel_t picture_sixel;
+static uint8_t picture_palette[SIXEL_COLOURS_MAX][3];
+static int picture_colours;
+static const uint8_t PICTURE_GROUND[3] = {18, 18, 24};
+
+static void build_picture_palette(void) {
+    picture_colours = 0;
+    memcpy(picture_palette[picture_colours++], PICTURE_GROUND, 3);
+    const palette_t *chosen = palette();
+    int shades = palette_shades();
+    for (int shade = 0; shade < shades && chosen->tints != NULL; shade++) {
+        memcpy(picture_palette[picture_colours++], chosen->tints[shade], 3);
+        for (int c = 0; c < 3; c++)
+            picture_palette[picture_colours][c] =
+                (uint8_t)((chosen->tints[shade][c] + PICTURE_GROUND[c]) / 2);
+        picture_colours++;
+    }
+    memcpy(picture_palette[picture_colours++], hawk_colour(), 3);
+}
+
+static int prepare_picture_renderer(void) {
+    if (rasterise_sprites(text_sprites) != PNG_OK) return 0;
+    if (render_mode == RENDER_SIXEL && sixel_init(&picture_sixel) != SIXEL_OK) return 0;
+    build_picture_palette();
+    return 1;
+}
+
+static const char BASE64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static kitty_graphics_status_t write_base64(kitty_graphics_t *graphics, const uint8_t *bytes,
+                                            size_t length) {
+    char chunk[4096];
+    size_t at = 0;
+    kitty_graphics_status_t status = KITTY_GRAPHICS_OK;
+    for (size_t i = 0; i < length && status == KITTY_GRAPHICS_OK; i += 3) {
+        uint32_t triple = (uint32_t)bytes[i] << 16;
+        if (i + 1 < length) triple |= (uint32_t)bytes[i + 1] << 8;
+        if (i + 2 < length) triple |= bytes[i + 2];
+        chunk[at++] = BASE64[(triple >> 18) & 63];
+        chunk[at++] = BASE64[(triple >> 12) & 63];
+        chunk[at++] = i + 1 < length ? BASE64[(triple >> 6) & 63] : '=';
+        chunk[at++] = i + 2 < length ? BASE64[triple & 63] : '=';
+        if (at + 4 > sizeof(chunk)) {
+            status = kitty_graphics_write_raw(graphics, chunk, at);
+            at = 0;
+        }
+    }
+    if (status == KITTY_GRAPHICS_OK && at > 0)
+        status = kitty_graphics_write_raw(graphics, chunk, at);
+    return status;
+}
+
+static kitty_graphics_status_t queue_picture_frame(kitty_graphics_t *graphics,
+                                                   const bird_t *birds) {
+    if (text_canvas.width != screen.width || text_canvas.height != screen.height) {
+        png_image_free(&text_canvas);
+        if (png_image_alloc(&text_canvas, screen.width, screen.height) != PNG_OK)
+            return KITTY_GRAPHICS_ERR_MEMORY;
+    }
+    kitty_graphics_status_t status = kitty_graphics_begin_synchronized_update(graphics);
+    compose_onto(&text_canvas, text_sprites, birds, 1);
+    /* From the top left corner every time; the picture is the whole screen. */
+    if (status == KITTY_GRAPHICS_OK) status = kitty_graphics_write_raw(graphics, "\033[H", 3);
+    if (status == KITTY_GRAPHICS_OK && render_mode == RENDER_SIXEL) {
+        if (sixel_encode(&picture_sixel, &text_canvas, (const uint8_t(*)[3])picture_palette,
+                         picture_colours) != SIXEL_OK)
+            return KITTY_GRAPHICS_ERR_MEMORY;
+        status = kitty_graphics_write_raw(graphics, picture_sixel.text, picture_sixel.length);
+    } else if (status == KITTY_GRAPHICS_OK) {
+        uint8_t *encoded = NULL;
+        size_t length = 0;
+        if (png_encode(&text_canvas, &encoded, &length) != PNG_OK) return KITTY_GRAPHICS_ERR_MEMORY;
+        char head[128];
+        int head_length = snprintf(head, sizeof(head),
+                                   "\033]1337;File=inline=1;width=%dpx;height=%dpx;"
+                                   "preserveAspectRatio=0;doNotMoveCursor=1:",
+                                   screen.width, screen.height);
+        status = kitty_graphics_write_raw(graphics, head, (size_t)head_length);
+        if (status == KITTY_GRAPHICS_OK) status = write_base64(graphics, encoded, length);
+        if (status == KITTY_GRAPHICS_OK) status = kitty_graphics_write_raw(graphics, "\a", 1);
+        free(encoded);
+    }
+    /* The panel over the picture, as text, the same as everywhere else. */
+    if (status == KITTY_GRAPHICS_OK) status = queue_legend(graphics);
+    if (status == KITTY_GRAPHICS_OK) status = kitty_graphics_end_synchronized_update(graphics);
+    return status;
 }
 
 /* Sized to the screen, and resized with it. */
@@ -2228,6 +2365,8 @@ static void apply_notches(void) {
     config.vision_cells = (config.vision_radius + SPATIAL_CELL_SIZE - 1) / SPATIAL_CELL_SIZE;
 
     config.frame_rate = notch_integer(config.rate_notch, MIN_FRAME_RATE, MAX_FRAME_RATE);
+    if (drawing_a_picture_a_frame() && config.frame_rate > PICTURE_FRAME_RATE_MAX)
+        config.frame_rate = PICTURE_FRAME_RATE_MAX;
     update_speed();
 }
 
@@ -2376,7 +2515,7 @@ static const option_t OPTIONS[] = {
      "the size to record at, in cells (default 96x26)", "Output", 0},
 
     {0, "render", NULL, OPTION_ENUM, &render_mode, 0, 0, RENDER_NAMES, "HOW",
-     "kitty, braille or blocks; auto asks the terminal (default auto)", "Look", 1},
+     "kitty, sixel, iterm, braille, blocks; auto asks (default auto)", "Look", 1},
 };
 enum { OPTION_COUNT = sizeof(OPTIONS) / sizeof(*OPTIONS) };
 
@@ -3130,6 +3269,14 @@ static int run_benchmark(void) {
 
     settle_the_palette_without_a_terminal();
     apply_screen_size(200, 50, 1600, 800);
+    /* There is no terminal to ask, so auto means Kitty; any other renderer is
+     * measured as asked for, sprites built the way it builds them. */
+    if (render_mode == RENDER_AUTO) render_mode = RENDER_KITTY;
+    if (drawing_with_text() && !prepare_text_renderer()) return EXIT_FAILURE;
+    if (drawing_a_picture_a_frame()) {
+        if (!prepare_picture_renderer()) return EXIT_FAILURE;
+        apply_notches();
+    }
     if (spatial_grid_init(&grid, SPATIAL_CELL_SIZE) != SPATIAL_GRID_OK) return EXIT_FAILURE;
     if (spatial_grid_prepare(&grid, screen.width, screen.height, config.birds) != SPATIAL_GRID_OK)
         return EXIT_FAILURE;
@@ -3161,6 +3308,7 @@ static int run_benchmark(void) {
     printf("flocks       %d\n", config.flocks);
     printf("hawks        %d\n", config.hawks);
     printf("viewport     %dx%d px\n", screen.width, screen.height);
+    printf("render       %s\n", RENDER_NAMES[render_mode]);
     printf("frames       %d\n", bench_frames);
     printf("frame time   %.3f ms\n", per_frame * 1000.0);
     printf("ceiling      %.0f fps\n", 1.0 / per_frame);
@@ -3195,8 +3343,17 @@ int main(int argc, char **argv) {
     }
     /* Kitty's protocol if the terminal answers for it, and the same flock in
      * braille if it does not: there is no terminal this refuses to run in. */
-    if (render_mode == RENDER_AUTO)
-        render_mode = terminal_speaks_graphics() ? RENDER_KITTY : RENDER_BRAILLE;
+    if (render_mode == RENDER_AUTO) {
+        protocols_t answered = terminal_protocols();
+        if (answered.kitty)
+            render_mode = RENDER_KITTY;
+        else if (answered.sixel)
+            render_mode = RENDER_SIXEL;
+        else if (terminal_is_iterm())
+            render_mode = RENDER_ITERM;
+        else
+            render_mode = RENDER_BRAILLE;
+    }
     if (palette_follows_the_theme() && !learn_the_theme()) config.palette = FALLBACK_PALETTE;
 
     spatial_grid_status_t grid_status = spatial_grid_init(&grid, SPATIAL_CELL_SIZE);
@@ -3221,6 +3378,16 @@ int main(int argc, char **argv) {
             fprintf(stderr, "%s: cannot build the sprites to draw with\n", program_name);
             exit(EXIT_FAILURE);
         }
+    } else if (drawing_a_picture_a_frame()) {
+        if (!prepare_picture_renderer()) {
+            fprintf(stderr, "%s: cannot build the sprites to draw with\n", program_name);
+            exit(EXIT_FAILURE);
+        }
+        apply_notches(); /* The rate cap for a picture a frame. */
+        /* Sixel display mode: the picture goes at the top left of the screen and
+         * moves the cursor nowhere, which is the one thing a full screen animation
+         * needs a sixel terminal to do. */
+        if (render_mode == RENDER_SIXEL) write_all("\033[?80h", 6);
     } else {
         build_rotation_frames(frames, palette_shades(), config.bird_size, 0);
         /* A hawk has to read as a bigger bird at a glance, so it gets its own set
@@ -3255,7 +3422,7 @@ int main(int argc, char **argv) {
     } else if (show_intro && spell_layout("CBIRDS")) {
         spell.until = INTRO_SECONDS;
     }
-    if (!drawing_with_text()) {
+    if (render_mode == RENDER_KITTY) {
         int sprite_sets = palette_shades() + 1;
         graphics_status = upload_rotation_frames(&graphics, frames, sprite_sets);
         free_rotation_frames(frames, sprite_sets);

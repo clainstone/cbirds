@@ -44,11 +44,7 @@ enum {
     /* Three is as many as a five step ramp can tell apart: at four the two nearest
      * shades are closer to each other than two birds are wide. */
     MAX_FLOCKS = 3,
-    MOUSE_FLEE = 0,
-    MOUSE_FOLLOW,
-    MOUSE_OFF,
-    MOUSE_MODE_COUNT,
-    DEFAULT_MOUSE_REACH = 120,
+    MOUSE_REACH = 120, /* Pixels from the pointer within which a bird feels it. */
     DEFAULT_VISION_NOTCH = 6,
     DEFAULT_TURNING_NOTCH = 8,
     /* Only every sixteenth bird leaves one, because a tail behind all of them is
@@ -72,7 +68,6 @@ enum {
      * sixty is simply not a rate a GIF has. */
     MAX_RECORD_FPS = 50,
     AUTOPILOT_PERIOD = 4, /* Seconds between one slider moving and the next. */
-    AUTOPILOT_YIELD = 3,  /* Seconds it keeps its hands off after a keypress. */
     OUTRO_FRAMES = 40,
     FRAME_ANGLE = 360 / ROTATION_FRAMES,
     SPRITE_SUPERSAMPLE = 6,
@@ -89,10 +84,11 @@ enum {
      * third on the sides and the top, half of that at the bottom. */
     TURN_BAND_DIVISOR = 3,
     BOTTOM_BAND_DIVISOR = 6,
-    MIN_FRAME_RATE = 30,
-    DEFAULT_FRAME_RATE = 60,
-    MAX_FRAME_RATE = 120,
-    FRAME_RATE_STEP = 5,
+    /* Sixty is the rate, not a setting: every speed and turn in the program is a
+     * per second quantity divided by it, and a picture a frame terminal is the
+     * one thing that lowers it. A cast may be recorded at up to twice that. */
+    FRAME_RATE = 60,
+    MAX_CAST_FPS = 120,
     DEFAULT_SPEED = 40,
     DEFAULT_BIRD_SIZE = 15,
     SPATIAL_CELL_SIZE = 12,
@@ -110,13 +106,13 @@ enum {
      * everything; the minimums leave a corridor to the right of the panel and
      * one underneath it. */
     LEGEND_COLUMNS = 38,
-    LEGEND_ROWS = 10,
+    LEGEND_ROWS = 9,
     /* One notch a keypress, so this is also the number of steps every parameter
      * travels through, from its floor to its ceiling. */
     LEGEND_BAR_CELLS = 12,
     LEGEND_NAME_WIDTH = 10,
     LEGEND_VALUE_WIDTH = 5,
-    /* The panel is 38 by 10 cells and the flock may not enter it. At the smallest
+    /* The panel is 38 by 9 cells and the flock may not enter it. At the smallest
      * terminal it used to appear in it covered half the screen, and half the flock
      * was squeezed off the edges of what was left: it needs to be a fifth of the
      * room, not a half, so it waits for a window it fits inside. */
@@ -156,7 +152,7 @@ static const double HAWK_TURN = 1.0;
 /* That is per frame at sixty a second. At any other rate it has to be rescaled or
  * the hawk is a different animal: half a radian a frame is 1718 degrees a second
  * at sixty and 3437 at a hundred and twenty. */
-#define HAWK_TURN_PER_FRAME() (HAWK_TURN * DEFAULT_FRAME_RATE / (double)config.frame_rate)
+#define HAWK_TURN_PER_FRAME() (HAWK_TURN * FRAME_RATE / (double)config.frame_rate)
 static const double HAWK_LEAD = 3.0; /* Frames ahead of the prey it aims. */
 /* Inside the dive it accelerates and stops leading: a bird that flees is only a
  * tenth slower than a cruising hawk, so without this the chase never closes and
@@ -269,7 +265,6 @@ typedef struct {
 
 typedef struct {
     int birds, frame_rate, bird_size, palette, flocks;
-    int mouse_mode, mouse_reach;
     int trails, hawks, shape;
     int turning_notch;
     double speed;
@@ -279,18 +274,16 @@ typedef struct {
      * move; every value above is derived from them, which is what makes one
      * keypress exactly one notch of bar rather than nearly one. */
     int boundary_notch, separation_notch, alignment_notch;
-    int vision_notch, rate_notch;
+    int vision_notch;
 } config_t;
 
 static config_t config = {
     .birds = 800,
-    .frame_rate = DEFAULT_FRAME_RATE,
+    .frame_rate = FRAME_RATE,
     .speed = DEFAULT_SPEED,
     .bird_size = DEFAULT_BIRD_SIZE,
     .palette = 0,
     .flocks = 1,
-    .mouse_mode = MOUSE_FLEE,
-    .mouse_reach = DEFAULT_MOUSE_REACH,
     .turning_notch = DEFAULT_TURNING_NOTCH,
     .vision_cells = DEFAULT_VISION_RADIUS / SPATIAL_CELL_SIZE,
     .vision_radius = DEFAULT_VISION_RADIUS,
@@ -303,11 +296,9 @@ static config_t config = {
     .alignment_notch = DEFAULT_NOTCH,
     /* Twelve to sixty pixels in steps of four: thirty six is the sixth notch. */
     .vision_notch = DEFAULT_VISION_NOTCH,
-    .rate_notch = DEFAULT_NOTCH,
 };
 static screen_t screen;
 static int legend_enabled = 1; /* Cleared by --no-legend, never at runtime. */
-static int mouse_enabled = 1;  /* Cleared by --no-mouse, never at runtime. */
 /*
  * How the frame reaches the screen.
  *
@@ -331,8 +322,8 @@ typedef enum {
 static const char *const RENDER_NAMES[] = {"auto",    "kitty",    "sixel",  "iterm",
                                            "braille", "sextants", "blocks", NULL};
 static int render_mode = RENDER_AUTO;
-/* --flat: one plane, every bird the same size. The default is two. */
-static int flat_look;
+/* --depth: a second plane of birds further off. The default is the one. */
+static int deep_look;
 
 static int drawing_with_text(void) {
     return render_mode == RENDER_BRAILLE || render_mode == RENDER_SEXTANTS ||
@@ -519,7 +510,7 @@ static int terminal_is_iterm(void) {
 static void enter_alt_screen(void) {
     write_all(ALT_SCREEN_ON, sizeof(ALT_SCREEN_ON) - 1);
     write_all(CURSOR_HIDE, sizeof(CURSOR_HIDE) - 1);
-    if (mouse_enabled) write_all(MOUSE_REPORT_ON, sizeof(MOUSE_REPORT_ON) - 1);
+    write_all(MOUSE_REPORT_ON, sizeof(MOUSE_REPORT_ON) - 1);
     alt_screen_is_on = 1;
 }
 
@@ -742,7 +733,6 @@ static const palette_t PALETTES[] = {
 enum { PALETTE_COUNT = sizeof(PALETTES) / sizeof(*PALETTES) };
 
 static const char *PALETTE_NAMES[PALETTE_COUNT + 1];
-static const char *const MOUSE_NAMES[] = {"flee", "follow", "off", NULL};
 
 /* A PNG of somebody's own, if they gave one: it keeps its own colours, which is
  * the whole reason for drawing one. Every palette replaces the colour it is
@@ -1030,30 +1020,30 @@ static int legend_repels(const bird_t *bird, vector_t *boundary) {
  * birds off the panel is unanswerable and a target in there could never be
  * reached.
  */
-enum { SPELL_MAX_TARGETS = 2048 };
+enum { FORMATION_MAX_TARGETS = 2048 };
 
 static struct {
     int count;
-    double x[SPELL_MAX_TARGETS];
-    double y[SPELL_MAX_TARGETS];
+    double x[FORMATION_MAX_TARGETS];
+    double y[FORMATION_MAX_TARGETS];
     double until; /* Seconds on the clock at which to let go; negative is never. */
     int writing;
-} spell;
+} formation;
 
-static void spell_clear(void) {
-    spell.count = 0;
-    spell.writing = 0;
+static void formation_clear(void) {
+    formation.count = 0;
+    formation.writing = 0;
 }
 
 /* Lays the text out and returns how many targets it made, zero if it will not
  * fit or the text has nothing to draw. */
-static int spell_layout(const char *text) {
+static int formation_layout(const char *text) {
     double pad = config.bird_size * 2.0;
     double left = screen.legend_width > 0 ? screen.legend_width + config.speed + pad : pad;
     double top = pad, right = screen.width - pad, bottom = screen.height - pad;
     int columns = font_text_width(text);
 
-    spell_clear();
+    formation_clear();
     if (columns <= 0 || right - left < columns || bottom - top < FONT_HEIGHT) return 0;
 
     /* One cell is as large as both dimensions allow, so the text fills the space
@@ -1073,26 +1063,33 @@ static int spell_layout(const char *text) {
         for (int row = 0; row < FONT_HEIGHT; row++) {
             for (int x = 0; x < FONT_WIDTH; x++) {
                 if (glyph[row * FONT_WIDTH + x] != '#') continue;
-                if (spell.count >= SPELL_MAX_TARGETS) break;
+                if (formation.count >= FORMATION_MAX_TARGETS) break;
                 double px = origin_x + (column + x + 0.5) * cell;
                 double py = origin_y + (row + 0.5) * cell;
                 if (legend_turn_zone(px, py)) continue;
-                spell.x[spell.count] = px;
-                spell.y[spell.count] = py;
-                spell.count++;
+                formation.x[formation.count] = px;
+                formation.y[formation.count] = py;
+                formation.count++;
             }
         }
         column += FONT_ADVANCE;
     }
-    spell.writing = spell.count > 0;
-    return spell.count;
+    formation.writing = formation.count > 0;
+    return formation.count;
 }
 
-static int spell_target_of(int index, double *x, double *y) {
-    if (!spell.writing || spell.count == 0) return 0;
-    *x = spell.x[index % spell.count];
-    *y = spell.y[index % spell.count];
+static int formation_target_of(int index, double *x, double *y) {
+    if (!formation.writing || formation.count == 0) return 0;
+    *x = formation.x[index % formation.count];
+    *y = formation.y[index % formation.count];
     return 1;
+}
+
+/* It opens by writing its name, in the middle, for a moment; then the flock
+ * takes over from wherever the letters left it, which is the nicest part to
+ * watch. A screen too small for the word simply starts flocking. */
+static void begin_the_intro(void) {
+    if (formation_layout("BOIDS")) formation.until = INTRO_SECONDS;
 }
 
 static double normalized_angle(double y, double x) {
@@ -1173,7 +1170,7 @@ static double turning_notch_radians(void) {
 
 static double turn_limit(void) {
     if (config.turning_notch >= LEGEND_BAR_CELLS) return 2 * M_PI;
-    double scaled = turning_notch_radians() * DEFAULT_FRAME_RATE / (double)config.frame_rate;
+    double scaled = turning_notch_radians() * FRAME_RATE / (double)config.frame_rate;
     return scaled > 2 * M_PI ? 2 * M_PI : scaled;
 }
 
@@ -1652,7 +1649,7 @@ static void place_one_bird(bird_t *bird, int index) {
     bird->frame = direction_frame(bird->direction);
     /* A plane of its own, and a place in the beat of its own, or every wing in
      * the sky would go up and down together. */
-    bird->layer = !flat_look && random_unit() < FAR_SHARE ? 1 : 0;
+    bird->layer = deep_look && random_unit() < FAR_SHARE ? 1 : 0;
     bird->wing = (int)(random_unit() * WING_CYCLE) % WING_CYCLE;
     bird->wing_clock = random_unit();
     bird->gliding = 0;
@@ -1680,20 +1677,19 @@ static void initialize_birds(bird_t *birds) {
  */
 static vector_t pointer_vector(const bird_t *bird) {
     vector_t force = {0, 0};
-    if (!mouse.present || config.mouse_mode == MOUSE_OFF) return force;
+    if (!mouse.present) return force;
 
     double dx = bird->x - mouse.x, dy = bird->y - mouse.y;
     double squared = dx * dx + dy * dy;
-    double reach = config.mouse_reach;
+    double reach = MOUSE_REACH;
     if (squared >= reach * reach || squared < 1e-9) return force;
 
     double distance = sqrt(squared);
     /* One at the pointer, nothing at the edge of its reach. */
     double strength = (reach - distance) / reach;
-    double pull = config.mouse_mode == MOUSE_FOLLOW ? -1.0 : 1.0;
 
-    force.x = pull * strength * dx / distance;
-    force.y = pull * strength * dy / distance;
+    force.x = strength * dx / distance;
+    force.y = strength * dy / distance;
     return force;
 }
 
@@ -1847,7 +1843,7 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
     double want_x, want_y;
     /* Writing overrules flocking while it lasts: a bird with a target steers at
      * it and nothing else, which is what makes a letter a letter. */
-    if (spell_target_of(target_index, &want_x, &want_y)) {
+    if (formation_target_of(target_index, &want_x, &want_y)) {
         double to_x = want_x - target->x, to_y = want_y - target->y;
         if (to_x * to_x + to_y * to_y > 1e-9) return normalized_angle(to_y, to_x);
         return target->direction;
@@ -1995,7 +1991,7 @@ static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_gr
          * force. Limiting that one would break the panel's unreachability, which
          * is proved on the assumption that a bird can turn away at once. */
         double unused_x, unused_y;
-        if (!spell_target_of(i, &unused_x, &unused_y) &&
+        if (!formation_target_of(i, &unused_x, &unused_y) &&
             !legend_turn_zone(snapshot[i].x, snapshot[i].y))
             direction = turn_towards(snapshot[i].direction, direction, turn_limit());
         birds[i].direction = direction;
@@ -2004,7 +2000,7 @@ static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_gr
         double step = config.speed * flock_pace(snapshot[i].flock);
         if (snapshot[i].layer > 0) step *= FAR_PACE; /* Further away moves slower: parallax. */
         double want_x, want_y;
-        if (spell_target_of(i, &want_x, &want_y)) {
+        if (formation_target_of(i, &want_x, &want_y)) {
             double dx = want_x - birds[i].x, dy = want_y - birds[i].y;
             double remaining = sqrt(dx * dx + dy * dy);
             if (remaining < step) step = remaining;
@@ -2103,7 +2099,7 @@ static void legend_number(char *out, size_t size, double value, int decimals) {
     snprintf(out, size, "%.*f", decimals, value);
 }
 
-/* The panel, ten rows of it, anchored to the top left corner. */
+/* The panel, nine rows of it, anchored to the top left corner. */
 static void build_legend(char lines[LEGEND_ROWS][LEGEND_LINE_MAX]) {
     int inner = LEGEND_COLUMNS - 2;
     size_t at = 0;
@@ -2126,11 +2122,9 @@ static void build_legend(char lines[LEGEND_ROWS][LEGEND_LINE_MAX]) {
      * turn it to nothing and be left looking at an empty sky. */
     snprintf(value, sizeof(value), "%.0f\u00b0", turning_notch_radians() * 180 / M_PI);
     legend_slider(lines[4], LEGEND_LINE_MAX, "turning", config.turning_notch, value, 't', 'T');
-    /* Pixels and frames a second are whole numbers, so they print as such. */
+    /* Pixels are whole numbers, so they print as such. */
     snprintf(value, sizeof(value), "%dpx", config.vision_radius);
     legend_slider(lines[5], LEGEND_LINE_MAX, "perception", config.vision_notch, value, 'p', 'P');
-    snprintf(value, sizeof(value), "%d", config.frame_rate);
-    legend_slider(lines[6], LEGEND_LINE_MAX, "rate", config.rate_notch, value, 'r', 'R');
 
     /* What the frame costs, always, rather than behind a flag: it was a switch
      * that did nothing at all unless the panel was up, and the row it wrote into
@@ -2141,14 +2135,14 @@ static void build_legend(char lines[LEGEND_ROWS][LEGEND_LINE_MAX]) {
     char measured[LEGEND_LINE_MAX / 2];
     snprintf(measured, sizeof(measured), "%-*s %5.1fms %5.0fKB %3.0ffps", LEGEND_NAME_WIDTH,
              "frame", stats.frame_ms, stats.bytes / 1024.0, stats.rate);
-    snprintf(lines[7], LEGEND_LINE_MAX, "\u2502 %-*s \u2502", inner - 2, measured);
-    snprintf(lines[8], LEGEND_LINE_MAX, "\u2502 %-*s q%*s \u2502", LEGEND_NAME_WIDTH, "quit",
+    snprintf(lines[6], LEGEND_LINE_MAX, "\u2502 %-*s \u2502", inner - 2, measured);
+    snprintf(lines[7], LEGEND_LINE_MAX, "\u2502 %-*s q%*s \u2502", LEGEND_NAME_WIDTH, "quit",
              inner - LEGEND_NAME_WIDTH - 4, "");
 
-    memcpy(lines[9], "\u2570", 3);
+    memcpy(lines[8], "\u2570", 3);
     at = 3;
-    for (int i = 0; i < inner; i++, at += 3) memcpy(lines[9] + at, "\u2500", 3);
-    memcpy(lines[9] + at, "\u256f", 4);
+    for (int i = 0; i < inner; i++, at += 3) memcpy(lines[8] + at, "\u2500", 3);
+    memcpy(lines[8] + at, "\u256f", 4);
 }
 
 static kitty_graphics_status_t queue_legend(kitty_graphics_t *graphics) {
@@ -2405,7 +2399,7 @@ static kitty_graphics_status_t render_frame(kitty_graphics_t *graphics, bird_t *
 }
 
 static void update_speed(void) {
-    config.speed = (double)DEFAULT_SPEED * DEFAULT_FRAME_RATE / config.frame_rate;
+    config.speed = (double)DEFAULT_SPEED * FRAME_RATE / config.frame_rate;
     /* And never more than a tenth of the shorter side in one frame. The step is
      * fixed in pixels a second, which on a full screen is a bird crossing in half
      * a second and on a small one is a bird crossing in an eighth: it cannot turn
@@ -2443,25 +2437,13 @@ static void apply_notches(void) {
      * reaches into. */
     config.vision_cells = (config.vision_radius + SPATIAL_CELL_SIZE - 1) / SPATIAL_CELL_SIZE;
 
-    config.frame_rate = notch_integer(config.rate_notch, MIN_FRAME_RATE, MAX_FRAME_RATE);
-    if (drawing_a_picture_a_frame() && config.frame_rate > PICTURE_FRAME_RATE_MAX)
-        config.frame_rate = PICTURE_FRAME_RATE_MAX;
+    config.frame_rate = drawing_a_picture_a_frame() ? PICTURE_FRAME_RATE_MAX : FRAME_RATE;
     update_speed();
 }
 
-static int requested_frame_rate = DEFAULT_FRAME_RATE;
-static const char *requested_spell;
-static int spell_hold = 6;
-static int show_intro = 1;
-static int show_outro = 1;
-/* Left alone for this long, the sliders start wandering by themselves. It was
- * two flags — one to switch it on and one to set the seconds — for a behaviour
- * whose only two useful settings are this and --screensaver. */
+/* Left alone for this long, the sliders start wandering by themselves. */
 enum { IDLE_SECONDS = 60 };
-static int screensaver;
 static int matrix_mode;
-static int clock_mode;
-static char spell_buffer[256];
 static int requested_perception = DEFAULT_VISION_RADIUS;
 static int requested_seed = -1;
 static int requested_preset = -1;
@@ -2475,18 +2457,16 @@ static int requested_preset = -1;
 typedef struct {
     const char *name;
     const char *help;
-    int notch[5];
+    int notch[4];
 } preset_t;
 
 static const preset_t PRESETS[] = {
-    /* No preset takes the boundary below 7 or the frame rate below the default,
-     * whatever else it does. Under either, a preset is not a look, it is a flock
-     * that spends its time outside the frame or jumping five body lengths between
-     * one frame and the next: school had one bird in nine off the screen and calm,
-     * of all of them, was the choppiest thing in the program. */
-    {"murmuration", "one great restless body, the starling look", {7, 3, 9, 8, 6}},
-    {"swarm", "tight, fast and nervous, like insects", {7, 8, 3, 3, 8}},
-    {"storm", "loose and violent, thrown about", {9, 10, 2, 6, 9}},
+    /* No preset takes the boundary below 7, whatever else it does. Under that a
+     * preset is not a look, it is a flock that spends its time outside the frame:
+     * school had one bird in nine off the screen. */
+    {"murmuration", "one great restless body, the starling look", {7, 3, 9, 8}},
+    {"swarm", "tight, fast and nervous, like insects", {7, 8, 3, 3}},
+    {"storm", "loose and violent, thrown about", {9, 10, 2, 6}},
 };
 enum { PRESET_COUNT = sizeof(PRESETS) / sizeof(*PRESETS) };
 static const char *PRESET_NAMES[PRESET_COUNT + 1];
@@ -2502,7 +2482,6 @@ static void apply_preset(int which) {
     config.separation_notch = preset->notch[1];
     config.alignment_notch = preset->notch[2];
     config.vision_notch = preset->notch[3];
-    config.rate_notch = preset->notch[4];
     apply_notches();
 }
 
@@ -2539,9 +2518,6 @@ static const option_t OPTIONS[] = {
     {0, "perception", NULL, OPTION_INT, &requested_perception, MIN_VISION_RADIUS, MAX_VISION_RADIUS,
      NULL, "PIXELS", "how far it sees, 12 to 60 (default 36)",
      "Sliders   0 to 12, as the panel shows them", 0},
-    {'f', "fps", NULL, OPTION_INT, &requested_frame_rate, MIN_FRAME_RATE, MAX_FRAME_RATE, NULL,
-     "RATE", "frames a second, 30 to 120 (default 60)",
-     "Sliders   0 to 12, as the panel shows them", 1},
 
     {'c', "color", "palette", OPTION_ENUM, &config.palette, 0, 0, PALETTE_NAMES, "RAMP",
      "theme, ember, ice, acid, matrix", "Look", 1},
@@ -2551,31 +2527,12 @@ static const option_t OPTIONS[] = {
      "a PNG of your own, kept in its own colours", "Look", 0},
     {'e', "trails", NULL, OPTION_FLAG, &config.trails, 0, 0, NULL, NULL,
      "faint tails behind the flock", "Look", 0},
-    {0, "flat", NULL, OPTION_FLAG, &flat_look, 0, 0, NULL, NULL,
-     "one plane of birds, none further away", "Look", 0},
+    {0, "depth", NULL, OPTION_FLAG, &deep_look, 0, 0, NULL, NULL,
+     "a second sky further off: smaller, slower, dimmer birds", "Look", 1},
     {'l', "no-panel", "no-legend", OPTION_OFF, &legend_enabled, 0, 0, NULL, NULL,
      "hide the sliders in the corner", "Look", 1},
-
-    {0, "spell", NULL, OPTION_STRING, &requested_spell, 0, 0, NULL, "TEXT",
-     "the flock writes TEXT; - reads stdin", "World", 1},
-    {0, "spell-hold", NULL, OPTION_INT, &spell_hold, 0, 600, NULL, "SECONDS",
-     "how long it holds the writing (default 6, 0 forever)", "World", 0},
-    {0, "clock", NULL, OPTION_FLAG, &clock_mode, 0, 0, NULL, NULL,
-     "the flock is the time, re-formed on the minute", "World", 0},
-
-    {'m', "mouse", NULL, OPTION_ENUM, &config.mouse_mode, 0, 0, MOUSE_NAMES, "MODE",
-     "the pointer is: flee, follow, off (default flee)", "Input", 1},
-    {0, "mouse-reach", NULL, OPTION_INT, &config.mouse_reach, 40, 280, NULL, "PIXELS",
-     "how far the pointer reaches, 40 to 280 (default 120)", "Input", 0},
-    {0, "no-mouse-reporting", NULL, OPTION_OFF, &mouse_enabled, 0, 0, NULL, NULL,
-     "do not ask the terminal for the pointer", "Input", 0},
-
-    {0, "screensaver", NULL, OPTION_FLAG, &screensaver, 0, 0, NULL, NULL,
-     "no panel, autopilot, any key quits", "Modes", 1},
-    {0, "no-intro", NULL, OPTION_OFF, &show_intro, 0, 0, NULL, NULL,
-     "do not open by writing the name", "Modes", 0},
-    {0, "no-outro", NULL, OPTION_OFF, &show_outro, 0, 0, NULL, NULL, "do not fly away on q",
-     "Modes", 0},
+    {0, "render", NULL, OPTION_ENUM, &render_mode, 0, 0, RENDER_NAMES, "HOW",
+     "kitty, sixel, iterm, braille, sextants, blocks; auto asks", "Look", 1},
 
     {0, "matrix", NULL, OPTION_FLAG, &matrix_mode, 0, 0, NULL, NULL, "it is raining birds",
      "Oddities", 0},
@@ -2588,23 +2545,20 @@ static const option_t OPTIONS[] = {
      "write the last frame as a PNG", "Output", 0},
     {0, "record", NULL, OPTION_STRING, &record_path, 0, 0, NULL, "FILE",
      "record a GIF, or a .cast for asciinema, with no terminal, and quit", "Output", 0},
-    {0, "record-fps", NULL, OPTION_INT, &record_fps, 2, MAX_FRAME_RATE, NULL, "RATE",
+    {0, "record-fps", NULL, OPTION_INT, &record_fps, 2, MAX_CAST_FPS, NULL, "RATE",
      "frames a second; a GIF can carry up to 50 (default 25)", "Output", 0},
     {0, "record-seconds", NULL, OPTION_INT, &record_seconds, 1, 120, NULL, "SECONDS",
      "how long the GIF runs (default 6)", "Output", 0},
     {0, "record-size", NULL, OPTION_STRING, &requested_record_size, 0, 0, NULL, "COLSxROWS",
      "the size to record at, in cells (default 96x26)", "Output", 0},
-
-    {0, "render", NULL, OPTION_ENUM, &render_mode, 0, 0, RENDER_NAMES, "HOW",
-     "kitty, sixel, iterm, braille, sextants, blocks; auto asks", "Look", 1},
 };
 enum { OPTION_COUNT = sizeof(OPTIONS) / sizeof(*OPTIONS) };
 
 /* The panel teaches the slider keys, so this only has to list the rest. */
 #define KEYS_HELP                                                      \
-    "\nKeys   b/B s/S a/A t/T p/P r/R   one notch down / up\n"         \
+    "\nKeys   b/B s/S a/A t/T p/P   one notch down / up\n"             \
     "       space pause   . step   0 reset   +/- birds   Tab preset\n" \
-    "       h panel   e trails   k/K hawks   M mouse\n"                \
+    "       h panel   e trails   k/K hawks\n"                          \
     "       q quit\n"
 
 enum { EXIT_USAGE = 2 }; /* A mistyped command is not a run that went wrong. */
@@ -2614,9 +2568,9 @@ static const option_example_t EXAMPLES[] = {
     {"cbirds --preset murmuration", "the starling look"},
     {"cbirds --hawks 2 --color ember", "something to watch"},
     {"cbirds --flocks 3 --color ice", "three of them, keeping to their own"},
-    {"fortune | cbirds --spell -", "the flock writes whatever is piped in"},
+    {"cbirds --depth --trails", "a second sky behind the first"},
+    {"cbirds --render braille", "the same flock as dots, in any terminal"},
     {"cbirds --record flock.gif", "a GIF, with no terminal in the way"},
-    {"cbirds --screensaver", "for a terminal left open"},
     {NULL, NULL},
 };
 
@@ -2627,7 +2581,6 @@ static void apply_preset_defaults(void) {
     config.separation_notch = DEFAULT_NOTCH;
     config.alignment_notch = DEFAULT_NOTCH;
     config.vision_notch = DEFAULT_VISION_NOTCH;
-    config.rate_notch = DEFAULT_NOTCH;
     /* These two as well. They are not on the panel, so somebody who has turned
      * the banking down with t and cannot see what they did has nothing else to
      * undo it with, and "back to the defaults" left them where they were. */
@@ -2652,8 +2605,8 @@ static void read_mouse_report(const char *sequence) {
  * A terminal left open on a second monitor becomes the demo for whoever walks
  * past the chair, which is how a thing like this actually spreads. One notch
  * every few seconds, of one slider at a time, so the change is always legible as
- * a change rather than a new program. It backs off for a moment after a keypress,
- * because fighting the user for a slider is worse than not moving it.
+ * a change rather than a new program. A keypress ends it, because fighting the
+ * user for a slider is worse than not moving it.
  */
 static double last_key_at;
 static double last_drift_at;
@@ -2672,34 +2625,16 @@ static void drift_a_slider(void) {
     apply_notches();
 }
 
-/* A screensaver flies itself from the first frame; anything else waits a minute
- * to be sure nobody is watching. */
+/* It waits a minute to be sure nobody is watching. */
 static int flying_itself(void) {
-    if (screensaver) return 1;
     return clock_state.seconds - last_key_at >= IDLE_SECONDS;
 }
 
 static void maybe_drift(void) {
     if (!flying_itself()) return;
-    if (clock_state.seconds - last_key_at < AUTOPILOT_YIELD) return;
     if (clock_state.seconds - last_drift_at < AUTOPILOT_PERIOD) return;
     last_drift_at = clock_state.seconds;
     drift_a_slider();
-}
-
-/* The flock is the time, re-formed on the minute. */
-static void maybe_tell_the_time(void) {
-    static int minute_shown = -1;
-    time_t now = time(NULL);
-    struct tm parts;
-    char text[16];
-
-    if (!clock_mode) return;
-    localtime_r(&now, &parts);
-    if (parts.tm_min == minute_shown && spell.writing) return;
-    minute_shown = parts.tm_min;
-    snprintf(text, sizeof(text), "%02d:%02d", parts.tm_hour, parts.tm_min);
-    if (spell_layout(text)) spell.until = -1.0; /* Held until the minute turns. */
 }
 
 /*
@@ -2730,7 +2665,6 @@ static void konami_note(char key) {
     memset(konami_seen, 0, sizeof(konami_seen));
     config.hawks = MAX_HAWKS;
     place_hawks();
-    if (spell_layout("NICE")) spell.until = clock_state.seconds + 3.0;
 }
 
 static int handle_input(void) {
@@ -2744,8 +2678,6 @@ static int handle_input(void) {
     for (ssize_t i = 0; i < length; i++) {
         unsigned char key = (unsigned char)input[i];
         int *notch = NULL, step = 0;
-        /* A screensaver is dismissed by whatever the passer by pressed. */
-        if (screensaver) return 0;
         if (input_state == INPUT_ESCAPE) {
             if (key == '[' || key == 'O') {
                 input_state = INPUT_SEQUENCE;
@@ -2826,9 +2758,6 @@ static int handle_input(void) {
             case 'e':
                 config.trails = !config.trails;
                 continue;
-            case 'M':
-                config.mouse_mode = (config.mouse_mode + 1) % MOUSE_MODE_COUNT;
-                continue;
             case '\t':
                 requested_preset = (requested_preset + 1) % PRESET_COUNT;
                 apply_preset(requested_preset);
@@ -2863,14 +2792,6 @@ static int handle_input(void) {
                 break;
             case 'p':
                 notch = &config.vision_notch;
-                step = -1;
-                break;
-            case 'R':
-                notch = &config.rate_notch;
-                step = 1;
-                break;
-            case 'r':
-                notch = &config.rate_notch;
                 step = -1;
                 break;
             default:
@@ -3192,32 +3113,6 @@ static void usage(FILE *out, const char *program, int everything) {
     if (everything) fputs(KEYS_HELP, out);
 }
 
-/* "-" means stdin, so that fortune | cbirds --spell - works. */
-static const char *read_spell_text(const char *given) {
-    if (given == NULL || strcmp(given, "-") != 0) return given;
-
-    size_t at = 0;
-    int c;
-    while (at + 1 < sizeof(spell_buffer) && (c = getchar()) != EOF) {
-        if (c == '\n' || c == '\r' || c == '\t') c = ' ';
-        spell_buffer[at++] = (char)c;
-    }
-    while (at > 0 && spell_buffer[at - 1] == ' ') at--;
-    spell_buffer[at] = '\0';
-
-    /* stdin was the pipe, and the keyboard still has to work afterwards: this is
-     * what makes `fortune | cbirds --spell -` more than a nice idea. If there is
-     * no controlling terminal to go back to, raw mode will say so in a moment. */
-    if (!isatty(STDIN_FILENO)) {
-        if (freopen("/dev/tty", "r", stdin) == NULL) {
-            fprintf(stderr, "%s: read the text from stdin but found no terminal to run in\n",
-                    program_name);
-            exit(EXIT_FAILURE);
-        }
-    }
-    return at > 0 ? spell_buffer : NULL;
-}
-
 static void read_options(int argc, char **argv) {
     char error[160];
     if (argc > 0 && argv[0] != NULL) program_name = argv[0];
@@ -3262,13 +3157,9 @@ static void read_options(int argc, char **argv) {
         if (requested_perception != DEFAULT_VISION_RADIUS)
             config.vision_notch =
                 notch_for_integer(requested_perception, MIN_VISION_RADIUS, MAX_VISION_RADIUS);
-        if (requested_frame_rate != DEFAULT_FRAME_RATE)
-            config.rate_notch =
-                notch_for_integer(requested_frame_rate, MIN_FRAME_RATE, MAX_FRAME_RATE);
     } else {
         /* The notch is the state the keys move, so a value off that grid could
          * not be one: snap what was asked for to the nearest. */
-        config.rate_notch = notch_for_integer(requested_frame_rate, MIN_FRAME_RATE, MAX_FRAME_RATE);
         config.vision_notch =
             notch_for_integer(requested_perception, MIN_VISION_RADIUS, MAX_VISION_RADIUS);
     }
@@ -3297,7 +3188,6 @@ static void read_options(int argc, char **argv) {
         record_columns = columns;
         record_rows = rows;
     }
-    requested_spell = read_spell_text(requested_spell);
     /* A palette with one colour in it cannot tell the flocks apart, which is worth
      * saying out loud rather than letting somebody wonder where their three flocks
      * went. */
@@ -3312,11 +3202,6 @@ static void read_options(int argc, char **argv) {
         config.alignment_notch = LEGEND_BAR_CELLS;
         the_rain_is_falling = 1;
         apply_notches();
-    }
-    /* A screensaver has one job and no panel, and anything at all ends it. */
-    if (screensaver) {
-        legend_enabled = 0;
-        show_intro = 0;
     }
 }
 
@@ -3402,7 +3287,7 @@ static int run_cast_recording(void) {
     spatial_grid_t grid;
     int total = record_fps * record_seconds;
     settle_the_palette_without_a_terminal();
-    config.speed = (double)DEFAULT_SPEED * DEFAULT_FRAME_RATE / record_fps;
+    config.speed = (double)DEFAULT_SPEED * FRAME_RATE / record_fps;
     legend_enabled = 0;
     render_mode = RENDER_BRAILLE;
     apply_screen_size(record_columns, record_rows, record_columns * DEFAULT_CELL_WIDTH,
@@ -3435,8 +3320,7 @@ static int run_cast_recording(void) {
     srand(requested_seed >= 0 ? (unsigned)requested_seed : 1u);
     initialize_birds(birds);
     place_hawks();
-    if (requested_spell != NULL && spell_layout(requested_spell))
-        spell.until = spell_hold > 0 ? (double)spell_hold : -1.0;
+    begin_the_intro();
 
     /* Hidden cursor and a clean slate first; the pen put back at the end. */
     static const char opening[] = "\033[?25l\033[2J";
@@ -3448,8 +3332,8 @@ static int run_cast_recording(void) {
     for (int frame = 0; frame < total; frame++) {
         clock_state.frame = frame;
         clock_state.seconds = (double)frame / record_fps;
-        if (spell.writing && spell.until >= 0 && clock_state.seconds >= spell.until) spell_clear();
-        maybe_tell_the_time();
+        if (formation.writing && formation.until >= 0 && clock_state.seconds >= formation.until)
+            formation_clear();
         maybe_drift();
 
         memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
@@ -3481,6 +3365,7 @@ static int run_cast_recording(void) {
     write_json_string(out, closing, sizeof(closing) - 1);
     fprintf(out, "]\n");
     int closed = fclose(out) == 0;
+    formation_clear(); /* A clip shorter than the intro would leave it writing. */
 
     cells_destroy(&text_cells);
     png_image_free(&text_canvas);
@@ -3524,7 +3409,7 @@ static int run_recording(void) {
 
     /* Same formula as update_speed, at the recording rate instead of the display
      * one, so a bird covers the same ground per second whatever the rate is. */
-    config.speed = (double)DEFAULT_SPEED * DEFAULT_FRAME_RATE / actual_fps;
+    config.speed = (double)DEFAULT_SPEED * FRAME_RATE / actual_fps;
 
     /* A GIF has no panel in it: the panel is terminal text, and compose() draws
      * birds. Left enabled it would still reserve its corner and keep the flock
@@ -3554,16 +3439,15 @@ static int run_recording(void) {
     srand(requested_seed >= 0 ? (unsigned)requested_seed : 1u);
     initialize_birds(birds);
     place_hawks();
-    if (requested_spell != NULL && spell_layout(requested_spell))
-        spell.until = spell_hold > 0 ? (double)spell_hold : -1.0;
+    begin_the_intro();
 
     for (int frame = 0; frame < total && gif_status == GIF_OK; frame++) {
         /* The clock the features read has to advance, or nothing that animates
          * on its own terms would animate at all. */
         clock_state.frame = frame;
         clock_state.seconds = (double)frame / actual_fps;
-        if (spell.writing && spell.until >= 0 && clock_state.seconds >= spell.until) spell_clear();
-        maybe_tell_the_time();
+        if (formation.writing && formation.until >= 0 && clock_state.seconds >= formation.until)
+            formation_clear();
         maybe_drift();
 
         memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
@@ -3575,6 +3459,7 @@ static int run_recording(void) {
         compose_onto(&canvas, frames, birds, 1);
         gif_status = gif_add_frame(gif, &canvas);
     }
+    formation_clear();
 
     gif_status_t closed = gif_close(gif, &bytes, &written);
     if (gif_status == GIF_OK) gif_status = closed;
@@ -3751,13 +3636,7 @@ int main(int argc, char **argv) {
     update_screen_dimensions();
     initialize_birds(birds);
     place_hawks();
-    /* An explicit text wins over the intro: someone who asked for a word does
-     * not want to be told the program's name first. */
-    if (requested_spell != NULL) {
-        if (spell_layout(requested_spell)) spell.until = spell_hold > 0 ? (double)spell_hold : -1.0;
-    } else if (show_intro && spell_layout("CBIRDS")) {
-        spell.until = INTRO_SECONDS;
-    }
+    begin_the_intro();
     if (render_mode == RENDER_KITTY) {
         graphics_status = upload_sprite_sets(&graphics, text_sprites);
         free_sprites(text_sprites);
@@ -3777,9 +3656,8 @@ int main(int argc, char **argv) {
         if (!handle_input() && !leaving) {
             /* Asked to quit: fly off the top first, so the last thing seen is
              * the flock leaving rather than the screen blinking out. */
-            if (!show_outro) break;
             leaving = OUTRO_FRAMES;
-            spell_clear();
+            formation_clear();
         }
         if (leaving && --leaving == 0) break;
 
@@ -3789,8 +3667,8 @@ int main(int argc, char **argv) {
                               (double)(frame_start.tv_nsec - started.tv_nsec) / 1e9;
         /* Writing lets go when its hold is up, and the flock takes over again
          * from wherever the letters left it, which is the nicest part to watch. */
-        if (spell.writing && spell.until >= 0 && clock_state.seconds >= spell.until) spell_clear();
-        maybe_tell_the_time();
+        if (formation.writing && formation.until >= 0 && clock_state.seconds >= formation.until)
+            formation_clear();
         maybe_drift();
         update_screen_dimensions();
         grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, config.birds);

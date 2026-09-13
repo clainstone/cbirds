@@ -150,3 +150,20 @@ the choice. A `--snapshot` under a text renderer is a picture of the dots the
 terminal showed, and `--record flock.cast` records the braille as an asciinema
 cast that plays back in any terminal. `cells.c` and `sixel.c` are the whole of
 it, and know nothing about birds.
+
+## Taken back out, again
+
+The second cut was the author's, not the testers': a list of what a newcomer
+should never have to read about.
+
+| gone | what is there instead |
+|---|---|
+| `--fps`, the `rate` slider, `r`/`R` | sixty, always; a sixel or iTerm2 terminal gets thirty because that is what it can decode |
+| `--flat` | one plane is the default, and `--depth` is the second sky |
+| `--spell`, `--spell-hold` | nothing: the flock writes one word, BOIDS, for three seconds at the start, and that is the whole of it |
+| `--clock` | nothing |
+| `--mouse`, `--mouse-reach`, `--no-mouse-reporting`, `M` | the pointer scatters the flock; there is no other thing it does |
+| `--screensaver` | leave it alone for a minute and it flies itself; press anything and it is yours again |
+| `--no-intro`, `--no-outro` | it opens by writing its name and leaves by flying off the top, every time |
+
+Thirty-eight flags became twenty-six.

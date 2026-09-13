@@ -68,16 +68,13 @@ static void set_test_screen(int width, int height) {
 
 static void reset_test_config(void) {
     config.birds = 800;
-    config.frame_rate = DEFAULT_FRAME_RATE;
+    config.frame_rate = FRAME_RATE;
     config.bird_size = DEFAULT_BIRD_SIZE;
     config.boundary_notch = DEFAULT_NOTCH;
     config.separation_notch = DEFAULT_NOTCH;
     config.alignment_notch = DEFAULT_NOTCH;
     config.vision_notch = 6;
-    config.rate_notch = DEFAULT_NOTCH;
     config.palette = 0;
-    config.mouse_mode = MOUSE_FLEE;
-    config.mouse_reach = DEFAULT_MOUSE_REACH;
     config.turning_notch = DEFAULT_TURNING_NOTCH;
     config.flocks = 1;
     config.trails = 0;
@@ -147,7 +144,7 @@ static void test_engine_matches_brute_force(void) {
     /* The three terms the reference does not model must all be quiet, or it is
      * not modelling the same thing. */
     assert(config.hawks == 0);
-    assert(!mouse.present || config.mouse_mode == MOUSE_OFF);
+    assert(!mouse.present);
     assert(!the_rain_is_falling);
 
     /* Swept over the flock count too: the reference models the same social rule,
@@ -424,10 +421,9 @@ static void test_legend_panel_layout(void) {
     assert(config.boundary_notch == DEFAULT_NOTCH);
 
     /* One slider a parameter, named, with a bar and its pair of keys. */
-    static const char *names[] = {"boundary", "separation", "alignment",
-                                  "turning",  "perception", "rate"};
-    static const char *pairs[] = {"b/B", "s/S", "a/A", "t/T", "p/P", "r/R"};
-    for (int i = 0; i < 6; i++) {
+    static const char *names[] = {"boundary", "separation", "alignment", "turning", "perception"};
+    static const char *pairs[] = {"b/B", "s/S", "a/A", "t/T", "p/P"};
+    for (int i = 0; i < 5; i++) {
         assert(strstr(lines[1 + i], names[i]) != NULL);
         /* Lowercase first: the key that lowers, then the one that raises. */
         assert(strstr(lines[1 + i], pairs[i]) != NULL);
@@ -448,26 +444,26 @@ static void test_legend_panel_layout(void) {
 
 static void test_legend_values_follow_their_notch(void) {
     char lines[LEGEND_ROWS][LEGEND_LINE_MAX];
-    static const char *floors[] = {"0.01", "0.001", "0.10", "30\u00b0", "12px", "30"};
-    static const char *ceilings[] = {"0.58", "0.013", "4.30", "360\u00b0", "60px", "120"};
+    static const char *floors[] = {"0.01", "0.001", "0.10", "30\u00b0", "12px"};
+    static const char *ceilings[] = {"0.58", "0.013", "4.30", "360\u00b0", "60px"};
 
     reset_test_config();
     apply_screen_size(80, 24, 80 * 8, 24 * 16);
 
     config.boundary_notch = config.separation_notch = config.alignment_notch =
-        config.turning_notch = config.vision_notch = config.rate_notch = 0;
+        config.turning_notch = config.vision_notch = 0;
     apply_notches();
     build_legend(lines);
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 5; i++) {
         assert(strstr(lines[1 + i], floors[i]) != NULL);
         assert(filled_cells(lines[1 + i]) == 0);
     }
 
     config.boundary_notch = config.separation_notch = config.alignment_notch =
-        config.turning_notch = config.vision_notch = config.rate_notch = LEGEND_BAR_CELLS;
+        config.turning_notch = config.vision_notch = LEGEND_BAR_CELLS;
     apply_notches();
     build_legend(lines);
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 5; i++) {
         assert(strstr(lines[1 + i], ceilings[i]) != NULL);
         assert(filled_cells(lines[1 + i]) == LEGEND_BAR_CELLS);
     }
@@ -489,8 +485,7 @@ static void test_one_keypress_is_one_cell(void) {
     static const struct {
         int row;
         char raise, lower;
-    } sliders[] = {{1, 'B', 'b'}, {2, 'S', 's'}, {3, 'A', 'a'},
-                   {4, 'T', 't'}, {5, 'P', 'p'}, {6, 'R', 'r'}};
+    } sliders[] = {{1, 'B', 'b'}, {2, 'S', 's'}, {3, 'A', 'a'}, {4, 'T', 't'}, {5, 'P', 'p'}};
 
     apply_screen_size(80, 24, 80 * 8, 24 * 16);
     for (size_t i = 0; i < sizeof(sliders) / sizeof(*sliders); i++) {
@@ -536,20 +531,18 @@ static void test_bar_spans_the_whole_travel(void) {
 
     for (int n = 0; n <= LEGEND_BAR_CELLS; n++) {
         config.boundary_notch = config.separation_notch = config.alignment_notch =
-            config.vision_notch = config.rate_notch = n;
+            config.vision_notch = n;
         apply_notches();
         if (n == 0) {
             assert(config.boundary == BOUNDARY_MIN);
             assert(config.separation == SEPARATION_MIN);
             assert(config.alignment == ALIGNMENT_MIN);
             assert(config.vision_radius == MIN_VISION_RADIUS);
-            assert(config.frame_rate == MIN_FRAME_RATE);
         }
         if (n == LEGEND_BAR_CELLS) {
             assert(fabs(config.boundary - BOUNDARY_MAX) < 1e-12);
             assert(fabs(config.alignment - ALIGNMENT_MAX) < 1e-12);
             assert(config.vision_radius == MAX_VISION_RADIUS);
-            assert(config.frame_rate == MAX_FRAME_RATE);
         }
         /* The scan has to reach as far as the radius does. */
         assert(config.vision_cells * SPATIAL_CELL_SIZE >= config.vision_radius);
@@ -567,9 +560,9 @@ static void test_bar_spans_the_whole_travel(void) {
     assert(fabs(config.alignment - DEFAULT_ALIGNMENT_W) < 1e-12);
     assert(config.boundary_notch == DEFAULT_NOTCH);
     assert(config.alignment_notch == DEFAULT_NOTCH);
-    /* The two integer parameters land exactly, being integers. */
+    /* The integer parameter lands exactly, being an integer. */
     assert(config.vision_radius == DEFAULT_VISION_RADIUS);
-    assert(config.frame_rate == DEFAULT_FRAME_RATE);
+    assert(config.frame_rate == FRAME_RATE);
 }
 
 static void test_weights_stop_at_their_bounds(void) {
@@ -683,14 +676,14 @@ static void test_no_bird_ever_reaches_the_panel(void) {
     spatial_grid_t grid;
 
     assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
-    /* Swept over the frame rate, which moves the margin, and over the turning
+    /* Swept over both frame rates, which move the margin, and over the turning
      * limit, which is what nearly broke this: a bird that cannot turn at once
      * cannot be turned away at once, so the panel's push is exempt from the limit
      * and this test is what says so. Dropping that exemption fails it. */
     static const int TURNS[] = {0, 1, DEFAULT_TURNING_NOTCH, LEGEND_BAR_CELLS};
     for (size_t turn = 0; turn < sizeof(TURNS) / sizeof(*TURNS); turn++)
-        for (int rate = MIN_FRAME_RATE; rate <= MAX_FRAME_RATE;
-             rate += MAX_FRAME_RATE - MIN_FRAME_RATE) {
+        for (int rate = PICTURE_FRAME_RATE_MAX; rate <= FRAME_RATE;
+             rate += FRAME_RATE - PICTURE_FRAME_RATE_MAX) {
             reset_test_config();
             config.turning_notch = TURNS[turn];
             config.frame_rate = rate;
@@ -824,22 +817,23 @@ static void test_birds_bank_rather_than_snap(void) {
     legend_enabled = 1;
     apply_screen_size(200, 50, 1600, 800);
     config.turning_notch = 0; /* The harshest limit there is. */
-    assert(spell_layout("I") > 0);
+    assert(formation_layout("I") > 0);
     enum { BIRD_COUNT = 4 };
     bird_t birds[BIRD_COUNT], snapshot[BIRD_COUNT];
     spatial_grid_t grid;
     config.birds = BIRD_COUNT;
     for (int i = 0; i < BIRD_COUNT; i++)
-        birds[i] = (bird_t){.x = spell.x[0] - config.speed / 2, .y = spell.y[0], .direction = M_PI};
+        birds[i] = (bird_t){
+            .x = formation.x[0] - config.speed / 2, .y = formation.y[0], .direction = M_PI};
     assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
     assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRD_COUNT) == SPATIAL_GRID_OK);
     memcpy(snapshot, birds, sizeof(birds));
     assert(spatial_grid_build(&grid, BIRD_COUNT, read_bird_position, snapshot) == SPATIAL_GRID_OK);
     update_birds(birds, snapshot, &grid);
-    assert(fabs(birds[0].x - spell.x[0]) < 1e-9); /* Landed, despite the limit. */
+    assert(fabs(birds[0].x - formation.x[0]) < 1e-9); /* Landed, despite the limit. */
     spatial_grid_destroy(&grid);
 
-    spell_clear();
+    formation_clear();
     reset_test_config();
 }
 
@@ -849,18 +843,17 @@ static void test_the_konami_code(void) {
     apply_screen_size(200, 50, 1600, 800);
     config.hawks = 0;
     konami_at = 0;
-    spell_clear();
+    formation_clear();
 
     /* Nine of the ten is nine of the ten. */
     for (const char *c = "AABBDCDCb"; *c; c++) konami_note(*c);
     assert(config.hawks == 0);
     konami_note('a');
     assert(config.hawks == MAX_HAWKS);
-    assert(spell.writing); /* And it says so. */
 
     /* A wrong key in the middle is a wrong sequence. */
     config.hawks = 0;
-    spell_clear();
+    formation_clear();
     konami_at = 0;
     memset(konami_seen, 0, sizeof(konami_seen));
     for (const char *c = "AABBDCDXCba"; *c; c++) konami_note(*c);
@@ -873,13 +866,13 @@ static void test_the_konami_code(void) {
 
     /* And rubbish in front of a correct code still counts. */
     config.hawks = 0;
-    spell_clear();
+    formation_clear();
     for (const char *c = "qwertyAABBDCDCba"; *c; c++) konami_note(*c);
     assert(config.hawks == MAX_HAWKS);
 
     config.hawks = 0;
     konami_at = 0;
-    spell_clear();
+    formation_clear();
     reset_test_config();
 }
 
@@ -899,7 +892,6 @@ static void test_only_the_rain_has_a_wind(void) {
 
 static void test_autopilot_wanders_and_yields(void) {
     reset_test_config();
-    screensaver = 0;
     last_key_at = 0;
     clock_state.seconds = 0;
 
@@ -908,15 +900,10 @@ static void test_autopilot_wanders_and_yields(void) {
     /* And after the idle time it takes over. */
     clock_state.seconds = IDLE_SECONDS + 1;
     assert(flying_itself());
-    /* A screensaver takes over at once, with nothing to wait for. */
     clock_state.seconds = 0;
-    screensaver = 1;
-    assert(flying_itself());
-    screensaver = 0;
     assert(!flying_itself());
 
     /* A drift moves exactly one notch, and stays inside the bar. */
-    screensaver = 1;
     srand(7);
     for (int step = 0; step < 400; step++) {
         int before[] = {config.boundary_notch, config.separation_notch, config.alignment_notch,
@@ -935,19 +922,25 @@ static void test_autopilot_wanders_and_yields(void) {
         assert(moved == 1); /* One slider at a time, so a change reads as one. */
     }
 
-    /* It keeps its hands off for a moment after a keypress: a slider the user is
-     * holding is worse to fight over than one left alone. */
+    /* A keypress takes the sliders back: it keeps its hands off until the user
+     * has been gone a whole minute again. */
     clock_state.seconds = 100;
     last_key_at = 100;
     last_drift_at = 0;
     int held = config.boundary_notch;
     maybe_drift();
     assert(config.boundary_notch == held);
-    clock_state.seconds = 100 + AUTOPILOT_YIELD + AUTOPILOT_PERIOD;
+    clock_state.seconds = 100 + IDLE_SECONDS;
     maybe_drift();
     assert(last_drift_at == clock_state.seconds); /* And then it does move one. */
+    /* And no more often than the period, once it is flying itself. */
+    clock_state.seconds += AUTOPILOT_PERIOD - 1;
+    maybe_drift();
+    assert(last_drift_at == 100 + IDLE_SECONDS);
+    clock_state.seconds += 1;
+    maybe_drift();
+    assert(last_drift_at == clock_state.seconds);
 
-    screensaver = 0;
     clock_state.seconds = 0;
     last_key_at = 0;
     last_drift_at = 0;
@@ -1305,9 +1298,10 @@ static void test_hawks_hunt_and_the_flock_flees(void) {
 }
 
 /* Both turn limits are radians a second dressed as radians a frame, so they have
- * to be divided by the frame rate: left alone, --fps 30 moved a bird twice as far
- * per frame and allowed it the same turn for it, and one bird in eight ended up
- * off the screen against one in thirty at sixty. */
+ * to be divided by the frame rate: left alone, the thirty of a picture a frame
+ * terminal moved a bird twice as far per frame and allowed it the same turn for
+ * it, and one bird in eight ended up off the screen against one in thirty at
+ * sixty. */
 static void test_the_turn_limits_follow_the_frame_rate(void) {
     reset_test_config();
     /* Roomy, so that the step is set by the frame rate alone: on a small screen
@@ -1315,18 +1309,18 @@ static void test_the_turn_limits_follow_the_frame_rate(void) {
     apply_screen_size(200, 60, 1600, 960);
     config.turning_notch = 6;
 
-    config.frame_rate = DEFAULT_FRAME_RATE;
+    config.frame_rate = FRAME_RATE;
     update_speed();
     double bird_at_sixty = turn_limit(), hawk_at_sixty = hawk_turn_limit();
     double step_at_sixty = config.speed;
 
-    config.frame_rate = DEFAULT_FRAME_RATE / 2;
+    config.frame_rate = FRAME_RATE / 2;
     update_speed();
     assert(fabs(config.speed - step_at_sixty * 2) < 1e-9);      /* Twice the ground. */
     assert(fabs(turn_limit() - bird_at_sixty * 2) < 1e-9);      /* Twice the turn. */
     assert(fabs(hawk_turn_limit() - hawk_at_sixty * 2) < 1e-9); /* Both of them. */
 
-    config.frame_rate = DEFAULT_FRAME_RATE * 2;
+    config.frame_rate = FRAME_RATE * 2;
     update_speed();
     assert(fabs(turn_limit() - bird_at_sixty / 2) < 1e-9);
     assert(fabs(hawk_turn_limit() - hawk_at_sixty / 2) < 1e-9);
@@ -1335,7 +1329,7 @@ static void test_the_turn_limits_follow_the_frame_rate(void) {
      * frame, however low the rate goes: it cannot turn inside a band it clears in
      * two frames, and on a forty by fourteen terminal one bird in six was off the
      * screen because of it. */
-    config.frame_rate = MIN_FRAME_RATE;
+    config.frame_rate = PICTURE_FRAME_RATE_MAX;
     apply_screen_size(40, 14, 320, 224);
     assert(config.speed <= screen.height / 10.0 + 1e-9);
     apply_screen_size(200, 60, 1600, 960);
@@ -1343,7 +1337,7 @@ static void test_the_turn_limits_follow_the_frame_rate(void) {
 
     /* Instant stays instant, and nothing ever exceeds a half turn a frame. */
     config.turning_notch = LEGEND_BAR_CELLS;
-    config.frame_rate = MIN_FRAME_RATE;
+    config.frame_rate = PICTURE_FRAME_RATE_MAX;
     update_speed();
     assert(turn_limit() == 2 * M_PI);
     assert(hawk_turn_limit() <= M_PI);
@@ -1394,20 +1388,20 @@ static void test_the_flock_can_be_laid_out_as_text(void) {
 
     /* A target per lit cell of the font, minus any that would fall in the
      * panel's turn zone, where no bird could ever reach one. */
-    int made = spell_layout("HELLO");
+    int made = formation_layout("HELLO");
     assert(made > 0 && made <= font_text_cells("HELLO"));
-    assert(spell.writing);
+    assert(formation.writing);
     for (int i = 0; i < made; i++) {
-        assert(!legend_turn_zone(spell.x[i], spell.y[i]));
-        assert(spell.x[i] >= 0 && spell.x[i] <= screen.width);
-        assert(spell.y[i] >= 0 && spell.y[i] <= screen.height);
+        assert(!legend_turn_zone(formation.x[i], formation.y[i]));
+        assert(formation.x[i] >= 0 && formation.x[i] <= screen.width);
+        assert(formation.y[i] >= 0 && formation.y[i] <= screen.height);
     }
 
     /* Birds share targets round robin, so a cell with several on it reads as a
      * thick stroke rather than leaving the rest of the flock idle. */
     double first_x, first_y, wrapped_x, wrapped_y;
-    assert(spell_target_of(0, &first_x, &first_y));
-    assert(spell_target_of(made, &wrapped_x, &wrapped_y));
+    assert(formation_target_of(0, &first_x, &first_y));
+    assert(formation_target_of(made, &wrapped_x, &wrapped_y));
     assert(first_x == wrapped_x && first_y == wrapped_y);
 
     /* A bird with a target steers at it and ignores its neighbours entirely. */
@@ -1416,7 +1410,7 @@ static void test_the_flock_can_be_laid_out_as_text(void) {
     spatial_grid_t grid;
     config.birds = BIRD_COUNT;
     for (int i = 0; i < BIRD_COUNT; i++)
-        birds[i] = (bird_t){.x = spell.x[0] - 100, .y = spell.y[0], .direction = M_PI};
+        birds[i] = (bird_t){.x = formation.x[0] - 100, .y = formation.y[0], .direction = M_PI};
     assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
     assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRD_COUNT) == SPATIAL_GRID_OK);
     assert(spatial_grid_build(&grid, BIRD_COUNT, read_bird_position, birds) == SPATIAL_GRID_OK);
@@ -1425,25 +1419,25 @@ static void test_the_flock_can_be_laid_out_as_text(void) {
     /* And it lands exactly rather than orbiting: one update from a whole speed
      * away puts it on the target, not past it. */
     bird_t snapshot[BIRD_COUNT];
-    birds[0].x = spell.x[0] - config.speed / 2;
-    birds[0].y = spell.y[0];
+    birds[0].x = formation.x[0] - config.speed / 2;
+    birds[0].y = formation.y[0];
     memcpy(snapshot, birds, sizeof(birds));
     update_birds(birds, snapshot, &grid);
-    assert(fabs(birds[0].x - spell.x[0]) < 1e-9);
-    assert(fabs(birds[0].y - spell.y[0]) < 1e-9);
+    assert(fabs(birds[0].x - formation.x[0]) < 1e-9);
+    assert(fabs(birds[0].y - formation.y[0]) < 1e-9);
     spatial_grid_destroy(&grid);
 
     /* Letting go hands the flock back to the flocking rules. */
-    spell_clear();
-    assert(!spell.writing);
-    assert(!spell_target_of(0, &first_x, &first_y));
+    formation_clear();
+    assert(!formation.writing);
+    assert(!formation_target_of(0, &first_x, &first_y));
 
     /* Text with nothing to draw, and text that cannot fit, both decline. */
-    assert(spell_layout("") == 0);
-    assert(spell_layout("\x01\x02") == 0);
+    assert(formation_layout("") == 0);
+    assert(formation_layout("\x01\x02") == 0);
     apply_screen_size(44, 15, 44 * 8, 15 * 16);
-    assert(spell_layout("A VERY LONG MESSAGE INDEED THAT WILL NOT FIT AT ALL") == 0);
-    assert(!spell.writing);
+    assert(formation_layout("A VERY LONG MESSAGE INDEED THAT WILL NOT FIT AT ALL") == 0);
+    assert(!formation.writing);
     reset_test_config();
 }
 
@@ -1454,7 +1448,7 @@ static void test_presets_set_every_notch(void) {
     for (int i = 0; i < PRESET_COUNT; i++) {
         apply_preset(i);
         int notches[] = {config.boundary_notch, config.separation_notch, config.alignment_notch,
-                         config.vision_notch, config.rate_notch};
+                         config.vision_notch};
         int moved = 0;
         for (size_t k = 0; k < sizeof(notches) / sizeof(*notches); k++) {
             assert(notches[k] >= 0 && notches[k] <= LEGEND_BAR_CELLS);
@@ -1463,7 +1457,6 @@ static void test_presets_set_every_notch(void) {
         assert(moved);
         /* And the derived values follow, as they do for a keypress. */
         assert(config.boundary >= BOUNDARY_MIN && config.boundary <= BOUNDARY_MAX);
-        assert(config.frame_rate >= MIN_FRAME_RATE && config.frame_rate <= MAX_FRAME_RATE);
         assert(config.vision_radius >= MIN_VISION_RADIUS &&
                config.vision_radius <= MAX_VISION_RADIUS);
     }
@@ -1475,19 +1468,18 @@ static void test_presets_set_every_notch(void) {
 }
 
 static void test_a_notch_survives_the_round_trip(void) {
-    /* --perception and --fps take real units and snap. A value that is already on
-     * the grid has to come back as itself, or a dotfile could not express one. */
+    /* --perception takes real units and snaps. A value that is already on the
+     * grid has to come back as itself, or a dotfile could not express one. */
     for (int notch = 0; notch <= LEGEND_BAR_CELLS; notch++) {
         int pixels = notch_integer(notch, MIN_VISION_RADIUS, MAX_VISION_RADIUS);
         assert(notch_for_integer(pixels, MIN_VISION_RADIUS, MAX_VISION_RADIUS) == notch);
-        int rate = notch_integer(notch, MIN_FRAME_RATE, MAX_FRAME_RATE);
-        assert(notch_for_integer(rate, MIN_FRAME_RATE, MAX_FRAME_RATE) == notch);
     }
     /* And anything between snaps to the nearer of the two. */
     assert(notch_for_integer(MIN_VISION_RADIUS, MIN_VISION_RADIUS, MAX_VISION_RADIUS) == 0);
     assert(notch_for_integer(MAX_VISION_RADIUS, MIN_VISION_RADIUS, MAX_VISION_RADIUS) ==
            LEGEND_BAR_CELLS);
-    assert(notch_for_integer(100, MIN_FRAME_RATE, MAX_FRAME_RATE) == 9); /* 98 is notch nine. */
+    assert(notch_for_integer(50, MIN_VISION_RADIUS, MAX_VISION_RADIUS) ==
+           10); /* 52 is notch ten. */
 }
 
 static void test_the_pointer_moves_the_flock(void) {
@@ -1498,30 +1490,21 @@ static void test_the_pointer_moves_the_flock(void) {
     mouse.x = 800;
     mouse.y = 400;
 
-    /* A bird to the right of the pointer flees further right, and is drawn
-     * towards it in follow. Straight along the line between them either way. */
+    /* A bird to the right of the pointer flees further right, straight along
+     * the line between them. */
     const bird_t east = {.x = 800 + 40, .y = 400};
-    config.mouse_mode = MOUSE_FLEE;
     vector_t away = pointer_vector(&east);
     assert(away.x > 0 && fabs(away.y) < 1e-12);
-    config.mouse_mode = MOUSE_FOLLOW;
-    vector_t towards = pointer_vector(&east);
-    assert(towards.x < 0 && fabs(towards.y) < 1e-12);
-    assert(fabs(towards.x + away.x) < 1e-12); /* Exactly opposite. */
 
     /* It falls off with distance and stops at its reach, so the flock bends
      * around the pointer and closes behind it rather than bouncing off. */
-    config.mouse_mode = MOUSE_FLEE;
     const bird_t near = {.x = 800 + 10, .y = 400};
     const bird_t far = {.x = 800 + 100, .y = 400};
-    const bird_t beyond = {.x = 800 + config.mouse_reach + 1, .y = 400};
+    const bird_t beyond = {.x = 800 + MOUSE_REACH + 1, .y = 400};
     assert(pointer_vector(&near).x > pointer_vector(&far).x);
     assert(pointer_vector(&beyond).x == 0 && pointer_vector(&beyond).y == 0);
 
-    /* Off means off, and so does never having seen the pointer. */
-    config.mouse_mode = MOUSE_OFF;
-    assert(pointer_vector(&east).x == 0);
-    config.mouse_mode = MOUSE_FLEE;
+    /* Never having seen the pointer is no pointer. */
     mouse.present = 0;
     assert(pointer_vector(&east).x == 0);
     mouse.present = 1;
@@ -1531,14 +1514,14 @@ static void test_the_pointer_moves_the_flock(void) {
     bird_t birds[BIRD_COUNT];
     spatial_grid_t grid;
     config.birds = BIRD_COUNT;
-    config.mouse_mode = MOUSE_FLEE;
     for (int i = 0; i < BIRD_COUNT; i++) birds[i] = (bird_t){.x = 840, .y = 400, .direction = M_PI};
     assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
     assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRD_COUNT) == SPATIAL_GRID_OK);
     assert(spatial_grid_build(&grid, BIRD_COUNT, read_bird_position, birds) == SPATIAL_GRID_OK);
     assert(cos(flock_direction(birds, &grid, 0)) > 0); /* Away, not with them. */
-    config.mouse_mode = MOUSE_OFF;
+    mouse.present = 0;
     assert(cos(flock_direction(birds, &grid, 0)) < 0); /* With them again. */
+    mouse.present = 1;
     spatial_grid_destroy(&grid);
 
     mouse.present = 0;
@@ -1864,7 +1847,6 @@ static void test_a_sixel_or_iterm_terminal_gets_a_picture_a_frame(void) {
     legend_enabled = 0;
     config.palette = palette_named("ice");
     config.birds = 2;
-    config.rate_notch = LEGEND_BAR_CELLS; /* Asked for 120. */
     apply_screen_size(40, 12, 320, 192);
     birds[0] = (bird_t){.x = 60, .y = 60, .direction = 1.0};
     birds[1] = (bird_t){.x = 200, .y = 100, .direction = 4.0};
@@ -1872,7 +1854,7 @@ static void test_a_sixel_or_iterm_terminal_gets_a_picture_a_frame(void) {
     render_mode = RENDER_SIXEL;
     apply_notches();
     assert(config.frame_rate == PICTURE_FRAME_RATE_MAX); /* Capped, and the step with it. */
-    double per_second = (double)DEFAULT_SPEED * DEFAULT_FRAME_RATE / PICTURE_FRAME_RATE_MAX;
+    double per_second = (double)DEFAULT_SPEED * FRAME_RATE / PICTURE_FRAME_RATE_MAX;
     double by_screen = screen.height / 10.0; /* The small screen's own cap. */
     assert(fabs(config.speed - (per_second < by_screen ? per_second : by_screen)) < 1e-9);
     assert(prepare_picture_renderer());
@@ -2098,21 +2080,21 @@ static void test_the_far_layer_is_another_sky(void) {
     birds[1].layer = 0;
     assert(hawk_vector(&birds[1]).x > 0);
 
-    /* Every bird is born into one plane or the other; --flat puts them all in one. */
+    /* One plane unless asked: under --depth a bird is born into one or the other. */
     config.hawks = 0;
     int far = 0;
     srand(3);
+    deep_look = 1;
     for (int i = 0; i < BIRD_COUNT; i++) {
         place_one_bird(&birds[i], i);
         far += birds[i].layer;
     }
     assert(far > 0 && far < BIRD_COUNT);
-    flat_look = 1;
+    deep_look = 0;
     for (int i = 0; i < BIRD_COUNT; i++) {
         place_one_bird(&birds[i], i);
         assert(birds[i].layer == 0);
     }
-    flat_look = 0;
     spatial_grid_destroy(&grid);
     legend_enabled = 1;
     reset_test_config();
@@ -2203,6 +2185,7 @@ static void test_flocks_keep_to_their_own_side_of_the_sky(void) {
         apply_screen_size(100, 28, 800, 448);
         config.birds = BIRD_COUNT;
         config.flocks = flocks;
+        srand(1); /* The glides draw on it, so the run is pinned. */
 
         /* All of them started in one heap in the middle, which is the hardest
          * case: if they sort themselves out from there they sort themselves out
@@ -2401,41 +2384,6 @@ static void test_vision_controls(void) {
     reset_test_config();
 }
 
-static void test_frame_rate_controls(void) {
-    char keys[INPUT_BUFFER_SIZE + 1];
-
-    reset_test_config();
-    /* Roomy, or the step is capped by the screen rather than by the rate. */
-    apply_screen_size(200, 60, 1600, 960);
-    assert(config.frame_rate == DEFAULT_FRAME_RATE);
-    memset(keys, 'R', INPUT_BUFFER_SIZE);
-    keys[INPUT_BUFFER_SIZE] = '\0';
-    assert(feed_input(keys) == 1);
-    assert(config.rate_notch == LEGEND_BAR_CELLS);
-    assert(config.frame_rate == MAX_FRAME_RATE);
-    assert(config.speed == 20.0);
-
-    memset(keys, 'r', INPUT_BUFFER_SIZE);
-    assert(feed_input(keys) == 1);
-    assert(config.rate_notch == 0);
-    assert(config.frame_rate == MIN_FRAME_RATE);
-    assert(config.speed == 80.0);
-
-    memset(keys, 'R', INPUT_BUFFER_SIZE);
-    keys[INPUT_BUFFER_SIZE - 1] = 'q';
-    assert(feed_input(keys) == 0);
-    assert(config.frame_rate == MAX_FRAME_RATE);
-
-    /* Every notch of the rate is a whole number of frames per second, even
-     * though a twelfth of its range is not. */
-    for (int n = 0; n <= LEGEND_BAR_CELLS; n++) {
-        config.rate_notch = n;
-        apply_notches();
-        assert(config.frame_rate >= MIN_FRAME_RATE && config.frame_rate <= MAX_FRAME_RATE);
-    }
-    reset_test_config();
-}
-
 static void clear_graphics_buffer(kitty_graphics_t *graphics) {
     graphics->length = 0;
     if (graphics->buffer != NULL) graphics->buffer[0] = '\0';
@@ -2628,7 +2576,6 @@ int main(void) {
     test_flocks_do_not_align_with_each_other();
     test_mouse_reports_are_parsed();
     test_vision_controls();
-    test_frame_rate_controls();
     test_flicker_free_render_queue();
     test_legend_panel_layout();
     test_legend_values_follow_their_notch();

@@ -7,27 +7,31 @@ encoders. Nothing outside this repository touched them. To regenerate:
 make
 
 # The animation at the top: the flock writes its name, lets go, and murmurates.
-./cbirds --record docs/demo.gif --record-fps 25 --record-seconds 7 \
-         --record-size 150x40 -n 900 -s 14 --color ember --trails \
+./cbirds --record docs/demo.gif --record-fps 20 --record-seconds 6 \
+         --record-size 120x32 -n 700 -s 13 --color ember --trails \
          --seed 11 --preset murmuration
+# The three shorter ones in the gallery.
+./cbirds --record docs/hawks.gif  --record-fps 20 --record-seconds 5 \
+         --record-size 120x32 -n 500 -s 13 --color acid --hawks 2 --seed 5
+./cbirds --record docs/depth.gif  --record-fps 20 --record-seconds 5 \
+         --record-size 120x32 -n 600 -s 13 --color ice --depth --trails --seed 9
+./cbirds --record docs/flocks.gif --record-fps 20 --record-seconds 5 \
+         --record-size 120x32 -n 500 -s 13 --color ember --flocks 3 --seed 3
+# And the cast.
+./cbirds --record docs/demo.cast --record-fps 30 --record-seconds 8 \
+         --record-size 96x26 -n 700 --color ember --hawks 2 --seed 5
 
 # The stills. --snapshot writes the last frame, so --frames chooses the moment;
 # the first three seconds are the intro, so none is taken before frame 400.
 # --no-panel because the panel is terminal text: it is not in the PNG, and left
-# on it would hold the flock out of a corner for no visible reason.
+# on it would hold the flock out of a corner for no visible reason. These were
+# taken in a 120 by 34 cell terminal of 1200 by 680 pixels.
 ./cbirds --snapshot docs/hero.png        --frames 420 -n 1100 --color ember --seed 5 --no-panel
 ./cbirds --snapshot docs/murmuration.png --frames 440 -n 900  --color ice \
          --preset murmuration --trails --seed 7 --no-panel
-./cbirds --snapshot docs/matrix.png      --frames 420 -n 700  --matrix --no-panel
-./cbirds --snapshot docs/hawks.png       --frames 520 -n 800  --color acid \
-         --hawks 2 --seed 5 --no-panel
-./cbirds --snapshot docs/flocks.png      --frames 440 -n 600  --color ember \
-         --flocks 3 --seed 3 --no-panel
-./cbirds --snapshot docs/depth.png       --frames 440 -n 1000 --color ice \
-         --depth --trails --seed 9 --no-panel
 ./cbirds --snapshot docs/storm.png       --frames 440 -n 800  --color acid \
          --preset storm --shape plane --seed 9 --no-panel
-./cbirds --snapshot docs/panel.png       --frames 420 -n 800  --color ember --seed 2
+./cbirds --snapshot docs/matrix.png      --frames 420 -n 700  --matrix --no-panel
 # The text ones are what a terminal with no graphics protocol shows: under
 # --render braille or sextants a snapshot is a picture of the cells, not of
 # the pixels.
@@ -45,8 +49,8 @@ and cbirds says so rather than pretending.
 
 A few megabytes is a lot for a README, and the birds are why: a GIF frame costs
 about three bits per bird pixel, so the size is set by how many birds are on the
-screen and how big they are, not by the length or the resolution. Nine hundred
-at fourteen pixels is the compromise.
+screen and how big they are, not by the resolution. Twenty frames a second and
+five to seven hundred birds keep each clip under three and a half.
 
 A recording named `.cast` is an asciinema file instead: the same flock as the
 braille renderer sends it, one line of escape text per frame, playable with

@@ -1,101 +1,126 @@
-<div align="center">
-
 # cbirds
 
-**A flock of birds in your terminal.** Real sprites, real flocking, no dependencies.
+A flock of birds in your terminal.
 
-![Language](https://img.shields.io/badge/Language-C99-blue.svg)
-![Dependencies](https://img.shields.io/badge/Dependencies-libc%20%2B%20libm-brightgreen.svg)
-![License](https://img.shields.io/badge/License-MIT-green.svg)
-![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS-lightgrey.svg)
+![cbirds](docs/demo.gif)
 
-![cbirds recording itself](docs/demo.gif)
+cbirds is Craig Reynolds' boids, the 1986 flocking model, drawn as rotated
+sprites through the terminal's graphics protocol, and as text where there is
+none. Eight hundred birds at sixty frames a second cost about half a
+millisecond of CPU per frame. It is one C99 program that links against libc
+and libm and nothing else: the PNG decoder and encoder, the DEFLATE compressor
+and decompressor, the sixel encoder, the GIF writer, the braille renderer, the
+rotation, the resampling and the font are all in this repository, in about
+eight thousand lines.
 
-*That is a terminal. Those are PNG sprites. It wrote its own name, and then
-recorded this GIF of itself at 50 frames a second — the LZW encoder is in
-`gif.c`, and one command regenerates it.*
+The GIF above was recorded by cbirds itself, with its own encoder, in one
+command. So was every image on this page.
 
-</div>
+## Building
 
-## What this is
-
-Craig Reynolds' boids, from 1986, rendered as rotated PNG sprites through the
-Kitty graphics protocol. Eight hundred birds at sixty frames a second, in a
-terminal, in about a third of a millisecond of CPU per frame.
-
-There is no zlib, no libpng, no ncurses and no SDL. The PNG decoder, the PNG
-encoder, the DEFLATE compressor *and* decompressor, the CRC and Adler checksums,
-the rotation, the resampling and the 5×7 font are all in this repository, in
-about 7,500 lines of C99 that link against libc and libm and nothing else. The bird is one PNG
-compiled into the binary; every rotation and every colour of it is built at
-startup, in memory, by the project's own code.
-
-```bash
-git clone https://github.com/clainstone/cbirds && cd cbirds && make && ./cbirds
+```
+git clone https://github.com/clainstone/cbirds
+cd cbirds
+make
+./cbirds
 ```
 
-## Try these
+GCC 7 or Clang 10 and `make` are enough. `make test` runs the eight suites.
 
-The flock writes whatever you pipe into it:
+## Terminals
 
-```bash
-fortune | cbirds --spell -
-echo "SHIP IT" | cbirds --spell -
-```
+cbirds asks the terminal what it can draw before it takes the screen, and uses
+the best of it. Every terminal that can show colour gets a flock; the only
+question is how fine.
 
-It wears your terminal's own colours, because it asks:
+| terminal | what you see |
+|---|---|
+| Kitty, WezTerm, Ghostty, recent Konsole | sprites, over the Kitty graphics protocol |
+| xterm, foot, mlterm, contour, mintty, Windows Terminal | a picture a frame, in sixel |
+| iTerm2 | a picture a frame, as an inline PNG |
+| everything else: Alacritty, GNOME Terminal, Terminal.app, tmux, ssh | the same flock in braille, eight dots a cell |
 
-```bash
-cbirds                    # already does, that is the default
-cbirds --color ember      # or pick a ramp
-```
-
-<div align="center"><img src="docs/hero.png" alt="The flock spelling its own name" width="90%"></div>
-
-And in a terminal with no graphics protocol at all — Alacritty, GNOME Terminal,
-Terminal.app, over ssh, inside tmux — the same flock, in braille. xterm, foot and
-iTerm2 get real pixels by their own protocols; nothing is left out.
-
-<div align="center"><img src="docs/braille.png" alt="The same flock drawn in braille, for a terminal with no graphics protocol" width="90%"></div>
-
-```bash
-cbirds --preset murmuration --trails    # the starling look, with tails
-cbirds --turning 0                      # long, lazy banking turns
-cbirds --hawks 2                        # give the clip a story
-cbirds --flocks 3 --color ice           # three flocks, each keeping to its own
-cbirds --clock                          # the flock is the time
-cbirds --screensaver                    # for a terminal left open
-cbirds --matrix                         # it is raining birds
-cbirds --shape dot --color ice          # or something that is not a bird at all
-```
+`--render kitty|sixel|iterm|braille|sextants|blocks` overrules the choice.
+Sextants are two by three solid blocks a cell, bolder than braille and nearly
+as fine; they need a font from 2020 or later. Blocks are two half blocks a
+cell and work everywhere.
 
 <table>
 <tr>
-<td width="50%"><img src="docs/murmuration.png" alt="A murmuration"></td>
-<td width="50%"><img src="docs/hawks.png" alt="Two hawks scattering the flock"></td>
+<td width="50%"><img src="docs/braille.png" alt="The flock in braille"></td>
+<td width="50%"><img src="docs/sextants.png" alt="The flock in sextants"></td>
 </tr>
 <tr>
-<td align="center"><code>--preset murmuration --trails</code></td>
-<td align="center"><code>--hawks 2 --color acid</code></td>
-</tr>
-<tr>
-<td width="50%"><img src="docs/flocks.png" alt="Three flocks, each keeping to its own"></td>
-<td width="50%"><img src="docs/matrix.png" alt="Matrix rain, as birds"></td>
-</tr>
-<tr>
-<td align="center"><code>--flocks 3 --color ember</code></td>
-<td align="center"><code>--matrix</code></td>
+<td align="center"><code>--render braille --hawks 2</code></td>
+<td align="center"><code>--render sextants --color ice</code></td>
 </tr>
 </table>
 
-And then move your mouse. The flock parts around the pointer.
+Under braille or sextants only the cells that changed since the last frame are
+sent, so a full flock at sixty frames a second costs a text terminal about as
+much bandwidth as it costs Kitty. Nothing paints the background: an empty cell
+is the terminal's own, and the flock wears the theme.
+
+## Running
+
+```
+cbirds                              a flock, in your terminal's own colours
+cbirds --preset murmuration         the starling look
+cbirds --hawks 2 --color ember      something to watch
+cbirds --flocks 3 --color ice       three flocks that keep to their own
+cbirds --depth --trails             a second sky behind the first
+cbirds --matrix                     it is raining birds
+```
+
+It opens by writing its name, lets go, and flocks. Move the pointer into the
+flock and it scatters. Press `q` and it flies off the top.
+
+<table>
+<tr>
+<td width="50%"><img src="docs/hawks.gif" alt="Two hawks hunting the flock"></td>
+<td width="50%"><img src="docs/flocks.gif" alt="Three flocks keeping to their own"></td>
+</tr>
+<tr>
+<td align="center"><code>--hawks 2 --color acid</code></td>
+<td align="center"><code>--flocks 3 --color ember</code></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/depth.gif" alt="Two planes of birds, the far one smaller and slower"></td>
+<td width="50%"><img src="docs/murmuration.png" alt="A murmuration with tails"></td>
+</tr>
+<tr>
+<td align="center"><code>--depth --trails --color ice</code></td>
+<td align="center"><code>--preset murmuration --trails --color ice</code></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/storm.png" alt="The storm preset, flown as planes"></td>
+<td width="50%"><img src="docs/matrix.png" alt="Matrix rain, as birds"></td>
+</tr>
+<tr>
+<td align="center"><code>--preset storm --shape plane --color acid</code></td>
+<td align="center"><code>--matrix</code></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/hero.png" alt="Eleven hundred birds on the ember ramp"></td>
+<td width="50%"><img src="docs/braille.png" alt="The same program in a terminal with no graphics"></td>
+</tr>
+<tr>
+<td align="center"><code>-n 1100 --color ember</code></td>
+<td align="center"><code>--render braille --color ember --hawks 2</code></td>
+</tr>
+</table>
+
+The default palette is `theme`: cbirds asks the terminal for its own colours
+at startup and builds the ramp from them, so the flock matches whatever you
+already look at. `ember`, `ice`, `acid` and `matrix` are the fixed ones.
+`--shape` draws an arrow, a plane or a dot from triangles instead of the bird,
+and `--sprite FILE` flies any PNG of yours in its own colours.
 
 ## The panel
 
-Every adjustable parameter is a slider in the corner, with its value and the two
-keys that move it. Lowercase lowers, uppercase raises, and **one keypress is
-exactly one notch of bar** — the notch is the state the keys move and the value
-is derived from it, so the number and the bar cannot disagree.
+The five parameters worth touching are sliders in the corner, each with its
+value and the pair of keys that move it. Lowercase lowers, uppercase raises,
+and one keypress is exactly one notch of the bar. `h` hides it.
 
 ```
 ╭────────────────────────────────────╮
@@ -104,301 +129,226 @@ is derived from it, so the number and the bar cannot disagree.
 │ alignment  ▓▓▓▓░░░░░░░░  1.50  a/A │
 │ turning    ▓▓▓▓▓▓▓▓░░░░   70°  t/T │
 │ perception ▓▓▓▓▓▓░░░░░░  36px  p/P │
-│ rate       ▓▓▓▓░░░░░░░░    60  r/R │
 │ frame        0.6ms    31KB  60fps  │
 │ quit       q                       │
 ╰────────────────────────────────────╯
-
-Every slider on it has a pair of keys, and every pair of keys is on it: the
-banking used to be adjustable with nothing on the screen to say what had changed,
-which is how somebody could turn it down to nothing and be left looking at an
-empty sky.
 ```
 
-The flock cannot fly through it. The panel's rectangle carries an edge force of
-100000, far above every other term in the model, aimed at whichever of its two
-open sides is nearer — and the force acts on the panel grown by one frame of
-travel, which is what makes it unreachable rather than merely unwelcoming. Over
-**5.3 million placements across eight configurations** — every combination of the
-turning limit's extremes and the frame rate's — not one landed on it.
-
-It waits for a window it is a quarter of, and switches itself off in anything
-smaller. On the smallest terminal it used to appear in, the panel covered half the
-screen and the force that keeps birds out of it squeezed half the flock off the
-edges of what was left.
+The flock cannot enter it: the panel's rectangle carries an edge force far
+above every other term in the model, and a test places birds against it five
+million times to make sure. In a terminal too small to spare the corner it
+switches itself off.
 
 | key | | key | |
 |---|---|---|---|
-| `b`/`B` `s`/`S` `a`/`A` `t`/`T` `p`/`P` `r`/`R` | one notch down / up | `h` | hide the panel |
+| `b`/`B` `s`/`S` `a`/`A` `t`/`T` `p`/`P` | one notch down, one up | `h` | panel |
 | `space` | pause | `.` | one frame |
 | `0` | back to the defaults | `Tab` | next preset |
-| `+`/`-` | more or fewer birds | `k`/`K` | summon or dismiss a hawk |
-| `e` | tails | `M` | cycle the pointer's mode |
-| `q` | quit, with a fly-away | | |
+| `+` `-` | more birds, fewer | `k` `K` | a hawk more, one fewer |
+| `e` | tails | `q` | quit |
 
-There is also the Konami code. It is in `--help`, under **Oddities**, because an
-easter egg nobody finds is wasted.
+Left alone for a minute, it starts moving the sliders itself, one notch every
+few seconds. Any key takes them back.
 
 ## Options
 
-`cbirds -h` is one screen of the dozen that matter. `cbirds --help` is all
-thirty-eight, grouped. Both come off the same table that drives the parser, so they
-cannot drift apart, and `--completion bash|zsh|fish` walks it too.
+```
+Flock
+  -n, --birds COUNT         how many birds (default 800)
+  -s, --size PIXELS         sprite size in pixels (default 15)
+  -g, --flocks COUNT        flocks that keep to their own kind, up to 3
+  -k, --hawks COUNT         predators hunting the flock, up to 4
+      --preset NAME         murmuration, swarm, storm
+      --seed N              the same seed gives the same flock
 
-It accepts what people actually type: `-n 800`, `-n800`, `--birds 800`,
-`--birds=800`, clustered flags, `--no-NAME`, `--` to end the options. A typo is
-answered with the name you probably meant. Usage errors exit 2, so a script can
-tell a mistyped command from a run that went wrong.
+Sliders, 0 to 12, as the panel shows them
+      --boundary NOTCH      how hard the edges push back (default 4)
+      --separation NOTCH    how much a bird keeps its distance (default 4)
+      --alignment NOTCH     how much it matches its neighbours (default 4)
+      --turning NOTCH       sharpest turn a frame, 12 is instant (default 8)
+      --perception PIXELS   how far it sees, 12 to 60 (default 36)
+
+Look
+  -c, --color RAMP          theme, ember, ice, acid, matrix
+      --shape NAME          bird, arrow, plane, dot
+      --sprite FILE         a PNG of your own, kept in its own colours
+  -e, --trails              faint tails behind the flock
+      --depth               a second sky further off: smaller, slower, dimmer
+  -l, --no-panel            hide the sliders in the corner
+      --render HOW          kitty, sixel, iterm, braille, sextants, blocks
+      --matrix              it is raining birds
+
+Output
+      --record FILE         a GIF, or an asciinema .cast, with no terminal
+      --record-fps RATE     frames a second (default 25; a GIF carries up to 50)
+      --record-seconds S    how long it runs (default 6)
+      --record-size CxR     the size to record at, in cells (default 96x26)
+      --snapshot FILE       write the last frame as a PNG
+      --frames N            quit after N frames
+      --bench N             run N frames with no terminal, print the numbers
+```
+
+The parser takes what people type: `-n800`, `--birds=800`, clustered short
+flags, `--` to end the options, and a typo is answered with the name you
+probably meant. `--completion bash|zsh|fish` prints completions; they come off
+the same table as the parser and the help, so none of the three can drift.
+
+## Recording
 
 ```
-$ cbirds --colour ember
-cbirds: unknown option '--colour', did you mean '--color'?
-Try 'cbirds --help'.
+cbirds --record flock.gif --hawks 2 --seed 5
+cbirds --record flock.cast --record-fps 30
+cbirds --snapshot frame.png --frames 400
 ```
+
+`--record` needs no terminal. It runs the simulation headless, deterministic
+under `--seed`, composites every frame and writes an animated GIF with the
+project's own LZW encoder, or, if the name ends in `.cast`, an
+[asciinema](https://asciinema.org) recording of what the braille renderer
+would have sent: one line of escape text per frame, only the changed cells,
+playable in any terminal with `asciinema play`. Eight seconds of seven hundred
+birds and two hawks is two megabytes as a cast, and several times that as a
+GIF.
+
+`--snapshot` photographs a live frame, so it wants a terminal: the picture is
+whatever that terminal was shown, sprites under Kitty, dots or blocks anywhere
+else, at the terminal's size in pixels. The commands that produced every image
+on this page are in [docs/README.md](docs/README.md).
 
 ## How it works
 
-**The sprite.** One PNG, compiled into the binary as a C array. At startup it is
-decoded, scaled up 8×, then rotated into 90 frames at 4° apart and re-encoded as
-1,560 PNGs in memory — two hundred milliseconds, most of it rotation. Colour is a second set of images, because Kitty has
-no per-placement tint; the rotation is the expensive half and does not depend on
-the colour, so each angle is rotated **once** and then tinted and encoded per
-shade. Five shades cost 35 ms, not 250.
+The bird is one PNG compiled into the binary. At startup it is decoded, scaled
+up six times and rotated into sixty headings; each heading is squashed across
+the line of flight into three wing positions, tinted into every shade of the
+ramp, into the far plane's dimmer shades, into the hawk's colour and into the
+three fading steps of a tail. That is twenty-six sets of sixty images, fifteen
+hundred in all, built as pixels in about two hundred milliseconds, because each
+geometry is rotated once and only tinted per set. Under Kitty they are then
+encoded as PNG and uploaded once; a frame afterwards is one placement command
+per bird, naming an image by id, inside one synchronized update. The screen is
+never cleared after the upload, since clearing would delete the images, and a
+test asserts that no frame carries a screen erase.
 
-**The protocol.** Each frame is one synchronized update (`CSI ? 2026 h`), one
-global placement clear, one placement per bird, then the panel, then a
-non-blocking flush that keeps only the unsent suffix if the terminal cannot
-swallow it. The screen is **never** cleared after the sprites are uploaded:
-clearing deletes them, and every later placement would point at an image that no
-longer exists. A test asserts that no frame ever carries a screen erase.
+The other renderers start from the same pixels. Sixel and iTerm2 get the frame
+composited onto a canvas and encoded, thirty times a second, which is what a
+picture a frame costs a terminal to decode. Braille, sextants and blocks read
+the canvas back as cells, a dot lit where a quarter or more of its patch is
+bird and the cell coloured by the bird that owns most of it, then send the
+cells that differ from the last frame, with one cursor move per run and a
+colour only when it changes.
 
-**The recording.** `--record` runs headless — no terminal, no frame budget, and
-deterministic given `--seed` — composites every frame into one canvas and writes
-an animated GIF: global colour table chosen from the frames themselves, LZW,
-Netscape looping. `--record-fps` and `--record-seconds` say what you want; fifty
-a second is the ceiling, because a GIF's delay is whole hundredths and viewers
-clamp anything under two of them. Ask for sixty and you get fifty, and it tells
-you why instead of pretending. The demo at the top of this file is 300 frames at
-50 fps, made by the command in `docs/README.md`, and nothing outside this
-repository touched it. The test reads a recording back with a GIF parser written
-separately from the writer, because an encoder checked against its own
-assumptions is not checked.
+The wings beat at six a second whatever the frame rate, each bird at its own
+phase, and now and then one glides. Under `--depth` a third of the birds are
+far: smaller, slower, dimmed toward the background, drawn underneath, flocking
+only with each other and invisible to the hawk. The hawk is not a boid. It
+picks a bird well off, holds that choice long enough to get there, aims where
+the bird will be, dives the last ninety pixels, and only a strike on the bird
+it chose counts; then it flies straight out the far side and turns back for
+another. Every bird within reach flees, partly sideways, which is what makes a
+flock stream around a predator and close behind it rather than burst.
 
-**The compression.** `png_encode` runs LZ77 with a hash chain and the fixed
-Huffman codes of RFC 1951, which the inflater in the same file has always been
-able to read. Fixed rather than dynamic because there is no tree to build and no
-second pass, and on this data — long runs of one colour, long runs of
-transparency — it lands within a few percent of what a dynamic tree would.
-Stored blocks remain the fallback, so incompressible data cannot come out larger
-than it went in. It earns its place twice: `--size 64` used to push 10 MB of
-base64 before drawing anything and now pushes 726 KB, and the images in this
-README came straight out of `--snapshot` at 50–100 KB instead of 4.15 MB each.
+The neighbour search is a uniform grid of twelve pixel cells rebuilt every
+frame with counting sort, so a bird reads only the cells its perception radius
+reaches. A test checks the grid against a brute force scan to 1e-11 at every
+radius and every flock count. The compressor in `png.c` is LZ77 with a hash
+chain and the fixed Huffman codes of RFC 1951; it is why the sprite upload is
+half a megabyte rather than ten, and why a 1200 by 680 snapshot is 160 KB where
+its pixels are 3.3 MB. The GIF writer picks its colour table from the frames and encodes LZW; the
+test reads a recording back through a parser written separately from the
+writer.
 
-**The neighbours.** A uniform 12×12 pixel grid, rebuilt every frame with counting
-and prefix sums. The cell size is exactly the perception quantum, so the
-`(2v+1)²` block a bird sweeps is provably sufficient with no slop — and a test
-compares the grid against a brute-force scan to 1e-11, across every radius and
-every flock count.
-
-**The banking.** A bird may turn only so far in one frame, which is what gives
-the flock curved fronts and a leading edge instead of a blob that changes shape
-instantly. Two things are exempt: a bird writing a letter, which has to land on
-it rather than circle it, and a bird inside the panel's turn zone, whose push is
-a constraint rather than a force — the proof that the panel is unreachable
-assumes a bird can turn away at once.
-
-**The other terminals.** A terminal that draws pixels but not Kitty's gets a
-picture a frame: sixel, encoded against a palette of what is actually in the
-frame — the ground, each tint of the ramp and its half blend for the edges, the
-hawk — so a frame is a dozen colours and tens of kilobytes rather than a
-quantiser's two hundred and fifty six; or, for iTerm2, a PNG through the same
-encoder the snapshots use. Both are capped at thirty frames a second, which is
-what a picture a frame costs. A terminal without any graphics protocol gets the
-frame rendered to the same pixels and the pixels read back as cells: eight braille dots a cell, lit where a quarter or more of the dot's patch
-is bird, each cell in the colour of whatever bird is in it — or two half blocks a
-cell, coarser and with colour on every pixel. Only the cells that changed since
-the last frame are sent, one cursor move per run of them and a colour only when
-it differs from the one already set, so a full flock at sixty frames a second
-costs a text terminal about as much as it costs Kitty. Nothing paints the
-background: an empty cell is the terminal's own, so the flock wears the theme.
-Terminals without 24 bit colour get the nearest of the 256 colour cube. The
-parameter panel is text either way, and the cells leave its corner alone.
-
-**The wings.** Every bird beats them: three pictures a heading — wings out,
-half, folded — beaten out and back at six a second whatever the frame rate, each
-bird at its own place in the beat, and now and then one stops to glide with its
-wings held out, because a flock in which every wing is always moving looks like
-a machine. Seen from above a beat is the wingspan foreshortening, so the pictures
-are the one sprite squashed across the line of flight, not new drawings. A hawk
-soars, and beats its wings only in the dive.
-
-**The depth.** Two planes. A third of the birds are far: smaller, slower — the
-parallax between the planes is what makes a flat screen read as a sky — dimmed
-toward the ground the way distance dims a colour, drawn underneath, and flocking
-only with each other. The hawk hunts the near sky and only the near sky fears it.
-`--flat` puts every bird in one plane.
-
-**The tails.** `-e` gives every fourth bird three ghosts of itself behind it,
-each fainter and a little smaller than the last: a fade, not a queue. They used
-to be full birds in the palette's darkest shade, which in a still read as some
-birds being a different colour and never as motion.
-
-**The edges.** A band a third of the screen wide on each side, in which the push
-inwards grows with the square of how deep into it a bird has gone, so a bird that
-brushes the edge is nudged and a bird that is leaving is turned. Past the screen
-itself the boundary slider stops having a vote: the push is the same at notch
-zero as at notch twelve, which is what makes a soft boundary mean *turns late*
-rather than *leaves*. Before this the band pushed with a fixed unit vector and
-the flocking terms outvoted it: on the softest preset 94% of the flock was off
-the screen at any moment, parked out there for good. It is now a few per cent, all
-of it birds brushing the edge and coming straight back — no bird is out of frame
-for more than seven frames, a ninth of a second.
-
-**The flocking.** Separation, alignment and cohesion, from the same immutable
-snapshot for every bird, so the order they are updated in cannot matter. Two of
-the three are sliders; cohesion is not, because dragging it from end to end moved
-the flock's own measure of itself by a twentieth, and a control nobody can see
-working is a control that should not be there. Flocks are social, not physical:
-separation applies to every bird in reach, alignment and cohesion only to your own
-flock, which is why two flocks can pass through each other and come out as two. That alone will not make three flocks legible as
-three, because flocking is local — a bird sees sixty pixels at most — and nothing
-in the three rules holds a flock together across a whole screen. So each flock is
-also leashed to its own centre of gravity, and the centres shove each other
-apart: three flocks keep three corners of the sky, meet at the edges, and slide
-past without merging.
-
-**The hunt.** A hawk is not a boid. It has no neighbours, obeys none of the three
-rules and is kept out of the grid entirely, so the flocking arithmetic is
-untouched by its existence. It chooses a bird at least three hundred and forty
-pixels off — near enough and there is no chase to watch — and holds that one
-whatever drifts past in the meantime: about twenty-six frames, which is how long
-it takes to get there, and up to forty before it will reconsider. It aims where
-the bird will be rather than where it is, dives the last ninety pixels, and the
-strike counts only if it reaches the bird it chose — measured along the whole of
-the frame's travel, so how often it catches anything does not depend on the frame
-rate. Four chases in five end in a strike. Then it flies straight out the far side
-for a quarter of a second before turning back for another. Two hawks never take
-the same bird and keep their distance from each other. Every bird within a hundred
-and fifty pixels flees, and part of that flee is sideways rather than straight
-away, which is what makes the flock stream around a hawk and close up behind it
-instead of bursting open.
-
-It is scarlet, or a hot white, or an electric cyan: whichever of the three stands
-furthest from the colours the flock is wearing. On the ember ramp a scarlet hawk
-is just another ember, which is a predator nobody can find.
-
-A predator that could throw the flock off the screen would be a bug in a costume,
-so the flee is weaker than the edge: with four hawks up, the share of birds out of
-frame goes from 2.9% to 5.5%, and none of them stays out.
-
-**The writing.** A 5×7 font, authored as rows of `#` so it can be corrected by
-eye. A target per lit cell, a bird per target round robin, and a bird with a
-target steers at it and moves the *smaller of its speed and the distance left* —
-which is what makes a letter crisp instead of a cloud orbiting one.
-
-## Numbers
-
-`--bench N` runs N frames with no terminal at all and prints these, so you can
-check them rather than take them on trust. Ryzen-class laptop, 1600×800 viewport:
+`--bench N` runs N frames with no terminal and prints what they cost, so the
+numbers below can be checked rather than believed. A Ryzen laptop, a 1600 by
+800 viewport:
 
 | birds | CPU per frame | ceiling | bytes per frame |
 |---|---|---|---|
-| 400 | 0.226 ms | 4426 fps | 16.6 KB |
-| 800 | 0.534 ms | 1874 fps | 32.5 KB |
-| 2000 | 1.688 ms | 592 fps | 80.1 KB |
-| 4096 | 4.397 ms | 227 fps | 163.1 KB |
+| 400 | 0.23 ms | 4400 fps | 17 KB |
+| 800 | 0.53 ms | 1900 fps | 33 KB |
+| 2000 | 1.69 ms | 590 fps | 80 KB |
+| 4096 | 4.40 ms | 230 fps | 163 KB |
 
-The simulation is not the bottleneck and has not been since the spatial grid
-landed. The limit is terminal bandwidth: 2.0 MB/s at the default, 10 MB/s at
-four thousand birds.
+The simulation is not the limit. Terminal bandwidth is: two megabytes a second
+at the default, ten at four thousand birds.
 
-These went up by half when the edges were fixed, and the reason is worth stating:
-a third of the flock used to be off the screen, where a bird has few neighbours to
-read and no placement to send. The old numbers were partly measuring an empty
-sky.
+## The algorithm
 
-## Requirements
+Reynolds' model gives every bird three rules, each computed from the birds
+within its perception radius $r$. For bird $i$ at position $p_i$ with heading
+$\theta_i$, and neighbours $N_i = \{\, j \ne i : |p_i - p_j| < r \,\}$:
 
-Any terminal that can show colour. cbirds asks the terminal what it can draw,
-before taking the screen, and picks the best of it:
+**Separation.** Move away from each neighbour, more from the near ones. cbirds
+sums the displacements, which already weights a close bird more than a far one
+in the direction that matters:
 
-| the terminal | what it gets |
-|---|---|
-| **Kitty**, **WezTerm**, **Ghostty**, recent **Konsole** | sprites, over the Kitty graphics protocol |
-| **xterm**, **foot**, **mlterm**, **contour**, **mintty**, **Windows Terminal** | a picture a frame, in sixel |
-| **iTerm2** | a picture a frame, as an inline PNG |
-| everything else — Alacritty, GNOME Terminal, Terminal.app, tmux, ssh | the same flock in braille, eight dots a cell |
+$$s_i = \sum_{j \in N_i} (p_i - p_j)$$
 
-`--render kitty|sixel|iterm|braille|sextants|blocks` overrules the choice.
-`sextants` are two by three solid blocks a cell — bolder than braille's dots,
-nearly as fine — and need a font from 2020 or later (Cascadia, Iosevka,
-JetBrains Mono, Fira Code, Noto Sans Symbols 2).
+**Alignment.** Fly the way the neighbours fly: the mean of their heading
+vectors.
 
-Build needs GCC 7+ or Clang 10+ and `make`. `make test` runs eight suites.
+$$a_i = \frac{1}{|N_i|} \sum_{j \in N_i} (\cos\theta_j,\ \sin\theta_j)$$
+
+**Cohesion.** Move toward the neighbours' centre of mass.
+
+$$c_i = \frac{1}{|N_i|} \sum_{j \in N_i} p_j \;-\; p_i$$
+
+The three are combined with weights into one desired direction, along with a
+push $b_i$ from the edges of the screen, and the bird's new heading is the
+angle of the sum:
+
+$$\theta_i^{*} = \operatorname{atan2}\big(w_s s_i + w_a a_i + w_c c_i + w_b b_i\big)$$
+
+The defaults are $w_s = 0.005$, $w_a = 1.5$, $w_c = 0.01$, $w_b = 0.2$. They
+differ by orders of magnitude because the terms do: separation and cohesion are
+in pixels, alignment is a unit vector. Three of the four are the panel's
+sliders; cohesion is not, because moving it end to end changed nothing anyone
+could see.
+
+A bird does not snap to $\theta_i^{*}$. It turns toward it by at most $\tau$
+radians in a frame, which is the turning slider, and that limit is what gives a
+flock its curved fronts and leading edges rather than a cloud that changes shape
+instantly. Then it moves a fixed distance along its heading:
+
+$$\theta_i \leftarrow \theta_i + \operatorname{clamp}(\theta_i^{*} - \theta_i,\ -\tau,\ \tau),
+\qquad p_i \leftarrow p_i + v\,(\cos\theta_i,\ \sin\theta_i)$$
+
+Every bird reads the same snapshot of the previous frame and writes into the
+next, so the order of updates cannot matter and the result is the same on any
+machine given the same seed.
+
+The edges are a band a third of the screen wide on each side, in which the
+push inward grows with the square of how far into it a bird has gone,
+$b = (d/W)^2$ toward the middle, so a bird that brushes the edge is nudged and
+a bird that is leaving is turned. Several flocks add two social terms:
+separation applies to every bird in reach, but alignment and cohesion only to a
+bird's own flock, which is why two flocks can pass through each other and come
+out as two; and each flock is leashed to its own centre, the centres shoving
+each other apart, which is what keeps three flocks in three parts of the sky.
+The hawk and the pointer are two more repulsive terms, weighted above the
+flocking so that they win, and tuned so that neither can throw the flock off
+the screen.
+
+With $n$ birds the naive neighbour search is $O(n^2)$. The grid makes it
+$O(n \cdot k)$ for the $k$ birds in the cells around each one, which is what
+lets four thousand birds cost four milliseconds.
 
 ## Layout
 
 | | |
 |---|---|
-| `boids.c` | the simulation, the panel, the terminal |
-| `cells.c` `cells.h` | the frame as braille or half blocks, diffed against the last one |
-| `options.c` `options.h` | the option table that drives both the parser and `--help` |
-| `kitty_graphics.c` `.h` | the buffered protocol, with flow control |
-| `spatial_grid.c` `.h` | the uniform grid and its contiguous cell buckets |
-| `png.c` `png.h` | the PNG library: decode, encode, DEFLATE, rotate, resize, tint |
-| `font.c` `font.h` | the 5×7 font the flock writes with |
-| `gif.c` `gif.h` | the animated GIF writer, colour quantisation and LZW |
-| `sprite_png.h` | the bird, generated from `matrix.png` by `mkasset.c` |
-| `tests/` | six suites, run by `make test` |
-
-## Contributing
-
-Genuinely open, and one of these is nearly free:
-
-**A dynamic Huffman encoder.** `png_encode` uses fixed codes, which is within a
-few percent on sprite data and further off on photographs. The decoder already
-reads dynamic blocks, so the tests are waiting for it.
-
-**A canvas renderer.** One image a frame instead of one placement a bird, which
-is the road to twenty thousand birds: composite into one RGBA canvas — the
-`--snapshot` path already does exactly this — compress it, and send it as a
-single `a=T`. The flocking update is trivially parallel thanks to the snapshot.
-
-**More sprites.** `--sprite FILE` takes any PNG through the project's own decoder
-and leaves its colours alone, and `--shape` draws three more from triangles. A
-fourth is a pull request with one function in it.
-
-**The ideas not taken.** Music reactivity, obstacles the flock must fly around,
-perching along the bottom edge, V formations, a config file, tmux passthrough.
-Fifty were proposed and twenty were built; the rest are listed in `plan.md`.
-
-**Recording as text.** `cbirds --record flock.cast` writes an
-[asciinema](https://asciinema.org) cast instead of a GIF: the same flock the
-braille renderer draws, one line of escape text per frame, only the cells that
-changed. It plays back in any terminal with `asciinema play flock.cast`, embeds
-wherever the player does, and eight seconds of seven hundred birds at thirty
-frames a second is two megabytes, where five seconds of the GIF is five. Every
-cell wears one of the palette's own colours — the six in `docs/demo.cast` are
-the five embers and the hawk — so a run of birds costs one colour sequence, not
-one per cell.
-
-**And the ones taken back out.** Four testers went over every combination of
-flags. Eight of them turned out to be controls nobody could see working, modes
-that were duplicates of other modes, or settings that only made the flock worse:
-a cohesion slider that moved nothing, a wind that did not do the one thing it was
-for, a wrap that converged the whole flock onto one heading in two seconds and
-left it there, two palettes that could not be read on the terminals people use, a
-pointer mode that was inert five sixths of the time, and a `--color-by` whose four
-modes were one good one, one broken one and two duplicates. Forty-six flags became
-thirty-eight, and every one of those is a setting somebody might want.
+| `boids.c` | the simulation, the sprites, the panel, the terminal, the recording |
+| `cells.c` | the frame as braille, sextants or blocks, diffed against the last one |
+| `sixel.c` | the sixel encoder |
+| `kitty_graphics.c` | the buffered Kitty protocol, with flow control |
+| `png.c` | PNG decode and encode, DEFLATE both ways, rotate, resize, tint |
+| `gif.c` | the animated GIF writer: colour table, LZW, looping |
+| `font.c` | the 5 by 7 font the flock writes its name with |
+| `spatial_grid.c` | the uniform grid |
+| `options.c` | the option table that drives the parser, the help and the completions |
+| `tests/` | eight suites, ninety-odd tests, `make test` |
+| `docs/` | the images, and the commands that made them |
+| `plan.md` | what was built, what was not, and what was taken back out, with the measurements |
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
-
-## Acknowledgements
-
-**Craig Reynolds** for the [boids algorithm](http://www.red3d.com/cwr/boids/),
-1986. **Kovid Goyal** for the
-[Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/),
-without which none of this could be in a terminal at all.

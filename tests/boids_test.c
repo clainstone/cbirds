@@ -2310,6 +2310,24 @@ static void test_flocks_do_not_align_with_each_other(void) {
     reset_test_config();
 }
 
+/* The intro is three seconds of the flock's name, unless somebody presses a
+ * key; a pointer report is not a key, or moving the mouse would end it. */
+static void test_a_key_ends_the_intro(void) {
+    reset_test_config();
+    legend_enabled = 1;
+    apply_screen_size(200, 50, 1600, 800);
+    begin_the_intro();
+    assert(formation.writing);
+    assert(formation.until == INTRO_SECONDS);
+    assert(feed_input("\033[<35;10;5M") == 1);
+    assert(formation.writing);
+    assert(feed_input(" ") == 1);
+    assert(!formation.writing);
+    paused = 0;
+    mouse.present = 0;
+    reset_test_config();
+}
+
 static void test_mouse_reports_are_parsed(void) {
     reset_test_config();
     apply_screen_size(80, 24, 80 * 8, 24 * 16);
@@ -2574,6 +2592,7 @@ int main(void) {
     test_recording_gives_the_whole_frame_to_the_flock();
     test_flocks_keep_to_their_own_side_of_the_sky();
     test_flocks_do_not_align_with_each_other();
+    test_a_key_ends_the_intro();
     test_mouse_reports_are_parsed();
     test_vision_controls();
     test_flicker_free_render_queue();

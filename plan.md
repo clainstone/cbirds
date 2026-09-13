@@ -1,10 +1,11 @@
 # cbirds: the twenty, built
 
-Fable 5.1 audited the project and proposed fifty features. Twenty were chosen
-from its own ranking — everything in its top ten, everything that makes the
-first frame sell itself, and the handful of extravagances that give a second
-post something to show — and all twenty are in. This document is the record of
-that, and the list of what was not taken and why.
+cbirds was written with Claude (the Fable 5.1 model) as the second pair of
+hands. Early on it audited the project and proposed fifty features; twenty were
+chosen from its own ranking — everything in its top ten, and everything that
+makes the first frame sell itself — and all twenty went in. This document is
+the record of that, of what was not taken and why, and of what was later taken
+back out, with the measurements.
 
 Every one of them keeps the rules the codebase already had: the screen is never
 cleared after the sprites are uploaded, the flock never draws over the panel, one

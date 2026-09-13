@@ -12,9 +12,19 @@ TESTS     = $(TESTDIR)/kitty_graphics_test $(TESTDIR)/options_test $(TESTDIR)/pn
             $(TESTDIR)/gif_test $(TESTDIR)/cells_test $(TESTDIR)/sixel_test \
             $(TESTDIR)/spatial_grid_test $(TESTDIR)/boids_test
 
-.PHONY: all clean run asset test
+PREFIX   ?= /usr/local
+BINDIR    = $(DESTDIR)$(PREFIX)/bin
+
+.PHONY: all clean run asset test install uninstall
 
 all: $(TARGET)
+
+install: $(TARGET)
+	mkdir -p $(BINDIR)
+	install -m 755 $(TARGET) $(BINDIR)/$(TARGET)
+
+uninstall:
+	rm -f $(BINDIR)/$(TARGET)
 
 $(TARGET): $(SRC) $(HDR)
 	$(CC) $(CFLAGS) $(SRC) -o $(TARGET) $(LDLIBS)

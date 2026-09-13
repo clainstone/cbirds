@@ -1087,7 +1087,8 @@ static int formation_target_of(int index, double *x, double *y) {
 
 /* It opens by writing its name, in the middle, for a moment; then the flock
  * takes over from wherever the letters left it, which is the nicest part to
- * watch. A screen too small for the word simply starts flocking. */
+ * watch. A keypress ends it early, and a screen too small for the word simply
+ * starts flocking. */
 static void begin_the_intro(void) {
     if (formation_layout("BOIDS")) formation.until = INTRO_SECONDS;
 }
@@ -2708,6 +2709,7 @@ static int handle_input(void) {
         }
 
         if (key == 'b' || key == 'a') konami_note((char)key);
+        formation_clear(); /* Any key ends the intro; the pointer does not. */
         switch (key) {
             case 'q':
                 return 0;

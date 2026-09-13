@@ -7,14 +7,12 @@ encoders. Nothing outside this repository touched them. To regenerate:
 make
 
 # The animation at the top: the flock writes its name, lets go, and murmurates.
-./cbirds --record docs/demo.gif --record-fps 20 --record-seconds 6 \
-         --record-size 120x32 -n 700 -s 13 --color ember --trails \
+./cbirds --record docs/demo.gif --record-fps 20 --record-seconds 5 \
+         --record-size 120x32 -n 500 -s 12 --color ember --trails \
          --seed 11 --preset murmuration
-# The three shorter ones in the gallery.
+# The two shorter ones in the gallery.
 ./cbirds --record docs/hawks.gif  --record-fps 20 --record-seconds 5 \
          --record-size 120x32 -n 500 -s 13 --color acid --hawks 2 --seed 5
-./cbirds --record docs/depth.gif  --record-fps 20 --record-seconds 5 \
-         --record-size 120x32 -n 600 -s 13 --color ice --depth --trails --seed 9
 ./cbirds --record docs/flocks.gif --record-fps 20 --record-seconds 5 \
          --record-size 120x32 -n 500 -s 13 --color ember --flocks 3 --seed 3
 # And the cast.
@@ -29,8 +27,12 @@ make
 ./cbirds --snapshot docs/hero.png        --frames 420 -n 1100 --color ember --seed 5 --no-panel
 ./cbirds --snapshot docs/murmuration.png --frames 440 -n 900  --color ice \
          --preset murmuration --trails --seed 7 --no-panel
+./cbirds --snapshot docs/depth.png       --frames 440 -n 1000 --color ice \
+         --depth --trails --seed 9 --no-panel
 ./cbirds --snapshot docs/storm.png       --frames 440 -n 800  --color acid \
          --preset storm --shape plane --seed 9 --no-panel
+./cbirds --snapshot docs/arrows.png      --frames 440 -n 900  --color matrix \
+         --flocks 2 --shape arrow --seed 13 --no-panel
 ./cbirds --snapshot docs/matrix.png      --frames 420 -n 700  --matrix --no-panel
 # The text ones are what a terminal with no graphics protocol shows: under
 # --render braille or sextants a snapshot is a picture of the cells, not of
@@ -50,7 +52,7 @@ and cbirds says so rather than pretending.
 A few megabytes is a lot for a README, and the birds are why: a GIF frame costs
 about three bits per bird pixel, so the size is set by how many birds are on the
 screen and how big they are, not by the resolution. Twenty frames a second and
-five to seven hundred birds keep each clip under three and a half.
+five hundred birds keep each clip under two.
 
 A recording named `.cast` is an asciinema file instead: the same flock as the
 braille renderer sends it, one line of escape text per frame, playable with

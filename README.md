@@ -204,42 +204,13 @@ machine.
 
 ## The algorithm
 
-Each bird looks at the birds within its perception radius and follows three
-rules. With $p$ for position, $\theta$ for heading and $N$ for the neighbours
-of bird $i$:
-
-- **Separation**, away from the neighbours:
-  $s = \sum_{j \in N} (p_i - p_j)$
-- **Alignment**, the way they fly:
-  $a = \frac{1}{|N|} \sum_{j \in N} (\cos\theta_j, \sin\theta_j)$
-- **Cohesion**, towards their middle:
-  $c = \frac{1}{|N|} \sum_{j \in N} p_j - p_i$
-
-Add them up with weights, plus a push $b$ away from the edges of the screen,
-and the direction of the sum is where the bird wants to go:
-
-$$d = 0.005\,s + 1.5\,a + 0.01\,c + 0.2\,b, \qquad \theta^{*} = \mathrm{atan2}(d_y, d_x)$$
-
-The weights are far apart because the terms are: $s$ and $c$ are in pixels,
-$a$ is a unit vector. Three of the weights are the panel's sliders.
-
-The bird does not snap to $\theta^{*}$. It turns towards it by at most a fixed
-angle a frame, the turning slider, then flies a fixed distance. That limit is
-what gives the flock curved fronts instead of a cloud that changes shape all
-at once. Every bird reads the previous frame and writes the next, so the
-order does not matter and a seed gives the same run every time.
-
-The edges push harder the deeper a bird gets into a band along them. With
-several flocks, separation still applies to every bird in range, but
-alignment and cohesion only to a bird's own flock, which is why two flocks
-pass through each other and come out as two. The hawk and the pointer are two
-more pushes, stronger than the flocking and tuned so that neither can drive
-the flock off the screen.
-
-The hawk picks a bird, aims where it will be, and dives; only that bird counts
-as a catch. The flock streams around the hawk and closes behind it. Under
-`--depth` a third of the birds fly in a far plane, smaller and slower, and the
-two planes never mix.
+Each bird sees only its neighbours and follows three rules: keep your
+distance, fly the way they fly, drift towards their middle. Add a nudge away
+from the edges of the screen, sum the four pulls, and turn towards the result,
+but only so far in one frame. That limit is what gives the flock curved fronts
+instead of a cloud snapping into shape. Repeat sixty times a second and a
+murmuration falls out of it; nothing in the code knows what a flock looks
+like. Reynolds' paper, below, has the rest.
 
 ## Credits
 

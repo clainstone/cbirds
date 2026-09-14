@@ -284,12 +284,12 @@ void options_usage(FILE *out, const char *program, const char *tagline,
             option->help);
     }
     if (everything) {
-        render_option(out, column, 'h', "help", NULL, "the one screen help");
+        render_option(out, column, 'h', "help", NULL, "the one-screen help");
         render_option(out, column, 0, "completion", "SHELL", "completions for bash, zsh or fish");
-        render_option(out, column, 'V', "version", NULL, "show the version and exit");
+        render_option(out, column, 'V', "version", NULL, "print the version and quit");
     } else {
         render_option(out, column, 0, "help", NULL, "every option, grouped");
-        render_option(out, column, 'V', "version", NULL, "show the version and exit");
+        render_option(out, column, 'V', "version", NULL, "print the version and quit");
     }
 
     if (examples != NULL && everything) {

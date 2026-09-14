@@ -3305,9 +3305,14 @@ static int run_cast_recording(void) {
      * 24 bit colour is what every player of casts understands. */
     text_cells.truecolor = 1;
 
-    FILE *out = fopen(record_path, "w");
+    bird_t *birds = calloc((size_t)config.birds, sizeof(*birds));
+    bird_t *snapshot = malloc(sizeof(*snapshot) * (size_t)config.birds);
+    FILE *out = birds != NULL && snapshot != NULL ? fopen(record_path, "w") : NULL;
     if (out == NULL) {
-        fprintf(stderr, "%s: %s: %s\n", program_name, record_path, strerror(errno));
+        if (birds != NULL && snapshot != NULL)
+            fprintf(stderr, "%s: %s: %s\n", program_name, record_path, strerror(errno));
+        free(birds);
+        free(snapshot);
         return EXIT_FAILURE;
     }
     fprintf(out,
@@ -3315,10 +3320,6 @@ static int run_cast_recording(void) {
             "\"title\": \"cbirds\", \"env\": {\"TERM\": \"xterm-256color\", \"SHELL\": "
             "\"/bin/sh\"}}\n",
             screen.cols, screen.rows, (long)time(NULL));
-
-    bird_t *birds = calloc((size_t)config.birds, sizeof(*birds));
-    bird_t *snapshot = malloc(sizeof(*snapshot) * (size_t)config.birds);
-    if (birds == NULL || snapshot == NULL) return EXIT_FAILURE;
     srand(requested_seed >= 0 ? (unsigned)requested_seed : 1u);
     initialize_birds(birds);
     place_hawks();

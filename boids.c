@@ -3428,6 +3428,14 @@ static int run_recording(void) {
         return EXIT_FAILURE;
     }
     if (png_image_alloc(&canvas, screen.width, screen.height) != PNG_OK) return EXIT_FAILURE;
+    /* Under --render braille, sextants or blocks the GIF is of the cells, painted
+     * the way a text terminal shows them, because a GIF of the pixels the cells
+     * were read from would be a picture of something nobody saw. */
+    int as_text = drawing_with_text();
+    png_image_t painted = {0, 0, NULL};
+    if (as_text && (cells_init(&text_cells, 1) != CELLS_OK ||
+                    cells_resize(&text_cells, screen.cols, screen.rows) != CELLS_OK))
+        return EXIT_FAILURE;
 
     gif_status_t gif_status = gif_open(&gif, record_path, screen.width, screen.height, delay);
     if (gif_status != GIF_OK) {
@@ -3458,8 +3466,21 @@ static int run_recording(void) {
         update_birds(birds, snapshot, &grid);
         for (int i = 0; i < config.birds; i++) birds[i].frame = direction_frame(birds[i].direction);
 
-        compose_onto(&canvas, frames, birds, 1);
-        gif_status = gif_add_frame(gif, &canvas);
+        if (as_text) {
+            compose_onto(&canvas, frames, birds, 0);
+            cells_read(&text_cells, text_style(), &canvas, screen.cell_width, screen.cell_height);
+            png_image_free(&painted);
+            if (cells_emit(&text_cells) != CELLS_OK ||
+                cells_paint(&text_cells, text_style(), &painted, screen.cell_width,
+                            screen.cell_height, PICTURE_GROUND) != CELLS_OK) {
+                gif_status = GIF_ERR_MEMORY;
+                break;
+            }
+            gif_status = gif_add_frame(gif, &painted);
+        } else {
+            compose_onto(&canvas, frames, birds, 1);
+            gif_status = gif_add_frame(gif, &canvas);
+        }
     }
     formation_clear();
 
@@ -3467,6 +3488,8 @@ static int run_recording(void) {
     if (gif_status == GIF_OK) gif_status = closed;
     free_sprites(frames);
     png_image_free(&canvas);
+    png_image_free(&painted);
+    if (as_text) cells_destroy(&text_cells);
     spatial_grid_destroy(&grid);
     free(snapshot);
     free(birds);

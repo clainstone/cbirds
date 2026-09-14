@@ -1911,6 +1911,51 @@ static void test_a_sixel_or_iterm_terminal_gets_a_picture_a_frame(void) {
     reset_test_config();
 }
 
+/* Under a text renderer the GIF is of the cells, painted as a terminal shows
+ * them: dots on the ground, in the palette's colours, and nothing else. */
+static void test_a_text_renderer_records_its_cells(void) {
+    char path[] = "/tmp/cbirds_record_test_braille.gif";
+    reset_test_config();
+    config.birds = 60;
+    config.palette = palette_named("ember");
+    render_mode = RENDER_BRAILLE;
+    record_path = path;
+    record_fps = 20;
+    record_seconds = 1;
+    record_columns = 60;
+    record_rows = 20;
+    fflush(stdout);
+    int saved = dup(STDOUT_FILENO);
+    assert(freopen("/dev/null", "w", stdout) != NULL);
+    int status = run_recording();
+    fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+    clearerr(stdout);
+    assert(status == EXIT_SUCCESS);
+
+    FILE *file = fopen(path, "rb");
+    assert(file != NULL);
+    uint8_t header[10];
+    assert(fread(header, 1, sizeof(header), file) == sizeof(header));
+    assert(memcmp(header, "GIF89a", 6) == 0);
+    assert((header[6] | header[7] << 8) == 60 * DEFAULT_CELL_WIDTH);
+    assert((header[8] | header[9] << 8) == 20 * DEFAULT_CELL_HEIGHT);
+    /* Every frame is a picture: twenty image descriptors for twenty frames. */
+    int descriptors = 0, c;
+    while ((c = fgetc(file)) != EOF)
+        if (c == 0x2C) descriptors++;
+    fclose(file);
+    remove(path);
+    assert(descriptors >= 20);
+
+    record_path = NULL;
+    record_fps = 25;
+    record_seconds = 6;
+    render_mode = RENDER_KITTY;
+    reset_test_config();
+}
+
 /* A recording named .cast is text: an asciinema file, a JSON header and a line
  * of escape text per frame, playable in any terminal and a fraction of a GIF. */
 static void test_a_cast_is_the_flock_as_text(void) {
@@ -2588,6 +2633,7 @@ int main(void) {
     test_wings_beat_and_sometimes_glide();
     test_a_text_terminal_gets_the_flock_in_braille();
     test_a_sixel_or_iterm_terminal_gets_a_picture_a_frame();
+    test_a_text_renderer_records_its_cells();
     test_a_cast_is_the_flock_as_text();
     test_recording_gives_the_whole_frame_to_the_flock();
     test_flocks_keep_to_their_own_side_of_the_sky();

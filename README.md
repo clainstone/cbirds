@@ -6,7 +6,7 @@ A flock of birds in your terminal.
 
 Craig Reynolds' boids, drawn as sprites through the terminal's graphics
 protocol, and as braille where there is none. One C99 program, no
-dependencies. Every image on this page was recorded by cbirds itself.
+dependencies. Every clip on this page was recorded by cbirds itself.
 
 <table>
 <tr>
@@ -18,32 +18,32 @@ dependencies. Every image on this page was recorded by cbirds itself.
 <td align="center"><code>cbirds --flocks 3 --color ember</code></td>
 </tr>
 <tr>
-<td width="50%"><img src="docs/murmuration.png" alt="A murmuration with tails"></td>
-<td width="50%"><img src="docs/depth.png" alt="Two planes of birds, the far one smaller and slower"></td>
+<td width="50%"><img src="docs/murmuration.gif" alt="A murmuration with tails"></td>
+<td width="50%"><img src="docs/depth.gif" alt="Two planes of birds, the far one smaller and slower"></td>
 </tr>
 <tr>
 <td align="center"><code>cbirds --preset murmuration --trails --color ice</code></td>
 <td align="center"><code>cbirds --depth --trails --color ice</code></td>
 </tr>
 <tr>
-<td width="50%"><img src="docs/storm.png" alt="The storm preset, flown as planes"></td>
-<td width="50%"><img src="docs/matrix.png" alt="Matrix rain, as birds"></td>
+<td width="50%"><img src="docs/storm.gif" alt="The storm preset, flown as planes"></td>
+<td width="50%"><img src="docs/matrix.gif" alt="Matrix rain, as birds"></td>
 </tr>
 <tr>
 <td align="center"><code>cbirds --preset storm --shape plane --color acid</code></td>
 <td align="center"><code>cbirds --matrix</code></td>
 </tr>
 <tr>
-<td width="50%"><img src="docs/hero.png" alt="Eleven hundred birds on the ember ramp"></td>
-<td width="50%"><img src="docs/arrows.png" alt="Two flocks of arrows on the matrix ramp"></td>
+<td width="50%"><img src="docs/ember.gif" alt="The flock on the ember ramp"></td>
+<td width="50%"><img src="docs/arrows.gif" alt="Two flocks of arrows on the matrix ramp"></td>
 </tr>
 <tr>
-<td align="center"><code>cbirds -n 1100 --color ember</code></td>
+<td align="center"><code>cbirds --color ember</code></td>
 <td align="center"><code>cbirds --flocks 2 --shape arrow --color matrix</code></td>
 </tr>
 <tr>
-<td width="50%"><img src="docs/braille.png" alt="The flock in braille, for a terminal with no graphics"></td>
-<td width="50%"><img src="docs/sextants.png" alt="The flock in sextants"></td>
+<td width="50%"><img src="docs/braille.gif" alt="The flock in braille, for a terminal with no graphics"></td>
+<td width="50%"><img src="docs/sextants.gif" alt="The flock in sextants"></td>
 </tr>
 <tr>
 <td align="center"><code>cbirds --render braille --hawks 2</code></td>
@@ -176,9 +176,11 @@ cbirds --snapshot frame.png --frames 400
 
 `--record` needs no terminal: it runs the flock headless and writes a GIF
 with its own encoder, or an [asciinema](https://asciinema.org) `.cast` if you
-name it so, which plays in any terminal and is about half the size.
-`--snapshot` saves a live frame as a PNG, so it wants a terminal. The commands
-behind every image here are in [docs/README.md](docs/README.md).
+name it so, which plays in any terminal and is about half the size. With
+`--render braille` or `sextants` the GIF is of the cells, as a text terminal
+would show them. `--snapshot` saves a live frame as a PNG, so it wants a
+terminal. The commands behind every clip here are in
+[docs/README.md](docs/README.md).
 
 ## How it works
 
@@ -216,7 +218,7 @@ neighbours of bird $i$:
 Add them up with weights, plus a push $b$ away from the edges of the screen,
 and the direction of the sum is where the bird wants to go:
 
-$$d = 0.005\,s + 1.5\,a + 0.01\,c + 0.2\,b, \qquad \theta^{*} = \operatorname{atan2}(d_y, d_x)$$
+$$d = 0.005\,s + 1.5\,a + 0.01\,c + 0.2\,b, \qquad \theta^{*} = \mathrm{atan2}(d_y, d_x)$$
 
 The weights are far apart because the terms are: $s$ and $c$ are in pixels,
 $a$ is a unit vector. Three of them are the panel's sliders.

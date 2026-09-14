@@ -298,7 +298,7 @@ static config_t config = {
     .vision_notch = DEFAULT_VISION_NOTCH,
 };
 static screen_t screen;
-static int legend_enabled = 1; /* Cleared by --no-legend, never at runtime. */
+static int legend_enabled; /* Hidden until --panel or h asks for it. */
 /*
  * How the frame reaches the screen.
  *
@@ -2530,8 +2530,8 @@ static const option_t OPTIONS[] = {
      "faint tails behind the flock", "Look", 0},
     {0, "depth", NULL, OPTION_FLAG, &deep_look, 0, 0, NULL, NULL,
      "a second sky further off: smaller, slower, dimmer birds", "Look", 1},
-    {'l', "no-panel", "no-legend", OPTION_OFF, &legend_enabled, 0, 0, NULL, NULL,
-     "hide the sliders in the corner", "Look", 1},
+    {'l', "panel", NULL, OPTION_FLAG, &legend_enabled, 0, 0, NULL, NULL,
+     "the sliders in the corner from the start; h toggles them", "Look", 1},
     {0, "render", NULL, OPTION_ENUM, &render_mode, 0, 0, RENDER_NAMES, "HOW",
      "kitty, sixel, iterm, braille, sextants, blocks; auto asks", "Look", 1},
 

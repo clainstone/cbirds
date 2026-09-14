@@ -79,8 +79,8 @@ It opens by writing BOIDS, lets go, and flocks. Move the pointer into the
 flock and it scatters. Press `q` and it flies off the top. Left alone for a
 minute, it starts moving the sliders itself; any key takes them back.
 
-The sliders are in the corner. Lowercase lowers, uppercase raises, one press is
-one notch. `h` hides the panel.
+`h` opens a panel of sliders in the corner, and `--panel` opens it from the
+start. Lowercase lowers, uppercase raises, one press is one notch.
 
 ```
 ╭────────────────────────────────────╮
@@ -146,7 +146,7 @@ Look
       --sprite FILE             a PNG you supply, kept in its own colours
   -e, --trails                  faint tails behind the flock
       --depth                   a second sky further off: smaller, slower, dimmer birds
-  -l, --no-panel                hide the sliders in the corner
+  -l, --panel                   the sliders in the corner from the start; h toggles them
       --render HOW              kitty, sixel, iterm, braille, sextants, blocks; auto asks
 
 Oddities

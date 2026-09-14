@@ -236,23 +236,6 @@ pass through each other and come out as two. The hawk and the pointer are two
 more pushes, stronger than the flocking and tuned so that neither can push
 the flock off the screen.
 
-## Layout
-
-| | |
-|---|---|
-| `boids.c` | the simulation, the sprites, the panel, the terminal, the recording |
-| `cells.c` | the frame as braille, sextants or blocks |
-| `sixel.c` | the sixel encoder |
-| `kitty_graphics.c` | the Kitty graphics protocol |
-| `png.c` | PNG decode and encode, DEFLATE both ways, rotate, resize, tint |
-| `gif.c` | the animated GIF writer |
-| `font.c` | the font the flock writes BOIDS with |
-| `spatial_grid.c` | the neighbour grid |
-| `options.c` | the option table behind the parser, the help and the completions |
-| `tests/` | eight suites, `make test` |
-| `docs/` | the images, and the commands that made them |
-| `plan.md` | what was built, what was not, and what was taken back out, with the measurements |
-
 ## Credits
 
 The model is Craig Reynolds', *Flocks, Herds, and Schools: A Distributed

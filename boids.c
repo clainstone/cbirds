@@ -62,18 +62,18 @@ enum {
      * the flock into the edges and stop reading as separate animals. */
     MAX_HAWKS = 4,
     HAWK_REACH = 150,
-    HAWK_COMMITMENT = 40, /* Frames it stays after one bird before reconsidering. */
-    HAWK_GIVE_UP = 200,   /* Pixels past which a reconsidered chase is dropped. */
-    HAWK_STALK = 340,     /* And how far off it looks for the next bird. */
-    HAWK_PASS = 14,       /* Frames it flies straight after a pass. */
-    HAWK_SPACING = 150,   /* Pixels two hawks try to keep between them. */
+    HAWK_COMMITMENT_FRAMES = 40, /* Sixty-hertz frames; converted to seconds below. */
+    HAWK_GIVE_UP = 200,          /* Pixels past which a reconsidered chase is dropped. */
+    HAWK_STALK = 340,            /* And how far off it looks for the next bird. */
+    HAWK_PASS_FRAMES = 14,       /* Sixty-hertz frames; converted to seconds below. */
+    HAWK_SPACING = 150,          /* Pixels two hawks try to keep between them. */
     /* A GIF's delay is in hundredths of a second, so the rates it can express are
      * 100/1, 100/2, 100/3 and so on. Viewers also clamp anything under two
      * hundredths up to a tenth of a second, which puts the real ceiling at fifty:
      * sixty is simply not a rate a GIF has. */
     MAX_RECORD_FPS = 50,
     AUTOPILOT_PERIOD = 4, /* Seconds between one slider moving and the next. */
-    OUTRO_FRAMES = 40,
+    OUTRO_FRAMES_AT_SIXTY = 40,
     FRAME_ANGLE = 360 / ROTATION_FRAMES,
     SPRITE_SUPERSAMPLE = 6,
     SPRITE_WORK_MAX = 256,
@@ -154,11 +154,11 @@ static const double HAWK_SPEED = 0.90;
  * radian still only landed one chase in eight; at a whole one it lands half of
  * them, and the wall is reached a third as often. */
 static const double HAWK_TURN = 1.0;
-/* That is per frame at sixty a second. At any other rate it has to be rescaled or
- * the hawk is a different animal: half a radian a frame is 1718 degrees a second
- * at sixty and 3437 at a hundred and twenty. */
-#define HAWK_TURN_PER_FRAME() (HAWK_TURN * FRAME_RATE / (double)config.frame_rate)
-static const double HAWK_LEAD = 3.0; /* Frames ahead of the prey it aims. */
+/* That is per step at sixty a second. It follows elapsed time so the hawk remains
+ * the same animal when frames arrive faster or slower. */
+#define HAWK_TURN_PER_FRAME() (HAWK_TURN * FRAME_RATE * frame_seconds)
+/* At most the distance a bird covers in three sixty-hertz steps. */
+static const double HAWK_LEAD_DISTANCE = DEFAULT_SPEED * 3.0;
 /* Inside the dive it accelerates and stops leading: a bird that flees is only a
  * tenth slower than a cruising hawk, so without this the chase never closes and
  * there is no moment to watch. */
@@ -275,7 +275,7 @@ typedef struct {
     int layer; /* Near or far; the two never see each other. */
     int wing;  /* Where in the beat it is: an index into WING_SEQUENCE. */
     double wing_clock;
-    int gliding; /* Frames of wings held out and still. */
+    double gliding; /* Seconds of wings held out and still. */
     double trail_x[TRAIL_LENGTH], trail_y[TRAIL_LENGTH];
     int trail_at, trail_held;
 } bird_t;
@@ -389,6 +389,11 @@ static struct {
     long frame;
     double seconds;
 } clock_state;
+
+/* How much real or recorded time the next simulation step represents. A normal
+ * live frame is about 1/60 s, a picture renderer about 1/30 s, and an unlocked
+ * frame whatever elapsed since the previous one. */
+static double frame_seconds = 1.0 / FRAME_RATE;
 
 /* Paused holds the simulation still but keeps drawing and reading keys, so the
  * panel still answers and a single step is possible. Stepping is one frame of
@@ -1012,7 +1017,7 @@ static int direction_frame(double radians) {
  * outside this rectangle lands at worst one epsilon inside the panel edge, which
  * is still outside the panel itself, and by then the push is on. That is what
  * makes the panel unreachable rather than merely unwelcoming, and the margin
- * follows the frame rate because speed does. */
+ * follows the distance covered by this simulation step. */
 static int legend_turn_zone(double x, double y) {
     return screen.legend_width > 0 && x < screen.legend_width + config.speed &&
            y < screen.legend_height + config.speed;
@@ -1177,13 +1182,11 @@ static double turn_towards(double from, double to, double most) {
  * the edges either: at a true zero the whole flock flew out of the frame within a
  * second and the screen stayed black until something else was pressed.
  *
- * Scaled by the frame rate, like the speed is, so that both are really per second
- * and a bird's turning circle is the same number of pixels whatever the rate. Left
- * per frame, a bird at thirty covered twice the ground per frame and was allowed
- * the same turn for it: the flock could not come round inside the edge band any
- * more, and one bird in eight was off the screen at --fps 30 against one in
- * thirty at sixty. */
-/* What the notch itself means, before the frame rate has its say: this is what
+ * Scaled by elapsed time, like the speed is, so that both are really per-second
+ * quantities and a bird's turning circle is the same number of pixels whatever
+ * rate the renderer achieves. Left per frame, an unlocked run would move and turn
+ * the flock faster simply because its loop ran more often. */
+/* What the notch itself means, before elapsed time has its say: this is what
  * the panel shows, because the panel is about notches. */
 static double turning_notch_radians(void) {
     if (config.turning_notch >= LEGEND_BAR_CELLS) return 2 * M_PI;
@@ -1199,7 +1202,7 @@ static double turning_notch_radians(void) {
 
 static double turn_limit(void) {
     if (config.turning_notch >= LEGEND_BAR_CELLS) return 2 * M_PI;
-    double scaled = turning_notch_radians() * FRAME_RATE / (double)config.frame_rate;
+    double scaled = turning_notch_radians() * FRAME_RATE * frame_seconds;
     return scaled > 2 * M_PI ? 2 * M_PI : scaled;
 }
 
@@ -1215,10 +1218,10 @@ static double turn_limit(void) {
 typedef struct {
     double x, y, direction;
     int frame;
-    int prey;       /* Index of the bird it is chasing, negative for none. */
-    int commitment; /* Frames left before it is allowed to change its mind. */
-    int passing;    /* Frames left of a straight run out of the flock. */
-    int wing;       /* A hawk soars, wings out, and beats them only in the dive. */
+    int prey;          /* Index of the bird it is chasing, negative for none. */
+    double commitment; /* Seconds before it may change its mind. */
+    double passing;    /* Seconds left of a straight run out of the flock. */
+    int wing;          /* A hawk soars, wings out, and beats them only in the dive. */
     double wing_clock;
 } hawk_t;
 
@@ -1335,7 +1338,7 @@ static double reach_along_the_step(const bird_t *birds, const hawk_t *hawk, int 
     return sqrt(dx * dx + dy * dy);
 }
 
-/* Pick, or keep. A hawk holds on to its bird for HAWK_COMMITMENT frames whatever
+/* Pick, or keep. A hawk holds on to its bird for a fixed time whatever
  * else wanders past, and only when that runs out will it trade up, and then only
  * for a bird a clear quarter closer than the one it is on. Without the hold it
  * re-picked the nearest bird every frame, which in a dense flock means a different
@@ -1360,7 +1363,7 @@ static void choose_prey(hawk_t *hawk, const bird_t *birds, int self) {
         distance_to_bird(birds, hawk, candidate) > 0.75 * distance_to_bird(birds, hawk, hawk->prey))
         return; /* Not enough of an improvement to be worth changing its mind. */
     hawk->prey = candidate;
-    hawk->commitment = HAWK_COMMITMENT;
+    hawk->commitment = (double)HAWK_COMMITMENT_FRAMES / FRAME_RATE;
 }
 
 static double hawk_turn_limit(void) {
@@ -1379,7 +1382,8 @@ static double hawk_turn_limit(void) {
 
 /* How tight a circle it can fly. */
 static double hawk_turning_radius(void) {
-    return config.speed * HAWK_DIVE_SPEED / hawk_turn_limit();
+    double limit = hawk_turn_limit();
+    return limit > 0 ? config.speed * HAWK_DIVE_SPEED / limit : 0;
 }
 
 /* And how far off it has to see a wall: a whole diameter, not a radius. A radius
@@ -1458,21 +1462,25 @@ static vector_t hawk_spacing(int self) {
  *
  * A hawk aims where its bird is going rather than where it is, which is what makes
  * the pursuit look intelligent instead of trailing. It banks: a limit on the turn
- * per frame, looser than a bird's because a raptor is more agile, but a limit all
+ * per step, looser than a bird's because a raptor is more agile, but a limit all
  * the same. Inside HAWK_DIVE it stops leading, goes straight at the bird and
  * accelerates, because a fleeing bird is only a tenth slower than a cruising hawk
  * and without that last push the gap never closes and there is nothing to watch.
  *
- * Then it is through them, and flies straight for a few frames before turning
+ * Then it is through them, and flies straight for a short time before turning
  * back: that exit is the half of a stoop that makes the flock close up behind.
  */
 static void hunt(const bird_t *birds) {
     for (int i = 0; i < config.hawks; i++) {
         hawk_t *hawk = &hawks[i];
-        if (hawk->commitment > 0) hawk->commitment--;
+        if (hawk->commitment > 0) {
+            hawk->commitment -= frame_seconds;
+            if (hawk->commitment < 0) hawk->commitment = 0;
+        }
 
         if (hawk->passing > 0) {
-            hawk->passing--;
+            hawk->passing -= frame_seconds;
+            if (hawk->passing < 0) hawk->passing = 0;
             hawk->prey = -1;
         } else {
             /* A pass is being among them, not catching the one it set out after:
@@ -1494,7 +1502,7 @@ static void hunt(const bird_t *birds) {
             if (struck) {
                 hawk->prey = -1;
                 hawk->commitment = 0;
-                hawk->passing = HAWK_PASS; /* Through and out the other side. */
+                hawk->passing = (double)HAWK_PASS_FRAMES / FRAME_RATE;
             } else {
                 choose_prey(hawk, birds, i);
             }
@@ -1511,7 +1519,7 @@ static void hunt(const bird_t *birds) {
             if (gap < HAWK_DIVE) pace = HAWK_DIVE_SPEED;
             /* It soars until the dive, and then it beats. */
             if (gap < HAWK_DIVE || hawk->passing > 0) {
-                hawk->wing_clock += WING_HZ * WING_CYCLE / config.frame_rate;
+                hawk->wing_clock += WING_HZ * WING_CYCLE * frame_seconds;
                 while (hawk->wing_clock >= 1.0) {
                     hawk->wing_clock -= 1.0;
                     hawk->wing = (hawk->wing + 1) % WING_CYCLE;
@@ -1522,11 +1530,10 @@ static void hunt(const bird_t *birds) {
             /* Aim where the bird will be when the hawk gets there, not a fixed
              * distance ahead: close in, that is almost no lead at all, and a fixed
              * one had it cutting across in front of the bird and out the far side,
-             * round and round. Never further ahead than HAWK_LEAD frames, because
-             * past that the guess is worth less than the chase. */
-            double frames = gap / (config.speed * pace);
-            if (frames > HAWK_LEAD) frames = HAWK_LEAD;
-            double lead = config.speed * frames;
+             * round and round. Never further ahead than three baseline steps,
+             * because past that the guess is worth less than the chase. */
+            double lead = gap / pace;
+            if (lead > HAWK_LEAD_DISTANCE) lead = HAWK_LEAD_DISTANCE;
             double to_x = prey->x + cos(prey->direction) * lead - hawk->x;
             double to_y = prey->y + sin(prey->direction) * lead - hawk->y;
             double reach = sqrt(to_x * to_x + to_y * to_y);
@@ -1995,18 +2002,19 @@ static void wrap_position(bird_t *bird) {
  * rate, and a bird that has just finished a beat sometimes stops to glide. */
 static void beat_wings(bird_t *bird) {
     if (bird->gliding > 0) {
-        bird->gliding--;
+        bird->gliding -= frame_seconds;
+        if (bird->gliding < 0) bird->gliding = 0;
         bird->wing = 0;
         return;
     }
-    bird->wing_clock += WING_HZ * WING_CYCLE / config.frame_rate;
+    bird->wing_clock += WING_HZ * WING_CYCLE * frame_seconds;
     while (bird->wing_clock >= 1.0) {
         bird->wing_clock -= 1.0;
         bird->wing = (bird->wing + 1) % WING_CYCLE;
         if (bird->wing == 0 && random_unit() < GLIDE_CHANCE) {
             double seconds =
                 GLIDE_SECONDS_MIN + (GLIDE_SECONDS_MAX - GLIDE_SECONDS_MIN) * random_unit();
-            bird->gliding = (int)(seconds * config.frame_rate);
+            bird->gliding = seconds;
         }
     }
 }
@@ -2429,15 +2437,24 @@ static kitty_graphics_status_t render_frame(kitty_graphics_t *graphics, bird_t *
 }
 
 static void update_speed(void) {
-    config.speed = (double)DEFAULT_SPEED * FRAME_RATE / config.frame_rate;
-    /* And never more than a tenth of the shorter side in one frame. The step is
-     * fixed in pixels a second, which on a full screen is a bird crossing in half
-     * a second and on a small one is a bird crossing in an eighth: it cannot turn
-     * inside a band it clears in two frames, and one bird in six was off the
-     * screen at forty by fourteen. Above about four hundred and fifty pixels tall
-     * — which is most terminals — this changes nothing. */
+    double pixels_per_second = DEFAULT_SPEED * FRAME_RATE;
+    /* On a small screen, choose a safe velocity once at the renderer's target
+     * rate: no more than a tenth of the shorter side in one scheduled frame. Do
+     * not cap the final step, because doing that every time a real frame is late
+     * silently lowers the velocity and recreates the FPS-dependent bug. Above
+     * about four hundred and fifty pixels tall this changes nothing. */
     double shorter = screen.width < screen.height ? screen.width : screen.height;
-    if (shorter > 0 && config.speed > shorter / 10.0) config.speed = shorter / 10.0;
+    double safe_per_second = shorter / 10.0 * config.frame_rate;
+    if (shorter > 0 && pixels_per_second > safe_per_second) pixels_per_second = safe_per_second;
+    config.speed = pixels_per_second * frame_seconds;
+}
+
+static void set_frame_seconds(double seconds) {
+    /* CLOCK_MONOTONIC may still return the same timestamp for an extremely short
+     * frame on a coarse clock. Zero time means zero movement, never a fallback to
+     * a full sixty-hertz step. */
+    frame_seconds = seconds > 0 ? seconds : 0;
+    update_speed();
 }
 
 static double notch_value(int notch, double minimum, double maximum) {
@@ -2584,7 +2601,7 @@ static const option_t OPTIONS[] = {
      "the size to record at, in cells (default 96x26)", "Output", 0},
 
     {0, "unlock-fps", NULL, OPTION_FLAG, &unlock_fps, 0, 0, NULL, NULL,
-     "run as fast as the terminal allows", "General", 0},
+     "render as fast as the terminal allows", "General", 0},
 };
 enum { OPTION_COUNT = sizeof(OPTIONS) / sizeof(*OPTIONS) };
 
@@ -3244,6 +3261,10 @@ static long elapsed_microseconds(const struct timespec *start, const struct time
     return (end->tv_sec - start->tv_sec) * 1000000L + (end->tv_nsec - start->tv_nsec) / 1000L;
 }
 
+static double elapsed_seconds(const struct timespec *start, const struct timespec *end) {
+    return (double)(end->tv_sec - start->tv_sec) + (double)(end->tv_nsec - start->tv_nsec) / 1e9;
+}
+
 /* The terminal can still impose backpressure; unlocked means this program adds
  * no wait of its own. Kept as arithmetic outside the loop so both halves of the
  * switch are testable without making a test spend time asleep. */
@@ -3331,7 +3352,7 @@ static int run_cast_recording(void) {
     spatial_grid_t grid;
     int total = record_fps * record_seconds;
     settle_the_palette_without_a_terminal();
-    config.speed = (double)DEFAULT_SPEED * FRAME_RATE / record_fps;
+    set_frame_seconds(1.0 / record_fps);
     legend_enabled = 0;
     render_mode = RENDER_BRAILLE;
     apply_screen_size(record_columns, record_rows, record_columns * DEFAULT_CELL_WIDTH,
@@ -3452,9 +3473,9 @@ static int run_recording(void) {
      * than the seconds it was meant to. */
     int total = (int)(actual_fps * record_seconds + 0.5);
 
-    /* Same formula as update_speed, at the recording rate instead of the display
-     * one, so a bird covers the same ground per second whatever the rate is. */
-    config.speed = (double)DEFAULT_SPEED * FRAME_RATE / actual_fps;
+    /* A recording advances on its encoded clock rather than wall time, so it is
+     * reproducible no matter how long a frame takes to produce. */
+    set_frame_seconds(1.0 / actual_fps);
 
     /* A GIF has no panel in it: the panel is terminal text, and compose() draws
      * birds. Left enabled it would still reserve its corner and keep the flock
@@ -3568,6 +3589,7 @@ static int run_benchmark(void) {
         if (!prepare_picture_renderer()) return EXIT_FAILURE;
         apply_notches();
     }
+    set_frame_seconds(1.0 / config.frame_rate);
     if (spatial_grid_init(&grid, SPATIAL_CELL_SIZE) != SPATIAL_GRID_OK) return EXIT_FAILURE;
     if (spatial_grid_prepare(&grid, screen.width, screen.height, config.birds) != SPATIAL_GRID_OK)
         return EXIT_FAILURE;
@@ -3685,6 +3707,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "%s: cannot build the sprites to draw with\n", program_name);
         exit(EXIT_FAILURE);
     }
+    set_frame_seconds(1.0 / config.frame_rate);
     hawk_sets_built = 1;
 
     bird_t *birds = calloc((size_t)config.birds, sizeof(*birds));
@@ -3718,19 +3741,25 @@ int main(int argc, char **argv) {
 
     struct timespec started;
     clock_gettime(CLOCK_MONOTONIC, &started);
+    struct timespec previous_frame = started;
     int live_birds = config.birds;
     int running = 1;
-    int leaving = 0; /* Frames left of the flight out. */
+    double leaving = 0; /* Seconds left of the flight out. */
     while (running) {
-        if (!handle_input() && !leaving) {
+        if (!handle_input() && leaving <= 0) {
             /* Asked to quit: fly off the top first, so the last thing seen is
              * the flock leaving rather than the screen blinking out. */
-            leaving = OUTRO_FRAMES;
+            leaving = (double)OUTRO_FRAMES_AT_SIXTY / FRAME_RATE;
             formation_clear();
         }
-        if (leaving && --leaving == 0) break;
 
         clock_gettime(CLOCK_MONOTONIC, &frame_start);
+        set_frame_seconds(elapsed_seconds(&previous_frame, &frame_start));
+        previous_frame = frame_start;
+        if (leaving > 0) {
+            leaving -= frame_seconds;
+            if (leaving <= 0) break;
+        }
         clock_state.frame++;
         clock_state.seconds = (double)(frame_start.tv_sec - started.tv_sec) +
                               (double)(frame_start.tv_nsec - started.tv_nsec) / 1e9;
@@ -3774,7 +3803,7 @@ int main(int argc, char **argv) {
                     spatial_grid_status_string(grid_status));
             exit(EXIT_FAILURE);
         }
-        if (leaving) {
+        if (leaving > 0) {
             /* Straight up, every one of them, and nothing else steering. */
             for (int i = 0; i < config.birds; i++) {
                 birds[i].direction = 3 * M_PI / 2;
@@ -3782,8 +3811,8 @@ int main(int argc, char **argv) {
                 birds[i].frame = direction_frame(birds[i].direction);
             }
         }
-        graphics_status = leaving ? queue_render_frame(&graphics, birds)
-                                  : render_frame(&graphics, birds, snapshot, &grid);
+        graphics_status = leaving > 0 ? queue_render_frame(&graphics, birds)
+                                      : render_frame(&graphics, birds, snapshot, &grid);
         if (graphics_status != KITTY_GRAPHICS_OK) {
             fprintf(stderr, "Cannot render Kitty graphics: %s\n",
                     kitty_graphics_status_string(graphics_status));

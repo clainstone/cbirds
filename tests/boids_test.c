@@ -68,6 +68,7 @@ static void set_test_screen(int width, int height) {
 }
 
 static void reset_test_config(void) {
+    frame_seconds = 1.0 / FRAME_RATE;
     config.birds = 800;
     config.frame_rate = FRAME_RATE;
     config.bird_size = DEFAULT_BIRD_SIZE;
@@ -735,7 +736,7 @@ static void test_no_bird_ever_reaches_the_panel(void) {
             reset_test_config();
             config.turning_notch = TURNS[turn];
             config.frame_rate = rate;
-            update_speed(); /* Which moves the turn margin with it. */
+            set_frame_seconds(1.0 / rate); /* Which moves the turn margin with it. */
             apply_screen_size(200, 50, 200 * 8, 50 * 16);
             config.birds = 1;
             assert(spatial_grid_prepare(&grid, screen.width, screen.height, 1) == SPATIAL_GRID_OK);
@@ -1081,7 +1082,7 @@ static void test_hawks_hunt_and_the_flock_flees(void) {
     int chosen = hawks[0].prey;
     assert(chosen >= 0);
     int bait = (chosen + 1) % BIRD_COUNT;
-    hawks[0].commitment = HAWK_COMMITMENT;
+    hawks[0].commitment = (double)HAWK_COMMITMENT_FRAMES / FRAME_RATE;
     birds[bait].x = hawks[0].x + 10;
     birds[bait].y = hawks[0].y + 10;
     hunt(birds);
@@ -1179,8 +1180,8 @@ static void test_hawks_hunt_and_the_flock_flees(void) {
     hawks[0].y = 400;
     hawks[0].direction = 0; /* Straight at the wall. */
     hawks[0].prey = -1;
-    hawks[0].commitment = 30;
-    hawks[0].passing = 30;
+    hawks[0].commitment = 0.5;
+    hawks[0].passing = 0.5;
     hunt(birds);
     assert(hawks[0].x <= screen.width - 1 - hawk_draw_offset());
     assert(cos(hawks[0].direction) < 0); /* Sent back the other way. */
@@ -1345,48 +1346,59 @@ static void test_hawks_hunt_and_the_flock_flees(void) {
     reset_test_config();
 }
 
-/* Both turn limits are radians a second dressed as radians a frame, so they have
- * to be divided by the frame rate: left alone, the thirty of a picture a frame
- * terminal moved a bird twice as far per frame and allowed it the same turn for
- * it, and one bird in eight ended up off the screen against one in thirty at
- * sixty. */
-static void test_the_turn_limits_follow_the_frame_rate(void) {
+/* Speed and both turn limits are per-second quantities dressed as a step. The
+ * step follows elapsed time, not how many times the loop happened to run. */
+static void test_motion_follows_elapsed_time(void) {
     reset_test_config();
-    /* Roomy, so that the step is set by the frame rate alone: on a small screen
+    /* Roomy, so that the step is set by elapsed time alone: on a small screen
      * it is capped by the screen instead, which is the next thing asserted. */
     apply_screen_size(200, 60, 1600, 960);
     config.turning_notch = 6;
 
-    config.frame_rate = FRAME_RATE;
-    update_speed();
+    set_frame_seconds(1.0 / FRAME_RATE);
     double bird_at_sixty = turn_limit(), hawk_at_sixty = hawk_turn_limit();
     double step_at_sixty = config.speed;
 
-    config.frame_rate = FRAME_RATE / 2;
-    update_speed();
+    set_frame_seconds(2.0 / FRAME_RATE);
     assert(fabs(config.speed - step_at_sixty * 2) < 1e-9);      /* Twice the ground. */
     assert(fabs(turn_limit() - bird_at_sixty * 2) < 1e-9);      /* Twice the turn. */
     assert(fabs(hawk_turn_limit() - hawk_at_sixty * 2) < 1e-9); /* Both of them. */
+    assert(fabs(config.speed * FRAME_RATE / 2 - step_at_sixty * FRAME_RATE) < 1e-9);
 
-    config.frame_rate = FRAME_RATE * 2;
-    update_speed();
+    set_frame_seconds(0.5 / FRAME_RATE);
+    assert(fabs(config.speed - step_at_sixty / 2) < 1e-9);
     assert(fabs(turn_limit() - bird_at_sixty / 2) < 1e-9);
     assert(fabs(hawk_turn_limit() - hawk_at_sixty / 2) < 1e-9);
+    assert(fabs(config.speed * FRAME_RATE * 2 - step_at_sixty * FRAME_RATE) < 1e-9);
 
-    /* And a bird never crosses more than a tenth of the shorter side in one
-     * frame, however low the rate goes: it cannot turn inside a band it clears in
-     * two frames, and on a forty by fourteen terminal one bird in six was off the
-     * screen because of it. */
-    config.frame_rate = PICTURE_FRAME_RATE_MAX;
+    /* Two equal monotonic timestamps are legal: that frame advances nothing and
+     * must not leave the hawk geometry dividing zero by zero. */
+    set_frame_seconds(0);
+    assert(config.speed == 0);
+    assert(turn_limit() == 0);
+    assert(hawk_turning_radius() == 0);
+
+    /* A small screen lowers the velocity, but a late frame still covers its full
+     * share of that velocity instead of slowing the flock down. */
     apply_screen_size(40, 14, 320, 224);
+    set_frame_seconds(1.0 / FRAME_RATE);
+    double small_step_at_sixty = config.speed;
+    assert(small_step_at_sixty <= screen.height / 10.0 + 1e-9);
+    set_frame_seconds(1.0 / PICTURE_FRAME_RATE_MAX);
+    assert(fabs(config.speed - small_step_at_sixty * 2) < 1e-9);
+    assert(fabs(config.speed * PICTURE_FRAME_RATE_MAX - small_step_at_sixty * FRAME_RATE) < 1e-9);
+
+    /* A picture renderer deliberately schedules thirty frames a second, so its
+     * small-screen safety velocity is chosen at that target cadence. */
+    config.frame_rate = PICTURE_FRAME_RATE_MAX;
+    set_frame_seconds(1.0 / PICTURE_FRAME_RATE_MAX);
     assert(config.speed <= screen.height / 10.0 + 1e-9);
     apply_screen_size(200, 60, 1600, 960);
     assert(config.speed > screen.height / 20.0);
 
     /* Instant stays instant, and nothing ever exceeds a half turn a frame. */
     config.turning_notch = LEGEND_BAR_CELLS;
-    config.frame_rate = PICTURE_FRAME_RATE_MAX;
-    update_speed();
+    set_frame_seconds(1.0 / PICTURE_FRAME_RATE_MAX);
     assert(turn_limit() == 2 * M_PI);
     assert(hawk_turn_limit() <= M_PI);
     reset_test_config();
@@ -1902,6 +1914,7 @@ static void test_a_sixel_or_iterm_terminal_gets_a_picture_a_frame(void) {
     render_mode = RENDER_SIXEL;
     apply_notches();
     assert(config.frame_rate == PICTURE_FRAME_RATE_MAX); /* Capped, and the step with it. */
+    set_frame_seconds(1.0 / config.frame_rate);
     double per_second = (double)DEFAULT_SPEED * FRAME_RATE / PICTURE_FRAME_RATE_MAX;
     double by_screen = screen.height / 10.0; /* The small screen's own cap. */
     assert(fabs(config.speed - (per_second < by_screen ? per_second : by_screen)) < 1e-9);
@@ -1921,6 +1934,7 @@ static void test_a_sixel_or_iterm_terminal_gets_a_picture_a_frame(void) {
     render_mode = RENDER_ITERM;
     apply_notches();
     assert(config.frame_rate == PICTURE_FRAME_RATE_MAX);
+    set_frame_seconds(1.0 / config.frame_rate);
     assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
     assert(queue_render_frame(&graphics, birds) == KITTY_GRAPHICS_OK);
     const char *osc = strstr(graphics.buffer, "\033]1337;File=inline=1;width=320px;height=192px;");
@@ -2198,6 +2212,7 @@ static void test_the_far_layer_is_another_sky(void) {
 static void test_wings_beat_and_sometimes_glide(void) {
     reset_test_config();
     config.frame_rate = 60;
+    set_frame_seconds(1.0 / config.frame_rate);
     bird_t bird = {.wing = 0, .wing_clock = 0, .gliding = 0};
     /* One beat is WING_CYCLE phases; at sixty frames a second and six beats a
      * second, that is ten frames a beat. */
@@ -2667,7 +2682,7 @@ int main(void) {
     test_only_the_rain_has_a_wind();
     test_autopilot_wanders_and_yields();
     test_hawks_hunt_and_the_flock_flees();
-    test_the_turn_limits_follow_the_frame_rate();
+    test_motion_follows_elapsed_time();
     test_more_flocks_are_more_colours();
     test_the_flock_can_be_laid_out_as_text();
     test_presets_set_every_notch();

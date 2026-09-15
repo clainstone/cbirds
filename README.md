@@ -82,9 +82,10 @@ minute, it starts moving the sliders itself; any key takes them back.
 `h` opens a panel of sliders in the corner, and `--panel` opens it from the
 start. Lowercase lowers, uppercase raises, one press is one notch.
 
-`--unlock-fps` removes the frame delay and runs simulation and rendering as fast
-as the terminal accepts them. It is useful for profiling; normal runs are capped
-at 60 fps, or 30 when sending a whole picture per frame.
+`--unlock-fps` removes the frame delay and renders as fast as the terminal accepts
+frames. The simulation still advances in real time, so unlocking it does not make
+the birds fly faster. It is useful for profiling; normal runs are capped at 60
+fps, or 30 when sending a whole picture per frame.
 
 ```
 ╭────────────────────────────────────╮
@@ -166,7 +167,7 @@ Output
       --record-size COLSxROWS   the size to record at, in cells (default 96x26)
 
 General
-      --unlock-fps              run as fast as the terminal allows
+      --unlock-fps              render as fast as the terminal allows
   -h, --help                    the one-screen help
       --completion SHELL        completions for bash, zsh or fish
   -V, --version                 print the version and quit

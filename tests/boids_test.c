@@ -81,6 +81,7 @@ static void reset_test_config(void) {
     config.trails = 0;
     config.hawks = 0;
     matrix_mode = 0;
+    unlock_fps = 0;
     apply_notches();
 }
 
@@ -134,6 +135,21 @@ static void test_the_trig_lookup_covers_the_circle(void) {
         double got_angle = atan2(got.sine, got.cosine);
         assert(angle_difference(got_angle, angle) <= tolerance);
     }
+}
+
+static void test_the_frame_rate_can_be_unlocked(void) {
+    char error[128];
+    char *argv[] = {"cbirds", "--unlock-fps", NULL};
+
+    reset_test_config();
+    long budget = 1000000L / FRAME_RATE;
+    assert(frame_delay_after(1000) == budget - 1000);
+    assert(frame_delay_after(budget) == 0);
+    assert(options_parse(OPTIONS, OPTION_COUNT, 2, argv, error, sizeof(error)) == OPTIONS_OK);
+    assert(unlock_fps);
+    assert(frame_delay_after(0) == 0);
+    assert(frame_delay_after(1000) == 0);
+    reset_test_config();
 }
 
 static uint32_t test_random(uint32_t *state) {
@@ -2639,6 +2655,7 @@ static void test_no_legend_leaves_the_corner_to_the_flock(void) {
 int main(void) {
     trig_lookup_init();
     test_the_trig_lookup_covers_the_circle();
+    test_the_frame_rate_can_be_unlocked();
     test_engine_matches_brute_force();
     test_boundary_bands_follow_the_viewport();
     test_the_edge_pushes_harder_the_further_out_a_bird_is();

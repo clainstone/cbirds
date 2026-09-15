@@ -2474,6 +2474,7 @@ static void apply_notches(void) {
 /* Left alone for this long, the sliders start wandering by themselves. */
 enum { IDLE_SECONDS = 60 };
 static int matrix_mode;
+static int unlock_fps;
 static int requested_perception = DEFAULT_VISION_RADIUS;
 static int requested_seed = -1;
 static int requested_preset = -1;
@@ -2581,6 +2582,9 @@ static const option_t OPTIONS[] = {
      "how long the recording runs (default 6)", "Output", 0},
     {0, "record-size", NULL, OPTION_STRING, &requested_record_size, 0, 0, NULL, "COLSxROWS",
      "the size to record at, in cells (default 96x26)", "Output", 0},
+
+    {0, "unlock-fps", NULL, OPTION_FLAG, &unlock_fps, 0, 0, NULL, NULL,
+     "run as fast as the terminal allows", "General", 0},
 };
 enum { OPTION_COUNT = sizeof(OPTIONS) / sizeof(*OPTIONS) };
 
@@ -3240,6 +3244,15 @@ static long elapsed_microseconds(const struct timespec *start, const struct time
     return (end->tv_sec - start->tv_sec) * 1000000L + (end->tv_nsec - start->tv_nsec) / 1000L;
 }
 
+/* The terminal can still impose backpressure; unlocked means this program adds
+ * no wait of its own. Kept as arithmetic outside the loop so both halves of the
+ * switch are testable without making a test spend time asleep. */
+static long frame_delay_after(long elapsed) {
+    if (unlock_fps) return 0;
+    long remaining = 1000000L / config.frame_rate - elapsed;
+    return remaining > 0 ? remaining : 0;
+}
+
 /*
  * The numbers, with no terminal in the way.
  *
@@ -3810,8 +3823,7 @@ int main(int argc, char **argv) {
             stats.window_ms = stats.window_bytes = 0;
             stats.counted = 0;
         }
-        long remaining =
-            1000000L / config.frame_rate - elapsed_microseconds(&frame_start, &frame_end);
+        long remaining = frame_delay_after(elapsed_microseconds(&frame_start, &frame_end));
         if (remaining > 0) {
             struct timespec delay = {remaining / 1000000L, (remaining % 1000000L) * 1000L};
             nanosleep(&delay, NULL);

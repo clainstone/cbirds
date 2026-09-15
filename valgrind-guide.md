@@ -56,6 +56,27 @@ callgrind_annotate \
   callgrind.4096.kitty.out | less
 ```
 
+Per vedere soltanto le righe costose nel percorso di aggiornamento dei boids:
+
+```bash
+callgrind_annotate \
+  --inclusive=no \
+  --threshold=100 \
+  --auto=no \
+  callgrind.4096.kitty.out boids.c |
+awk '
+  /static double flock_direction\(/ { mostra=1 }
+  mostra && /static int bird_placement\(/ { exit }
+  mostra
+' | less
+```
+
+Il filtro parte da `flock_direction` perché con `-O3` il compilatore può
+incorporarla dentro `update_birds`. Limitarsi testualmente al solo corpo di
+`update_birds` nasconderebbe quindi una parte importante del suo costo. Le righe
+che iniziano con `=>` mostrano il costo delle funzioni chiamate da quella riga,
+per esempio le implementazioni di `sin`, `cos` o `atan2` fornite da `libm`.
+
 Nel report, `Ir` è il numero di istruzioni eseguite. Le percentuali più alte nel
 primo report identificano le funzioni sulle quali intervenire; il secondo report
 spiega da quale percorso vengono raggiunte. In particolare cercare:

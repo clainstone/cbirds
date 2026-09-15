@@ -32,6 +32,11 @@ enum {
      * and a second layer there are four times the images to build, and six
      * degrees is still smoother than any sprite sheet a game ever shipped. */
     ROTATION_FRAMES = 60,
+    /* A power of two so a rounded angle wraps with one mask. At 4096 entries the
+     * samples are 0.088 degrees apart, and sine plus cosine as floats occupy one
+     * typical 32 KB L1 data cache. */
+    TRIG_LOOKUP_SIZE = 4096,
+    TRIG_LOOKUP_MASK = TRIG_LOOKUP_SIZE - 1,
     /* Wings out, wings half, wings folded: three pictures, beaten in a cycle of
      * four so the flap goes out and back. */
     WING_PHASES = 3,
@@ -238,6 +243,29 @@ static const double ALIGNMENT_MAX = NOTCH_CEILING(0.1, DEFAULT_ALIGNMENT_W);
 typedef struct {
     double x, y;
 } vector_t;
+
+typedef struct {
+    float cosine, sine;
+} trig_entry_t;
+
+static trig_entry_t trig_lookup_table[TRIG_LOOKUP_SIZE];
+
+/* Built once before any flock is run. The simulation keeps its continuous
+ * double direction; only the unit vector read hundreds of thousands of times by
+ * the neighbour loop is rounded to the nearest table entry. */
+static void trig_lookup_init(void) {
+    for (int i = 0; i < TRIG_LOOKUP_SIZE; i++) {
+        double angle = (double)i * 2 * M_PI / TRIG_LOOKUP_SIZE;
+        trig_lookup_table[i].cosine = (float)cos(angle);
+        trig_lookup_table[i].sine = (float)sin(angle);
+    }
+}
+
+static trig_entry_t trig_lookup(double angle) {
+    double scaled = angle * (TRIG_LOOKUP_SIZE / (2 * M_PI));
+    int nearest = (int)(scaled + (scaled >= 0 ? 0.5 : -0.5));
+    return trig_lookup_table[(unsigned)nearest & TRIG_LOOKUP_MASK];
+}
 
 typedef struct {
     double x, y, direction;
@@ -1887,8 +1915,9 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
                 separation.y += dy;
                 neighbors++;
                 if (other->flock != target->flock) continue;
-                alignment.x += cos(other->direction);
-                alignment.y += sin(other->direction);
+                trig_entry_t heading = trig_lookup(other->direction);
+                alignment.x += heading.cosine;
+                alignment.y += heading.sine;
                 cohesion.x += other->x;
                 cohesion.y += other->y;
                 kin++;
@@ -3577,6 +3606,7 @@ int main(int argc, char **argv) {
     spatial_grid_t grid;
     struct timespec frame_start, frame_end;
     read_options(argc, argv);
+    trig_lookup_init();
     if (bench_frames > 0) return run_benchmark();
     if (record_path != NULL) return run_recording();
     install_signal_handlers();

@@ -26,8 +26,9 @@ static double brute_force_flock_direction(const bird_t *birds, int target_index)
         separation.y += dy;
         neighbors++;
         if (other->flock != target->flock) continue;
-        alignment.x += cos(other->direction);
-        alignment.y += sin(other->direction);
+        trig_entry_t heading = trig_lookup(other->direction);
+        alignment.x += heading.cosine;
+        alignment.y += heading.sine;
         cohesion.x += other->x;
         cohesion.y += other->y;
         kin++;
@@ -102,6 +103,37 @@ static int sprite_overlaps_legend(double x, double y) {
 
 static double angle_difference(double a, double b) {
     return fabs(atan2(sin(a - b), cos(a - b)));
+}
+
+static void test_the_trig_lookup_covers_the_circle(void) {
+    const double delta = 2 * M_PI / TRIG_LOOKUP_SIZE;
+    const double tolerance = delta / 2 + 1e-6; /* Float error is far below one bin. */
+
+    trig_entry_t zero = trig_lookup(0);
+    trig_entry_t quarter = trig_lookup(M_PI / 2);
+    trig_entry_t half = trig_lookup(M_PI);
+    trig_entry_t three_quarters = trig_lookup(3 * M_PI / 2);
+    assert(fabs(zero.cosine - 1) < 1e-6 && fabs(zero.sine) < 1e-6);
+    assert(fabs(quarter.cosine) < 1e-6 && fabs(quarter.sine - 1) < 1e-6);
+    assert(fabs(half.cosine + 1) < 1e-6 && fabs(half.sine) < 1e-6);
+    assert(fabs(three_quarters.cosine) < 1e-6 && fabs(three_quarters.sine + 1) < 1e-6);
+
+    /* The mask wraps in either direction, including the exact seam. */
+    trig_entry_t full_turn = trig_lookup(2 * M_PI);
+    assert(full_turn.cosine == zero.cosine && full_turn.sine == zero.sine);
+    trig_entry_t before_zero = trig_lookup(-delta);
+    trig_entry_t before_full_turn = trig_lookup(2 * M_PI - delta);
+    assert(before_zero.cosine == before_full_turn.cosine);
+    assert(before_zero.sine == before_full_turn.sine);
+
+    /* Sample between table entries as well as on them, over negative and
+     * positive turns. Every result must be within half a bin of the exact angle. */
+    for (int i = -TRIG_LOOKUP_SIZE * 2; i <= TRIG_LOOKUP_SIZE * 2; i++) {
+        double angle = (double)i * delta / 7;
+        trig_entry_t got = trig_lookup(angle);
+        double got_angle = atan2(got.sine, got.cosine);
+        assert(angle_difference(got_angle, angle) <= tolerance);
+    }
 }
 
 static uint32_t test_random(uint32_t *state) {
@@ -2605,6 +2637,8 @@ static void test_no_legend_leaves_the_corner_to_the_flock(void) {
 }
 
 int main(void) {
+    trig_lookup_init();
+    test_the_trig_lookup_covers_the_circle();
     test_engine_matches_brute_force();
     test_boundary_bands_follow_the_viewport();
     test_the_edge_pushes_harder_the_further_out_a_bird_is();

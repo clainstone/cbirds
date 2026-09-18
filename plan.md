@@ -142,15 +142,13 @@ nobody could have used well.
 ## Any terminal at all
 
 cbirds drew with the Kitty graphics protocol and refused everything else,
-politely. It no longer refuses anything: the terminal is asked once what it can
-draw, and gets the best of it — Kitty's sprites; a sixel picture a frame in
-xterm, foot, mlterm, contour, mintty and Windows Terminal; an inline PNG a
-frame in iTerm2; and everywhere else the same flock in braille, eight dots a
-cell, only the cells that changed since the last frame. `--render` overrules
-the choice. A `--snapshot` under a text renderer is a picture of the dots the
-terminal showed, and `--record flock.cast` records the braille as an asciinema
-cast that plays back in any terminal. `cells.c` and `sixel.c` are the whole of
-it, and know nothing about birds.
+politely. It no longer refuses anything: the terminal is asked once whether it
+speaks that protocol, and gets Kitty's sprites if it does and the same flock in
+braille if it does not — eight dots a cell, only the cells that changed since
+the last frame. `--render` overrules the choice. A `--snapshot` under a text
+renderer is a picture of the dots the terminal showed, and `--record flock.cast`
+records the braille as an asciinema cast that plays back in any terminal.
+`cells.c` is the whole of it, and knows nothing about birds.
 
 ## Taken back out, again
 
@@ -159,7 +157,7 @@ should never have to read about.
 
 | gone | what is there instead |
 |---|---|
-| `--fps`, the `rate` slider, `r`/`R` | sixty, always; a sixel or iTerm2 terminal gets thirty because that is what it can decode |
+| `--fps`, the `rate` slider, `r`/`R` | sixty, always |
 | `--flat` | one plane is the default, and `--depth` is the second sky |
 | `--spell`, `--spell-hold` | nothing: the flock writes one word, BOIDS, for three seconds at the start, and that is the whole of it |
 | `--clock` | nothing |
@@ -168,3 +166,16 @@ should never have to read about.
 | `--no-intro`, `--no-outro` | it opens by writing its name and leaves by flying off the top, every time |
 
 Thirty-eight flags became twenty-six.
+
+## Two renderers, not four
+
+A picture a frame — sixel for xterm, foot, mlterm, Contour, mintty and Windows
+Terminal, an inline PNG for iTerm2 — was a third of the drawing code for a path
+that was never the good one: a whole screen re-encoded and re-sent sixty times a
+second, capped at thirty because no terminal decodes that fast, against a text
+renderer that sends only the cells that changed. Both are gone, and those
+terminals now take the same braille fallback as every terminal without a
+graphics protocol. `sixel.c`, its test, the `--render sixel` and `--render iterm`
+choices, the DA1 sixel probe and the iTerm2 environment sniff went with them, and
+with nothing left to lower the rate, `config.frame_rate` went too: sixty is now
+a constant and `frame_seconds` is the only thing that varies.

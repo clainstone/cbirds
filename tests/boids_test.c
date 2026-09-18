@@ -70,7 +70,6 @@ static void set_test_screen(int width, int height) {
 static void reset_test_config(void) {
     frame_seconds = 1.0 / FRAME_RATE;
     config.birds = 800;
-    config.frame_rate = FRAME_RATE;
     config.bird_size = DEFAULT_BIRD_SIZE;
     config.boundary_notch = DEFAULT_NOTCH;
     config.separation_notch = DEFAULT_NOTCH;
@@ -611,7 +610,6 @@ static void test_bar_spans_the_whole_travel(void) {
     assert(config.alignment_notch == DEFAULT_NOTCH);
     /* The integer parameter lands exactly, being an integer. */
     assert(config.vision_radius == DEFAULT_VISION_RADIUS);
-    assert(config.frame_rate == FRAME_RATE);
 }
 
 static void test_weights_stop_at_their_bounds(void) {
@@ -725,18 +723,19 @@ static void test_no_bird_ever_reaches_the_panel(void) {
     spatial_grid_t grid;
 
     assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
-    /* Swept over both frame rates, which move the margin, and over the turning
-     * limit, which is what nearly broke this: a bird that cannot turn at once
-     * cannot be turned away at once, so the panel's push is exempt from the limit
-     * and this test is what says so. Dropping that exemption fails it. */
+    /* Swept over a frame of the usual length and one that took twice as long,
+     * which move the margin, and over the turning limit, which is what nearly
+     * broke this: a bird that cannot turn at once cannot be turned away at once,
+     * so the panel's push is exempt from the limit and this test is what says so.
+     * Dropping that exemption fails it. */
     static const int TURNS[] = {0, 1, DEFAULT_TURNING_NOTCH, LEGEND_BAR_CELLS};
+    static const double FRAMES_LONG[] = {1.0, 2.0};
     for (size_t turn = 0; turn < sizeof(TURNS) / sizeof(*TURNS); turn++)
-        for (int rate = PICTURE_FRAME_RATE_MAX; rate <= FRAME_RATE;
-             rate += FRAME_RATE - PICTURE_FRAME_RATE_MAX) {
+        for (size_t length = 0; length < sizeof(FRAMES_LONG) / sizeof(*FRAMES_LONG); length++) {
             reset_test_config();
             config.turning_notch = TURNS[turn];
-            config.frame_rate = rate;
-            set_frame_seconds(1.0 / rate); /* Which moves the turn margin with it. */
+            /* Which moves the turn margin with it. */
+            set_frame_seconds(FRAMES_LONG[length] / FRAME_RATE);
             apply_screen_size(200, 50, 200 * 8, 50 * 16);
             config.birds = 1;
             assert(spatial_grid_prepare(&grid, screen.width, screen.height, 1) == SPATIAL_GRID_OK);
@@ -1384,21 +1383,17 @@ static void test_motion_follows_elapsed_time(void) {
     set_frame_seconds(1.0 / FRAME_RATE);
     double small_step_at_sixty = config.speed;
     assert(small_step_at_sixty <= screen.height / 10.0 + 1e-9);
-    set_frame_seconds(1.0 / PICTURE_FRAME_RATE_MAX);
+    set_frame_seconds(2.0 / FRAME_RATE);
     assert(fabs(config.speed - small_step_at_sixty * 2) < 1e-9);
-    assert(fabs(config.speed * PICTURE_FRAME_RATE_MAX - small_step_at_sixty * FRAME_RATE) < 1e-9);
+    assert(fabs(config.speed * FRAME_RATE / 2 - small_step_at_sixty * FRAME_RATE) < 1e-9);
 
-    /* A picture renderer deliberately schedules thirty frames a second, so its
-     * small-screen safety velocity is chosen at that target cadence. */
-    config.frame_rate = PICTURE_FRAME_RATE_MAX;
-    set_frame_seconds(1.0 / PICTURE_FRAME_RATE_MAX);
-    assert(config.speed <= screen.height / 10.0 + 1e-9);
+    /* A screen with room in it is not capped at all. */
     apply_screen_size(200, 60, 1600, 960);
     assert(config.speed > screen.height / 20.0);
 
     /* Instant stays instant, and nothing ever exceeds a half turn a frame. */
     config.turning_notch = LEGEND_BAR_CELLS;
-    set_frame_seconds(1.0 / PICTURE_FRAME_RATE_MAX);
+    set_frame_seconds(2.0 / FRAME_RATE);
     assert(turn_limit() == 2 * M_PI);
     assert(hawk_turn_limit() <= M_PI);
     reset_test_config();
@@ -1896,83 +1891,6 @@ static void test_a_text_terminal_gets_the_flock_in_braille(void) {
     reset_test_config();
 }
 
-/* A terminal that draws pixels but not Kitty's gets a picture a frame: sixel
- * where it answers for it, iTerm2's inline PNG where it says it is iTerm2. Both
- * are capped at thirty frames a second, which is what a picture a frame costs. */
-static void test_a_sixel_or_iterm_terminal_gets_a_picture_a_frame(void) {
-    kitty_graphics_t graphics;
-    bird_t birds[2];
-
-    reset_test_config();
-    legend_enabled = 0;
-    config.palette = palette_named("ice");
-    config.birds = 2;
-    apply_screen_size(40, 12, 320, 192);
-    birds[0] = (bird_t){.x = 60, .y = 60, .direction = 1.0};
-    birds[1] = (bird_t){.x = 200, .y = 100, .direction = 4.0};
-
-    render_mode = RENDER_SIXEL;
-    apply_notches();
-    assert(config.frame_rate == PICTURE_FRAME_RATE_MAX); /* Capped, and the step with it. */
-    set_frame_seconds(1.0 / config.frame_rate);
-    double per_second = (double)DEFAULT_SPEED * FRAME_RATE / PICTURE_FRAME_RATE_MAX;
-    double by_screen = screen.height / 10.0; /* The small screen's own cap. */
-    assert(fabs(config.speed - (per_second < by_screen ? per_second : by_screen)) < 1e-9);
-    assert(prepare_picture_renderer());
-    /* The palette is the ground, each tint and its half blend, and the hawk. */
-    assert(picture_colours == 1 + 2 * palette_shades() + 1);
-    assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
-    assert(queue_render_frame(&graphics, birds) == KITTY_GRAPHICS_OK);
-    assert(strstr(graphics.buffer, "\033[H\033P0;1;0q\"1;1;320;192") != NULL);
-    assert(strstr(graphics.buffer, "\033_G") == NULL);
-    assert(strstr(graphics.buffer, "\033\\") != NULL); /* The string terminator. */
-    /* Small: a dozen colours and a nearly empty sky, not a quantiser's 256. */
-    assert(graphics.length < 20000);
-    kitty_graphics_destroy(&graphics);
-    sixel_destroy(&picture_sixel);
-
-    render_mode = RENDER_ITERM;
-    apply_notches();
-    assert(config.frame_rate == PICTURE_FRAME_RATE_MAX);
-    set_frame_seconds(1.0 / config.frame_rate);
-    assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
-    assert(queue_render_frame(&graphics, birds) == KITTY_GRAPHICS_OK);
-    const char *osc = strstr(graphics.buffer, "\033]1337;File=inline=1;width=320px;height=192px;");
-    assert(osc != NULL);
-    assert(strstr(graphics.buffer, "\033_G") == NULL);
-    /* And the payload is a PNG of the screen: decode the base64 and then the PNG. */
-    const char *payload = strchr(osc, ':') + 1;
-    const char *end = strchr(payload, '\a');
-    assert(end != NULL);
-    size_t encoded_length = (size_t)(end - payload);
-    uint8_t *png = malloc(encoded_length);
-    size_t png_length = 0;
-    uint32_t accumulator = 0;
-    int bits = 0;
-    for (size_t i = 0; i < encoded_length; i++) {
-        const char *at = strchr(BASE64, payload[i]);
-        if (payload[i] == '=' || at == NULL) break;
-        accumulator = (accumulator << 6) | (uint32_t)(at - BASE64);
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            png[png_length++] = (uint8_t)(accumulator >> bits);
-        }
-    }
-    png_image_t picture = {0, 0, NULL};
-    assert(png_decode(png, png_length, &picture) == PNG_OK);
-    assert(picture.width == 320 && picture.height == 192);
-    png_image_free(&picture);
-    free(png);
-    kitty_graphics_destroy(&graphics);
-
-    png_image_free(&text_canvas);
-    free_sprites(text_sprites);
-    render_mode = RENDER_KITTY;
-    legend_enabled = 1;
-    reset_test_config();
-}
-
 /* Under a text renderer the GIF is of the cells, painted as a terminal shows
  * them: dots on the ground, in the palette's colours, and nothing else. */
 static void test_a_text_renderer_records_its_cells(void) {
@@ -2211,8 +2129,7 @@ static void test_the_far_layer_is_another_sky(void) {
  * sequence, and a bird sometimes stops to glide with them out. */
 static void test_wings_beat_and_sometimes_glide(void) {
     reset_test_config();
-    config.frame_rate = 60;
-    set_frame_seconds(1.0 / config.frame_rate);
+    set_frame_seconds(1.0 / FRAME_RATE);
     bird_t bird = {.wing = 0, .wing_clock = 0, .gliding = 0};
     /* One beat is WING_CYCLE phases; at sixty frames a second and six beats a
      * second, that is ten frames a beat. */
@@ -2698,7 +2615,6 @@ int main(void) {
     test_the_far_layer_is_another_sky();
     test_wings_beat_and_sometimes_glide();
     test_a_text_terminal_gets_the_flock_in_braille();
-    test_a_sixel_or_iterm_terminal_gets_a_picture_a_frame();
     test_a_text_renderer_records_its_cells();
     test_a_cast_is_the_flock_as_text();
     test_recording_gives_the_whole_frame_to_the_flock();

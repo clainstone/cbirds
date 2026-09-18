@@ -85,7 +85,7 @@ start. Lowercase lowers, uppercase raises, one press is one notch.
 `--unlock-fps` removes the frame delay and renders as fast as the terminal accepts
 frames. The simulation still advances in real time, so unlocking it does not make
 the birds fly faster. It is useful for profiling; normal runs are capped at 60
-fps, or 30 when sending a whole picture per frame.
+fps.
 
 ```
 ╭────────────────────────────────────╮
@@ -114,11 +114,9 @@ cbirds asks the terminal what it can draw and uses the best of it.
 | terminal | what you see |
 |---|---|
 | Kitty, WezTerm, Ghostty, recent Konsole | sprites, over the Kitty graphics protocol |
-| xterm, foot, mlterm, Contour, mintty, Windows Terminal | a picture a frame, in sixel |
-| iTerm2 | a picture a frame, as an inline PNG |
-| everything else: Alacritty, GNOME Terminal, Terminal.app, tmux | the same flock in braille |
+| everything else: Alacritty, GNOME Terminal, Terminal.app, iTerm2, xterm, foot, Windows Terminal, tmux | the same flock in braille |
 
-`--render kitty|sixel|iterm|braille|sextants|blocks` overrides it.
+`--render kitty|braille|sextants|blocks` overrides it.
 Sextants are bolder than braille and need a font from 2020 or later; blocks
 work everywhere. In text mode only the cells that changed are sent, and the
 background is never painted, so the flock wears your theme.
@@ -152,7 +150,7 @@ Look
   -e, --trails                  faint tails behind the flock
       --depth                   a second sky further off: smaller, slower, dimmer birds
   -l, --panel                   the sliders in the corner from the start; h toggles them
-      --render HOW              kitty, sixel, iterm, braille, sextants, blocks; auto asks
+      --render HOW              kitty, braille, sextants, blocks; auto asks
 
 Oddities
       --matrix                  it is raining birds
@@ -198,13 +196,13 @@ The bird is one PNG compiled into the binary. At startup it is rotated into
 sixty headings, squashed into three wing positions, and tinted into every
 shade on the ramp: about fifteen hundred small images, built in a fifth of a
 second. Under Kitty they are uploaded once, and a frame is then one short
-command per bird. Other terminals get the same pixels as a sixel or PNG
-picture, or sampled down into braille, sextants or blocks. The wings beat six
-times a second, and now and then a bird glides.
+command per bird. Every other terminal gets the same pixels sampled down into
+braille, sextants or blocks. The wings beat six times a second, and now and then
+a bird glides.
 
 Neighbours are found with a grid, so eight hundred birds cost about half a
 millisecond of CPU a frame, and four thousand birds about four milliseconds.
-The PNG, GIF, DEFLATE and sixel code is all in the repository; there is no
+The PNG, GIF and DEFLATE code is all in the repository; there is no
 zlib, no libpng, no ncurses. `cbirds --bench 300` prints the numbers on your
 machine.
 

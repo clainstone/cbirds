@@ -110,16 +110,20 @@ enum {
      * everything; the minimums leave a corridor to the right of the panel and
      * one underneath it. */
     LEGEND_COLUMNS = 38,
+    /* Ten rows with one flock; with more there is a slider for how much they
+     * avoid each other, and it only exists when there is somebody to avoid. */
     LEGEND_ROWS = 10,
+    LEGEND_MAX_ROWS = LEGEND_ROWS + 1,
     /* One notch a keypress, so this is also the number of steps every parameter
      * travels through, from its floor to its ceiling. */
     LEGEND_BAR_CELLS = 12,
     LEGEND_NAME_WIDTH = 10,
     LEGEND_VALUE_WIDTH = 5,
-    /* The panel is 38 by 10 cells and the flock may not enter it. At the smallest
-     * terminal it used to appear in it covered half the screen, and half the flock
-     * was squeezed off the edges of what was left: it needs to be a fifth of the
-     * room, not a half, so it waits for a window it fits inside. */
+    /* The panel is 38 by 11 cells at most and the flock may not enter it. At the
+     * smallest terminal it used to appear in it covered half the screen, and half
+     * the flock was squeezed off the edges of what was left: it needs to be a
+     * quarter of the room at most, not a half, so it waits for a window it fits
+     * inside. */
     LEGEND_MIN_COLS = 76,
     LEGEND_MIN_ROWS = 22,
     LEGEND_LINE_MAX = 128,
@@ -243,6 +247,18 @@ static const double ALIGNMENT_MAX = NOTCH_CEILING(0.1, DEFAULT_ALIGNMENT_W);
 #define DEFAULT_PACE 1.0
 static const double PACE_STEP = 0.2;
 
+/* How much one flock avoids another, with two or more of them. The bottom third
+ * of the bar is the room each flock's home keeps from the others', from none —
+ * they share the sky and mingle, only never collide — to the room they have
+ * always kept on the fourth notch. The rest grows the room up to twice that and
+ * adds a wariness close up: a bird steers away from the strangers it can see,
+ * which is what makes two flocks that meet part around each other rather than
+ * pass through. The panel shows it as a factor on the shipped flock, a quarter a
+ * notch. At the top a stranger in sight weighs what the flock's own heading does
+ * by default: at twice that the flocks had stopped touching by the eighth notch,
+ * and the four above it had nothing left to do. */
+static const double AVOID_WEIGHT_MAX = 1.5;
+
 #define ALT_SCREEN_ON "\033[?1049h"
 #define ALT_SCREEN_OFF "\033[?1049l"
 #define CURSOR_HIDE "\033[?25l"
@@ -318,6 +334,9 @@ typedef struct {
      * keypress exactly one notch of bar rather than nearly one. */
     int boundary_notch, separation_notch, alignment_notch;
     int vision_notch, pace_notch;
+    int avoid_notch;
+    double avoid_room;   /* The share of the shipped room between flock homes. */
+    double avoid_weight; /* And the weight of a bird's wariness of strangers. */
 } config_t;
 
 static config_t config = {
@@ -341,6 +360,8 @@ static config_t config = {
     /* Twelve to sixty pixels in steps of four: thirty six is the sixth notch. */
     .vision_notch = DEFAULT_VISION_NOTCH,
     .pace_notch = DEFAULT_NOTCH,
+    .avoid_notch = DEFAULT_NOTCH,
+    .avoid_room = 1.0,
 };
 static screen_t screen;
 static int legend_enabled; /* Hidden until --panel or h asks for it. */
@@ -573,12 +594,16 @@ static void update_turn_distances(void) {
  * no other derivation has to shrink: the flock keeps the full width below the
  * panel and the full height beside it, and is kept out of the corner by a force
  * instead of by a bound. */
+static int legend_rows(void) {
+    return config.flocks > 1 ? LEGEND_MAX_ROWS : LEGEND_ROWS;
+}
+
 static void measure_legend(void) {
     screen.legend_width = screen.legend_height = 0;
     if (!legend_enabled) return;
     if (screen.cols < LEGEND_MIN_COLS || screen.rows < LEGEND_MIN_ROWS) return;
     screen.legend_width = LEGEND_COLUMNS * screen.cell_width;
-    screen.legend_height = LEGEND_ROWS * screen.cell_height;
+    screen.legend_height = legend_rows() * screen.cell_height;
 }
 
 /* Split out of the ioctl query so the tests drive the real derivation. */
@@ -1768,7 +1793,7 @@ static vector_t boundary_vector(const bird_t *bird) {
  * five flocks cannot all be three hundred pixels apart on a screen four hundred
  * pixels tall, and what they settle at is as far apart as there is room for. */
 static double flock_room(void) {
-    double room = 2.0 * FLOCK_LEASH;
+    double room = 2.0 * FLOCK_LEASH * config.avoid_room;
     double shorter = screen.width < screen.height ? screen.width : screen.height;
     double fits = 0.9 * shorter;
     return room < fits ? room : fits;
@@ -1879,13 +1904,13 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
         if (to_x * to_x + to_y * to_y > 1e-9) return normalized_angle(to_y, to_x);
         return target->direction;
     }
-    vector_t separation = {0, 0}, alignment = {0, 0}, cohesion = {0, 0};
+    vector_t separation = {0, 0}, alignment = {0, 0}, cohesion = {0, 0}, wary = {0, 0};
     vector_t boundary = boundary_vector(target);
     vector_t leash = leash_vector(target);
     vector_t pointer = pointer_vector(target);
     vector_t hawk = hawk_vector(target);
     vector_t wind = wind_vector();
-    int neighbors = 0, kin = 0;
+    int neighbors = 0, kin = 0, strangers = 0;
     int center_x, center_y;
     spatial_grid_cell_for_position(grid, target->x, target->y, &center_x, &center_y);
     int min_x = center_x - config.vision_cells;
@@ -1916,7 +1941,21 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
                 separation.x += dx;
                 separation.y += dy;
                 neighbors++;
-                if (other->flock != target->flock) continue;
+                if (other->flock != target->flock) {
+                    /* Away from a stranger, hardest when it is nearest, as the
+                     * pointer is felt; averaged below, so a front of them weighs
+                     * what one does and the weight alone says how much. */
+                    if (config.avoid_weight > 0) {
+                        double distance = sqrt(dx * dx + dy * dy);
+                        if (distance > 1e-9) {
+                            double strength = 1 - distance / config.vision_radius;
+                            wary.x += strength * dx / distance;
+                            wary.y += strength * dy / distance;
+                            strangers++;
+                        }
+                    }
+                    continue;
+                }
                 trig_entry_t heading = trig_lookup(other->direction);
                 alignment.x += heading.cosine;
                 alignment.y += heading.sine;
@@ -1933,12 +1972,18 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
             cohesion.x = cohesion.x / kin - target->x;
             cohesion.y = cohesion.y / kin - target->y;
         }
+        if (strangers) {
+            wary.x /= strangers;
+            wary.y /= strangers;
+        }
         double x = separation.x * config.separation + alignment.x * config.alignment +
                    cohesion.x * COHESION_W + boundary.x * config.boundary + leash.x * LEASH_WEIGHT +
-                   pointer.x * MOUSE_WEIGHT + hawk.x * HAWK_WEIGHT + wind.x * WIND_WEIGHT;
+                   pointer.x * MOUSE_WEIGHT + hawk.x * HAWK_WEIGHT + wind.x * WIND_WEIGHT +
+                   wary.x * config.avoid_weight;
         double y = separation.y * config.separation + alignment.y * config.alignment +
                    cohesion.y * COHESION_W + boundary.y * config.boundary + leash.y * LEASH_WEIGHT +
-                   pointer.y * MOUSE_WEIGHT + hawk.y * HAWK_WEIGHT + wind.y * WIND_WEIGHT;
+                   pointer.y * MOUSE_WEIGHT + hawk.y * HAWK_WEIGHT + wind.y * WIND_WEIGHT +
+                   wary.y * config.avoid_weight;
         return x == 0 && y == 0 ? target->direction : normalized_angle(y, x);
     }
     boundary.x = boundary.x * config.boundary + leash.x * LEASH_WEIGHT + pointer.x * MOUSE_WEIGHT +
@@ -2133,7 +2178,8 @@ static void legend_number(char *out, size_t size, double value, int decimals) {
 }
 
 /* The panel, ten rows of it, anchored to the top left corner. */
-static void build_legend(char lines[LEGEND_ROWS][LEGEND_LINE_MAX]) {
+static void build_legend(char lines[LEGEND_MAX_ROWS][LEGEND_LINE_MAX]) {
+    int rows = legend_rows();
     int inner = LEGEND_COLUMNS - 2;
     size_t at = 0;
 
@@ -2162,6 +2208,12 @@ static void build_legend(char lines[LEGEND_ROWS][LEGEND_LINE_MAX]) {
      * rows above keep the places they have always had. */
     snprintf(value, sizeof(value), "%.1f\u00d7", config.pace);
     legend_slider(lines[6], LEGEND_LINE_MAX, "speed", config.pace_notch, value, 'v', 'V');
+    /* Only with somebody to avoid: with one flock the row would be a slider that
+     * moves nothing. A quarter a notch, one on the fourth, like the speed. */
+    if (config.flocks > 1) {
+        snprintf(value, sizeof(value), "%.2f\u00d7", config.avoid_notch / 4.0);
+        legend_slider(lines[7], LEGEND_LINE_MAX, "avoidance", config.avoid_notch, value, 'g', 'G');
+    }
 
     /* What the frame costs, always, rather than behind a flag: it was a switch
      * that did nothing at all unless the panel was up, and the row it wrote into
@@ -2172,18 +2224,18 @@ static void build_legend(char lines[LEGEND_ROWS][LEGEND_LINE_MAX]) {
     char measured[LEGEND_LINE_MAX / 2];
     snprintf(measured, sizeof(measured), "%-*s %5.1fms %5.0fKB %3.0ffps", LEGEND_NAME_WIDTH,
              "frame", stats.frame_ms, stats.bytes / 1024.0, stats.rate);
-    snprintf(lines[LEGEND_ROWS - 3], LEGEND_LINE_MAX, "\u2502 %-*s \u2502", inner - 2, measured);
-    snprintf(lines[LEGEND_ROWS - 2], LEGEND_LINE_MAX, "\u2502 %-*s q%*s \u2502", LEGEND_NAME_WIDTH,
-             "quit", inner - LEGEND_NAME_WIDTH - 4, "");
+    snprintf(lines[rows - 3], LEGEND_LINE_MAX, "\u2502 %-*s \u2502", inner - 2, measured);
+    snprintf(lines[rows - 2], LEGEND_LINE_MAX, "\u2502 %-*s q%*s \u2502", LEGEND_NAME_WIDTH, "quit",
+             inner - LEGEND_NAME_WIDTH - 4, "");
 
-    memcpy(lines[LEGEND_ROWS - 1], "\u2570", 3);
+    memcpy(lines[rows - 1], "\u2570", 3);
     at = 3;
-    for (int i = 0; i < inner; i++, at += 3) memcpy(lines[LEGEND_ROWS - 1] + at, "\u2500", 3);
-    memcpy(lines[LEGEND_ROWS - 1] + at, "\u256f", 4);
+    for (int i = 0; i < inner; i++, at += 3) memcpy(lines[rows - 1] + at, "\u2500", 3);
+    memcpy(lines[rows - 1] + at, "\u256f", 4);
 }
 
 static kitty_graphics_status_t queue_legend(kitty_graphics_t *graphics) {
-    char lines[LEGEND_ROWS][LEGEND_LINE_MAX];
+    char lines[LEGEND_MAX_ROWS][LEGEND_LINE_MAX];
 
     if (screen.legend_width == 0) {
         /* Switched off by a viewport that shrank under it. The panel never moves
@@ -2192,7 +2244,7 @@ static kitty_graphics_status_t queue_legend(kitty_graphics_t *graphics) {
          * whole screen would delete the uploaded sprites and leave every later
          * placement pointing at nothing. */
         if (!legend_drawn) return KITTY_GRAPHICS_OK;
-        for (int row = 0; row < LEGEND_ROWS; row++) {
+        for (int row = 0; row < legend_rows(); row++) {
             kitty_graphics_status_t status = kitty_graphics_write_text(graphics, row, 0, "\033[K");
             if (status != KITTY_GRAPHICS_OK) return status;
         }
@@ -2201,7 +2253,7 @@ static kitty_graphics_status_t queue_legend(kitty_graphics_t *graphics) {
     }
 
     build_legend(lines);
-    for (int row = 0; row < LEGEND_ROWS; row++) {
+    for (int row = 0; row < legend_rows(); row++) {
         kitty_graphics_status_t status = kitty_graphics_write_text(graphics, row, 0, lines[row]);
         if (status != KITTY_GRAPHICS_OK) return status;
     }
@@ -2312,7 +2364,7 @@ static kitty_graphics_status_t queue_text_frame(kitty_graphics_t *graphics, cons
         text_legend_was_drawn = legend_drawn;
     }
     cells_keep_out_of(&text_cells, legend_drawn ? LEGEND_COLUMNS : 0,
-                      legend_drawn ? LEGEND_ROWS : 0);
+                      legend_drawn ? legend_rows() : 0);
 
     compose_onto(&text_canvas, text_sprites, birds, 0);
     cells_read(&text_cells, text_style(), &text_canvas, screen.cell_width, screen.cell_height);
@@ -2438,6 +2490,18 @@ static void apply_notches(void) {
      * lands a hair off one at the default: one times anything is that thing, so
      * at the fourth notch the flock is bit for bit the one that shipped. */
     config.pace = PACE_STEP * (config.pace_notch + 1);
+
+    /* Exactly one and exactly nothing on the fourth notch, so the shipped flocks
+     * are bit for bit what they were. */
+    if (config.avoid_notch <= DEFAULT_NOTCH) {
+        config.avoid_room = config.avoid_notch / (double)DEFAULT_NOTCH;
+        config.avoid_weight = 0;
+    } else {
+        double above =
+            (config.avoid_notch - DEFAULT_NOTCH) / (double)(LEGEND_BAR_CELLS - DEFAULT_NOTCH);
+        config.avoid_room = 1 + above;
+        config.avoid_weight = AVOID_WEIGHT_MAX * above;
+    }
     update_speed();
 }
 
@@ -2522,6 +2586,9 @@ static const option_t OPTIONS[] = {
     {0, "speed", NULL, OPTION_INT, &config.pace_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
      "how fast the flock flies, 0.2x to 2.6x (default 4)",
      "Sliders   0 to 12, as the panel shows them", 0},
+    {0, "avoidance", NULL, OPTION_INT, &config.avoid_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
+     "how much flocks keep out of each other's way (default 4)",
+     "Sliders   0 to 12, as the panel shows them", 0},
 
     {'c', "color", "palette", OPTION_ENUM, &config.palette, 0, 0, PALETTE_NAMES, "RAMP",
      "theme, ember, ice, acid, matrix", "Look", 1},
@@ -2562,10 +2629,10 @@ static const option_t OPTIONS[] = {
 enum { OPTION_COUNT = sizeof(OPTIONS) / sizeof(*OPTIONS) };
 
 /* The panel teaches the slider keys, so this only has to list the rest. */
-#define KEYS_HELP                                                      \
-    "\nKeys   b/B s/S a/A t/T p/P v/V   one notch down / up\n"         \
-    "       space pause   . step   0 reset   +/- birds   Tab preset\n" \
-    "       h panel   e trails   k/K hawks\n"                          \
+#define KEYS_HELP                                                                  \
+    "\nKeys   b/B s/S a/A t/T p/P v/V   one notch down / up\n"                     \
+    "       space pause   . step   0 reset   +/- birds   Tab preset\n"             \
+    "       h panel   e trails   k/K hawks   g/G flocks avoid, with two or more\n" \
     "       q quit\n"
 
 enum { EXIT_USAGE = 2 }; /* A mistyped command is not a run that went wrong. */
@@ -2593,6 +2660,7 @@ static void apply_preset_defaults(void) {
      * with. And the speed, which no preset touches, so this is its only way home. */
     config.turning_notch = DEFAULT_TURNING_NOTCH;
     config.pace_notch = DEFAULT_NOTCH;
+    config.avoid_notch = DEFAULT_NOTCH;
     apply_notches();
 }
 
@@ -2810,6 +2878,13 @@ static int handle_input(void) {
             case 'v':
                 notch = &config.pace_notch;
                 step = -1;
+                break;
+            case 'G':
+            case 'g':
+                /* Nothing to avoid with one flock, and no row to show it on. */
+                if (config.flocks < 2) continue;
+                notch = &config.avoid_notch;
+                step = key == 'G' ? 1 : -1;
                 break;
             default:
                 continue;
@@ -3208,6 +3283,9 @@ static void read_options(int argc, char **argv) {
     /* A palette with one colour in it cannot tell the flocks apart, which is worth
      * saying out loud rather than letting somebody wonder where their three flocks
      * went. */
+    if (config.flocks == 1 && config.avoid_notch != DEFAULT_NOTCH)
+        fprintf(stderr, "%s: --avoidance is how flocks avoid each other, and there is one\n",
+                program_name);
     if (config.flocks > 1 && palette_shades() <= 1)
         fprintf(stderr, "%s: %s has one colour, so the %d flocks will look like one\n",
                 program_name, palette()->name, config.flocks);

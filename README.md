@@ -80,7 +80,11 @@ flock and it scatters. Press `q` and it flies off the top. Left alone for a
 minute, it starts moving the sliders itself; any key takes them back.
 
 `h` opens a panel of sliders in the corner, and `--panel` opens it from the
-start. Lowercase lowers, uppercase raises, one press is one notch.
+start. Lowercase lowers, uppercase raises, one press is one notch. `speed`
+flies the same flock slower or faster, from a fifth of its pace to thirteen
+fifths. With two flocks or more the panel grows one more row, `avoidance` on
+`g`/`G`: at the bottom the flocks share the sky and fly through each other, at
+the top they part around each other and keep their distance.
 
 `--unlock-fps` removes the frame delay and renders as fast as the terminal accepts
 frames. The simulation still advances in real time, so unlocking it does not make
@@ -102,7 +106,7 @@ fps.
 
 | key | | key | |
 |---|---|---|---|
-| `b`/`B` `s`/`S` `a`/`A` `t`/`T` `p`/`P` `v`/`V` | one notch down, one up | `h` | panel |
+| `b`/`B` `s`/`S` `a`/`A` `t`/`T` `p`/`P` `v`/`V` `g`/`G` | one notch down, one up | `h` | panel |
 | `Space` | pause | `.` | one frame |
 | `0` | back to the defaults | `Tab` | next preset |
 | `+` `-` | more birds, fewer | `k` `K` | a hawk more, one fewer |
@@ -144,6 +148,7 @@ Sliders   0 to 12, as the panel shows them
       --turning NOTCH           sharpest turn a frame, 12 is instant (default 8)
       --perception PIXELS       how far a bird sees, 12 to 60 (default 36)
       --speed NOTCH             how fast the flock flies, 0.2x to 2.6x (default 4)
+      --avoidance NOTCH         how much flocks keep out of each other's way (default 4)
 
 Look
   -c, --color RAMP              theme, ember, ice, acid, matrix

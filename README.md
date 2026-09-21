@@ -83,8 +83,9 @@ minute, it starts moving the sliders itself; any key takes them back.
 start. Lowercase lowers, uppercase raises, one press is one notch. `speed`
 flies the same flock slower or faster, from a fifth of its pace to thirteen
 fifths. With two flocks or more the panel grows one more row, `avoidance` on
-`g`/`G`: at the bottom the flocks share the sky and fly through each other, at
-the top they part around each other and keep their distance.
+`g`/`G`: at the bottom the flocks mix into one flock of two or three colours,
+in the middle, where it starts, each keeps to its own kind and flies where it
+likes, and at the top they keep well apart.
 
 `--unlock-fps` removes the frame delay and renders as fast as the terminal accepts
 frames. The simulation still advances in real time, so unlocking it does not make

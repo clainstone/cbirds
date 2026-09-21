@@ -199,11 +199,16 @@ static const double HAWK_APART = 1.2;
  * edge and bounces off it. */
 static const double HAWK_WALL = 2.5;
 /* Flocking is local — a bird sees sixty pixels at most — so nothing in the three
- * rules keeps a flock together as a body across a whole screen, and three flocks
- * left to themselves spread until they are one cloud in three colours. The leash
- * is the missing long range term: nothing at all within a flock's own width of
- * its centre, and a pull that grows outside it. */
-static const int FLOCK_LEASH = 150;
+ * rules keeps a flock together as a body across a whole screen. The leash is the
+ * missing long range term: nothing at all within a flock's own width of its
+ * centre, and a pull that grows outside it. The width grows with the flock, as
+ * the square root of its birds, twelve pixels to the root, which is about the
+ * width a flock that size takes up with no leash at all. A fixed 150 was
+ * narrower than a flock of five hundred, so the leash pulled on its whole rim
+ * and it wound itself into a mill: 1000 birds in two flocks turned 37 times a
+ * minute, 4096 in three 45 times. With the width grown they turn two to four. */
+static const int FLOCK_LEASH = 150; /* The narrowest it gets, for a small flock. */
+static const double LEASH_PER_ROOT_BIRD = 12.0;
 static const double LEASH_WEIGHT = 2.5;
 /* A breeze the whole flock leans into. Enough to shape it, not enough to carry
  * it off: at the top notch it is about a third of the alignment weight. */
@@ -247,16 +252,25 @@ static const double ALIGNMENT_MAX = NOTCH_CEILING(0.1, DEFAULT_ALIGNMENT_W);
 #define DEFAULT_PACE 1.0
 static const double PACE_STEP = 0.2;
 
-/* How much one flock avoids another, with two or more of them. The bottom third
- * of the bar is the room each flock's home keeps from the others', from none —
- * they share the sky and mingle, only never collide — to the room they have
- * always kept on the fourth notch. The rest grows the room up to twice that and
- * adds a wariness close up: a bird steers away from the strangers it can see,
- * which is what makes two flocks that meet part around each other rather than
- * pass through. The panel shows it as a factor on the shipped flock, a quarter a
- * notch. At the top a stranger in sight weighs what the flock's own heading does
- * by default: at twice that the flocks had stopped touching by the eighth notch,
- * and the four above it had nothing left to do. */
+/* How much one flock avoids another, with two or more of them.
+ *
+ * On the fourth notch, the default, a flock keeps to its own kind and to nothing
+ * else: it flies where it likes, and meets and crosses the others. It used to be
+ * sent a room away from them as well, to a home of its own, and a flock sent
+ * home flies round it: two flocks turned twelve times a minute where one flock
+ * alone turns twice. Measured over six runs of a minute and a half.
+ *
+ * Below it the others become kin by halves, a half a notch, until at the bottom
+ * a bird aligns with and closes on every bird it sees: one flock in two or three
+ * colours, each bird's nearest neighbour a stranger as often as chance says. The
+ * leash that keeps a flock together and the pace that tells flocks apart let go
+ * with it, or the colours sort themselves out again.
+ *
+ * Above it each flock is sent a room away from the others, up to twice the room
+ * it used to keep, and a bird steers away from the strangers it can see, which
+ * is what makes two flocks that meet part around each other rather than pass
+ * through. At the top a stranger in sight weighs what the flock's own heading
+ * does by default. The panel shows the whole bar as a factor, a quarter a notch. */
 static const double AVOID_WEIGHT_MAX = 1.5;
 
 #define ALT_SCREEN_ON "\033[?1049h"
@@ -335,8 +349,9 @@ typedef struct {
     int boundary_notch, separation_notch, alignment_notch;
     int vision_notch, pace_notch;
     int avoid_notch;
-    double avoid_room;   /* The share of the shipped room between flock homes. */
-    double avoid_weight; /* And the weight of a bird's wariness of strangers. */
+    double avoid_kinship; /* How much of kin a stranger is: one at the bottom, then halves. */
+    double avoid_room;    /* The room between flock homes, as a share of 2 * FLOCK_LEASH. */
+    double avoid_weight;  /* And the weight of a bird's wariness of strangers. */
 } config_t;
 
 static config_t config = {
@@ -361,7 +376,6 @@ static config_t config = {
     .vision_notch = DEFAULT_VISION_NOTCH,
     .pace_notch = DEFAULT_NOTCH,
     .avoid_notch = DEFAULT_NOTCH,
-    .avoid_room = 1.0,
 };
 static screen_t screen;
 static int legend_enabled; /* Hidden until --panel or h asks for it. */
@@ -1641,14 +1655,17 @@ static vector_t hawk_vector(const bird_t *bird) {
  * is the part that looks alive. Small enough that nobody reads it as a bug. */
 static double flock_pace(int flock) {
     if (config.flocks <= 1) return 1.0;
-    return 1.0 - 0.125 * flock / (config.flocks - 1);
+    return 1.0 - (1 - config.avoid_kinship) * 0.125 * flock / (config.flocks - 1);
 }
 
 /* Where each flock is, measured once a frame off the same snapshot every bird
  * reads, so every bird in a flock agrees about where its flock is. */
 static double flock_center_x[MAX_FLOCKS], flock_center_y[MAX_FLOCKS];
-/* Where each flock is told to be: its own centre, shoved clear of the others. */
+/* Where each flock is told to be: its own centre, shoved clear of the others
+ * when the avoidance is above the default. */
 static double flock_home_x[MAX_FLOCKS], flock_home_y[MAX_FLOCKS];
+/* How far a bird may stray from home before the leash pulls: see FLOCK_LEASH. */
+static double flock_leash[MAX_FLOCKS];
 
 /* A flock's shade: the ramp's ends first, then the space between them, so two
  * flocks come out as far apart as the palette allows instead of as shade zero and
@@ -1813,11 +1830,14 @@ static void measure_flocks(const bird_t *birds) {
         flock_center_y[flock] += birds[i].y;
         counted[flock]++;
     }
-    for (int f = 0; f < MAX_FLOCKS; f++)
+    for (int f = 0; f < MAX_FLOCKS; f++) {
         if (counted[f] > 0) {
             flock_center_x[f] /= counted[f];
             flock_center_y[f] /= counted[f];
         }
+        double width = LEASH_PER_ROOT_BIRD * sqrt((double)counted[f]);
+        flock_leash[f] = width > FLOCK_LEASH ? width : FLOCK_LEASH;
+    }
 
     /* Left to themselves the three centres of gravity drift to the middle of the
      * screen and sit on top of each other, and three flocks become one cloud in
@@ -1872,17 +1892,22 @@ static void measure_flocks(const bird_t *birds) {
     }
 }
 
-/* The leash: nothing within FLOCK_LEASH of its own flock's centre, and outside
- * that a pull home that grows with the distance. */
+/* The leash: nothing within the flock's own width of home, and outside that a
+ * pull that grows with the distance. It lets go as strangers become kin, cubed so
+ * that it is all but gone by the time they are half kin: a flock tied to its own
+ * centre while it mixes with another is two knots in one cloud. */
 static vector_t leash_vector(const bird_t *bird) {
     vector_t pull = {0, 0};
     if (config.flocks <= 1 || bird->flock < 0 || bird->flock >= MAX_FLOCKS) return pull;
     double dx = flock_home_x[bird->flock] - bird->x;
     double dy = flock_home_y[bird->flock] - bird->y;
     double distance = sqrt(dx * dx + dy * dy);
-    if (distance <= FLOCK_LEASH || distance < 1e-9) return pull;
-    double strength = (distance - FLOCK_LEASH) / FLOCK_LEASH;
+    double width = flock_leash[bird->flock] > 0 ? flock_leash[bird->flock] : FLOCK_LEASH;
+    if (distance <= width || distance < 1e-9) return pull;
+    double strength = (distance - width) / width;
     if (strength > 1) strength = 1;
+    double apart = 1 - config.avoid_kinship;
+    strength *= apart * apart * apart;
     pull.x = strength * dx / distance;
     pull.y = strength * dy / distance;
     return pull;
@@ -1910,7 +1935,8 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
     vector_t pointer = pointer_vector(target);
     vector_t hawk = hawk_vector(target);
     vector_t wind = wind_vector();
-    int neighbors = 0, kin = 0, strangers = 0;
+    int neighbors = 0, strangers = 0;
+    double kin = 0; /* Counted in kinship: a whole bird for its own flock. */
     int center_x, center_y;
     spatial_grid_cell_for_position(grid, target->x, target->y, &center_x, &center_y);
     int min_x = center_x - config.vision_cells;
@@ -1942,6 +1968,16 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
                 separation.y += dy;
                 neighbors++;
                 if (other->flock != target->flock) {
+                    /* Kin in part, below the default: its heading and place count
+                     * for that share of a bird of the flock's own. */
+                    if (config.avoid_kinship > 0) {
+                        trig_entry_t heading = trig_lookup(other->direction);
+                        alignment.x += config.avoid_kinship * heading.cosine;
+                        alignment.y += config.avoid_kinship * heading.sine;
+                        cohesion.x += config.avoid_kinship * other->x;
+                        cohesion.y += config.avoid_kinship * other->y;
+                        kin += config.avoid_kinship;
+                    }
                     /* Away from a stranger, hardest when it is nearest, as the
                      * pointer is felt; averaged below, so a front of them weighs
                      * what one does and the weight alone says how much. */
@@ -1961,7 +1997,7 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
                 alignment.y += heading.sine;
                 cohesion.x += other->x;
                 cohesion.y += other->y;
-                kin++;
+                kin += 1;
             }
         }
     }
@@ -2491,15 +2527,17 @@ static void apply_notches(void) {
      * at the fourth notch the flock is bit for bit the one that shipped. */
     config.pace = PACE_STEP * (config.pace_notch + 1);
 
-    /* Exactly one and exactly nothing on the fourth notch, so the shipped flocks
-     * are bit for bit what they were. */
-    if (config.avoid_notch <= DEFAULT_NOTCH) {
-        config.avoid_room = config.avoid_notch / (double)DEFAULT_NOTCH;
-        config.avoid_weight = 0;
+    /* Kin by halves below the fourth notch, room and wariness above it, and
+     * exactly none of any of it on it. */
+    config.avoid_kinship = 0;
+    config.avoid_room = 0;
+    config.avoid_weight = 0;
+    if (config.avoid_notch < DEFAULT_NOTCH) {
+        config.avoid_kinship = ldexp(1.0, -config.avoid_notch);
     } else {
         double above =
             (config.avoid_notch - DEFAULT_NOTCH) / (double)(LEGEND_BAR_CELLS - DEFAULT_NOTCH);
-        config.avoid_room = 1 + above;
+        config.avoid_room = 2 * above;
         config.avoid_weight = AVOID_WEIGHT_MAX * above;
     }
     update_speed();

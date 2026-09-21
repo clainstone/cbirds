@@ -14,7 +14,8 @@ static double brute_force_flock_direction(const bird_t *birds, int target_index)
     vector_t separation = {0, 0}, alignment = {0, 0}, cohesion = {0, 0}, wary = {0, 0};
     vector_t boundary = boundary_vector(target);
     vector_t leash = leash_vector(target);
-    int neighbors = 0, kin = 0, strangers = 0;
+    int neighbors = 0, strangers = 0;
+    double kin = 0;
 
     for (int i = 0; i < config.birds; i++) {
         if (i == target_index) continue;
@@ -26,6 +27,14 @@ static double brute_force_flock_direction(const bird_t *birds, int target_index)
         separation.y += dy;
         neighbors++;
         if (other->flock != target->flock) {
+            if (config.avoid_kinship > 0) {
+                trig_entry_t heading = trig_lookup(other->direction);
+                alignment.x += config.avoid_kinship * heading.cosine;
+                alignment.y += config.avoid_kinship * heading.sine;
+                cohesion.x += config.avoid_kinship * other->x;
+                cohesion.y += config.avoid_kinship * other->y;
+                kin += config.avoid_kinship;
+            }
             double distance = sqrt(dx * dx + dy * dy);
             if (config.avoid_weight > 0 && distance > 1e-9) {
                 wary.x += (1 - distance / config.vision_radius) * dx / distance;
@@ -39,7 +48,7 @@ static double brute_force_flock_direction(const bird_t *birds, int target_index)
         alignment.y += heading.sine;
         cohesion.x += other->x;
         cohesion.y += other->y;
-        kin++;
+        kin += 1;
     }
 
     if (neighbors) {
@@ -221,7 +230,7 @@ static void test_engine_matches_brute_force(void) {
         for (int i = 0; i < BIRD_COUNT; i++) snapshot[i].flock = i % config.flocks;
         /* And over how much they avoid each other, which moves the homes as
          * well as the wariness, so the whereabouts are measured at each. */
-        static const int AVOIDANCE[] = {0, DEFAULT_NOTCH, LEGEND_BAR_CELLS};
+        static const int AVOIDANCE[] = {0, 2, DEFAULT_NOTCH, 8, LEGEND_BAR_CELLS};
         for (size_t a = 0; a < sizeof(AVOIDANCE) / sizeof(*AVOIDANCE); a++) {
             config.avoid_notch = AVOIDANCE[a];
             apply_notches();
@@ -2245,6 +2254,10 @@ static void test_flocks_keep_to_their_own_side_of_the_sky(void) {
     for (int flocks = 2; flocks <= MAX_FLOCKS; flocks++) {
         reset_test_config();
         legend_enabled = 0;
+        /* Sent a room apart, which is the eighth notch now and was the default
+         * until flocks sent home were found flying round it. */
+        config.avoid_notch = 8;
+        apply_notches();
         apply_screen_size(100, 28, 800, 448);
         config.birds = BIRD_COUNT;
         config.flocks = flocks;
@@ -2857,26 +2870,35 @@ static void test_the_avoidance_slider_needs_two_flocks(void) {
     assert(feed_input("0") == 1);
     assert(config.avoid_notch == DEFAULT_NOTCH);
 
-    /* What the notches mean: the room from none to twice the shipped, and the
-     * wariness only above the fourth, both never going back down. */
-    double room = -1, weight = -1;
+    /* What the notches mean: strangers kin by halves below the fourth, a room
+     * and a wariness above it, growing, and none of any of it on it. */
+    double room = -1, weight = -1, kinship = 2;
     for (int n = 0; n <= LEGEND_BAR_CELLS; n++) {
         config.avoid_notch = n;
         apply_notches();
         assert(config.avoid_room >= room && config.avoid_weight >= weight);
+        assert(config.avoid_kinship < kinship || config.avoid_kinship == 0);
         room = config.avoid_room;
         weight = config.avoid_weight;
-        if (n <= DEFAULT_NOTCH) assert(config.avoid_weight == 0);
+        kinship = config.avoid_kinship;
+        if (n < DEFAULT_NOTCH)
+            assert(config.avoid_kinship == ldexp(1.0, -n) && room == 0 && weight == 0);
+        else
+            assert(config.avoid_kinship == 0);
     }
     assert(config.avoid_room == 2.0 && config.avoid_weight == AVOID_WEIGHT_MAX);
-    config.avoid_notch = 0;
-    apply_notches();
-    assert(config.avoid_room == 0 && flock_room() == 0);
     config.avoid_notch = DEFAULT_NOTCH;
     apply_notches();
-    assert(config.avoid_room == 1.0 && config.avoid_weight == 0);
+    assert(config.avoid_room == 0 && config.avoid_weight == 0 && config.avoid_kinship == 0);
+    assert(flock_room() == 0); /* Nobody is sent anywhere by default. */
     apply_screen_size(200, 60, 1600, 960);
+    config.avoid_notch = 8;
+    apply_notches();
     assert(flock_room() == 2.0 * FLOCK_LEASH);
+    /* At the bottom the flocks are one flock: the same pace, no leash. */
+    config.avoid_notch = 0;
+    apply_notches();
+    assert(flock_pace(2) == 1.0);
     reset_test_config();
 }
 
@@ -2966,9 +2988,9 @@ static flocks_apart_t three_flocks_at(int avoid_notch, int columns, int rows, in
 }
 
 /* Measured, three flocks on a roomy screen: a bird with a stranger in sight
- * 23% of the time at the bottom notch, 7% shipped, none at the top; the two
- * nearest flocks 164, 247 and 481 pixels apart. And none of it by pushing the
- * flock off the screen or into the panel, on the smallest screen it opens on. */
+ * 98% of the time at the bottom notch, where they are one flock, 23% shipped,
+ * none at the top; the two nearest flocks 12, 164 and 481 pixels apart. And none of it by pushing
+ * the flock off the screen or into the panel, on the smallest screen it opens on. */
 static void test_flocks_avoid_each_other_as_much_as_asked(void) {
     flocks_apart_t mingle = three_flocks_at(0, 200, 50, 0);
     flocks_apart_t shipped = three_flocks_at(DEFAULT_NOTCH, 200, 50, 0);
@@ -2984,6 +3006,125 @@ static void test_flocks_avoid_each_other_as_much_as_asked(void) {
         three_flocks_at(LEGEND_BAR_CELLS, LEGEND_MIN_COLS, LEGEND_MIN_ROWS, 1);
     three_flocks_at(0, LEGEND_MIN_COLS, LEGEND_MIN_ROWS, 1);
     assert(small_shun.outside <= small_shipped.outside * 1.5 + 0.005);
+}
+
+/* How flocks behave as bodies over a run: how many turns a minute each flock's
+ * mean heading makes one way round, how much each one mills about its own centre,
+ * and how often a bird's nearest neighbour is from another flock. */
+typedef struct {
+    double turns_a_minute, milling, strangers_nearest;
+} flocks_as_bodies_t;
+
+static flocks_as_bodies_t flocks_as_bodies(int flocks, int avoid_notch, int columns, int rows,
+                                           int bird_count, int seconds) {
+    spatial_grid_t grid;
+    bird_t *birds = calloc((size_t)bird_count, sizeof(*birds));
+    bird_t *snapshot = malloc(sizeof(*snapshot) * (size_t)bird_count);
+    double previous[MAX_FLOCKS] = {0}, turned[MAX_FLOCKS] = {0}, milling = 0;
+    long mills = 0, strangers = 0, sampled = 0;
+    int settle = 5 * FRAME_RATE;
+
+    assert(birds != NULL && snapshot != NULL);
+    reset_test_config();
+    legend_enabled = 0;
+    config.birds = bird_count;
+    config.flocks = flocks;
+    config.avoid_notch = avoid_notch;
+    apply_notches();
+    apply_screen_size(columns, rows, columns * 8, rows * 16);
+    set_frame_seconds(1.0 / FRAME_RATE);
+    for (int f = 0; f < MAX_FLOCKS; f++) flock_home_x[f] = flock_home_y[f] = 0;
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, bird_count) == SPATIAL_GRID_OK);
+    srand(3);
+    initialize_birds(birds);
+    for (int frame = 0; frame < seconds * FRAME_RATE; frame++) {
+        memcpy(snapshot, birds, sizeof(*birds) * (size_t)bird_count);
+        assert(spatial_grid_build(&grid, bird_count, read_bird_position, snapshot) ==
+               SPATIAL_GRID_OK);
+        fly(birds, snapshot, &grid);
+        if (frame < settle) continue;
+        for (int f = 0; f < flocks; f++) {
+            double cx = 0, cy = 0, ux = 0, uy = 0, spin = 0;
+            int n = 0;
+            for (int i = 0; i < bird_count; i++)
+                if (birds[i].flock == f) {
+                    cx += birds[i].x;
+                    cy += birds[i].y;
+                    ux += cos(birds[i].direction);
+                    uy += sin(birds[i].direction);
+                    n++;
+                }
+            cx /= n;
+            cy /= n;
+            double heading = atan2(uy, ux);
+            if (frame > settle)
+                turned[f] += atan2(sin(heading - previous[f]), cos(heading - previous[f]));
+            previous[f] = heading;
+            for (int i = 0; i < bird_count; i++) {
+                if (birds[i].flock != f) continue;
+                double rx = birds[i].x - cx, ry = birds[i].y - cy, r = sqrt(rx * rx + ry * ry);
+                if (r > 1e-9)
+                    spin += (rx * sin(birds[i].direction) - ry * cos(birds[i].direction)) / r;
+            }
+            milling += fabs(spin / n);
+            mills++;
+        }
+        if (frame % 30) continue;
+        for (int i = 0; i < bird_count; i += 7) {
+            int nearest = -1;
+            double best = 0;
+            for (int j = 0; j < bird_count; j++) {
+                if (j == i) continue;
+                double dx = birds[i].x - birds[j].x, dy = birds[i].y - birds[j].y;
+                if (nearest < 0 || dx * dx + dy * dy < best) {
+                    best = dx * dx + dy * dy;
+                    nearest = j;
+                }
+            }
+            sampled++;
+            if (birds[nearest].flock != birds[i].flock) strangers++;
+        }
+    }
+    double minutes = (seconds * FRAME_RATE - settle) / (double)FRAME_RATE / 60.0, turns = 0;
+    for (int f = 0; f < flocks; f++) turns += fabs(turned[f]) / (2 * M_PI) / minutes / flocks;
+    spatial_grid_destroy(&grid);
+    free(snapshot);
+    free(birds);
+    legend_enabled = 1;
+    reset_test_config();
+    return (flocks_as_bodies_t){turns, milling / mills, (double)strangers / sampled};
+}
+
+/* A flock with a home of its own flew round it, and a flock too big for a fixed
+ * leash wound itself into a mill: a thousand birds in two flocks on a large
+ * terminal turned 37 times a minute and milled at 0.53, where one flock of them
+ * turns under three times. Flying where they like, with a leash as wide as the
+ * flock, two flocks turn as one does. */
+static void test_flocks_do_not_fly_in_circles(void) {
+    flocks_as_bodies_t two = flocks_as_bodies(2, DEFAULT_NOTCH, 300, 80, 1000, 60);
+    assert(two.turns_a_minute < 8);
+    assert(two.milling < 0.25);
+    assert(two.strangers_nearest < 0.15); /* And still two flocks, not one. */
+    flocks_as_bodies_t three = flocks_as_bodies(3, DEFAULT_NOTCH, 200, 50, 600, 60);
+    assert(three.turns_a_minute < 8);
+    assert(three.milling < 0.25);
+    assert(three.strangers_nearest < 0.2);
+}
+
+/* At the bottom of the avoidance bar a bird's nearest neighbour is a stranger as
+ * often as chance says it should be, a half with two flocks and two thirds with
+ * three; a notch up it is well under that and well over the default. */
+static void test_flocks_mix_at_the_bottom(void) {
+    flocks_as_bodies_t two = flocks_as_bodies(2, 0, 200, 50, 600, 40);
+    assert(fabs(two.strangers_nearest - 0.5) < 0.08);
+    flocks_as_bodies_t three = flocks_as_bodies(3, 0, 200, 50, 600, 40);
+    assert(fabs(three.strangers_nearest - 2.0 / 3) < 0.08);
+    flocks_as_bodies_t half = flocks_as_bodies(2, 1, 200, 50, 600, 40);
+    flocks_as_bodies_t apart = flocks_as_bodies(2, DEFAULT_NOTCH, 200, 50, 600, 40);
+    assert(half.strangers_nearest < two.strangers_nearest - 0.05);
+    assert(half.strangers_nearest > apart.strangers_nearest + 0.1);
+    assert(two.turns_a_minute < 8 && half.turns_a_minute < 8);
 }
 
 int main(void) {
@@ -3045,5 +3186,7 @@ int main(void) {
     test_the_avoidance_slider_needs_two_flocks();
     test_the_avoidance_is_a_flag();
     test_flocks_avoid_each_other_as_much_as_asked();
+    test_flocks_do_not_fly_in_circles();
+    test_flocks_mix_at_the_bottom();
     return 0;
 }

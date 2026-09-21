@@ -110,13 +110,13 @@ enum {
      * everything; the minimums leave a corridor to the right of the panel and
      * one underneath it. */
     LEGEND_COLUMNS = 38,
-    LEGEND_ROWS = 9,
+    LEGEND_ROWS = 10,
     /* One notch a keypress, so this is also the number of steps every parameter
      * travels through, from its floor to its ceiling. */
     LEGEND_BAR_CELLS = 12,
     LEGEND_NAME_WIDTH = 10,
     LEGEND_VALUE_WIDTH = 5,
-    /* The panel is 38 by 9 cells and the flock may not enter it. At the smallest
+    /* The panel is 38 by 10 cells and the flock may not enter it. At the smallest
      * terminal it used to appear in it covered half the screen, and half the flock
      * was squeezed off the edges of what was left: it needs to be a fifth of the
      * room, not a half, so it waits for a window it fits inside. */
@@ -153,9 +153,10 @@ static const double HAWK_SPEED = 0.90;
  * radian still only landed one chase in eight; at a whole one it lands half of
  * them, and the wall is reached a third as often. */
 static const double HAWK_TURN = 1.0;
-/* That is per step at sixty a second. It follows elapsed time so the hawk remains
- * the same animal when frames arrive faster or slower. */
-#define HAWK_TURN_PER_FRAME() (HAWK_TURN * FRAME_RATE * frame_seconds)
+/* That is per step at sixty a second. It follows elapsed flight time so the hawk
+ * remains the same animal when frames arrive faster or slower, and when the speed
+ * slider flies everything faster or slower. */
+#define HAWK_TURN_PER_FRAME() (HAWK_TURN * FRAME_RATE * flight_seconds())
 /* At most the distance a bird covers in three sixty-hertz steps. */
 static const double HAWK_LEAD_DISTANCE = DEFAULT_SPEED * 3.0;
 /* Inside the dive it accelerates and stops leading: a bird that flees is only a
@@ -229,6 +230,19 @@ static const double BOUNDARY_MAX = NOTCH_CEILING(0.01, DEFAULT_BOUNDARY_W);
 static const double SEPARATION_MAX = NOTCH_CEILING(0.001, DEFAULT_SEPARATION_W);
 static const double ALIGNMENT_MAX = NOTCH_CEILING(0.1, DEFAULT_ALIGNMENT_W);
 
+/* Flight speed, as a factor on the pace everything else was tuned at. It scales
+ * how far a bird flies in a second and, with it, how far it may turn in that
+ * second, so the path a bird traces is the one the edges, the panel and the
+ * hawks were tuned on, flown faster or slower: without the turn a fast flock
+ * swung wide into the edges and a slow one spun on the spot. A fifth of the pace
+ * is slow motion; at the top a frame is flown in three steps (see fly), which
+ * keeps eight hundred birds near a millisecond a frame. A fifth a notch, from a
+ * fifth at notch zero to thirteen fifths at the top, so the panel prints each
+ * one as it is and the default sits on the fourth notch like every other
+ * slider's. */
+#define DEFAULT_PACE 1.0
+static const double PACE_STEP = 0.2;
+
 #define ALT_SCREEN_ON "\033[?1049h"
 #define ALT_SCREEN_OFF "\033[?1049l"
 #define CURSOR_HIDE "\033[?25l"
@@ -294,19 +308,23 @@ typedef struct {
     int birds, bird_size, palette, flocks;
     int trails, hawks, shape;
     int turning_notch;
-    double speed;
+    double speed;      /* Pixels a bird covers this frame, at the chosen pace. */
+    double base_speed; /* The same at pace one, which is what the way out flies at. */
+    double pace;       /* The speed slider's factor; one is the shipped flock. */
     int vision_cells, vision_radius, vision_radius_squared;
     double separation, alignment, boundary;
     /* Notch positions, zero to LEGEND_BAR_CELLS. These are the state the keys
      * move; every value above is derived from them, which is what makes one
      * keypress exactly one notch of bar rather than nearly one. */
     int boundary_notch, separation_notch, alignment_notch;
-    int vision_notch;
+    int vision_notch, pace_notch;
 } config_t;
 
 static config_t config = {
     .birds = 800,
     .speed = DEFAULT_SPEED,
+    .base_speed = DEFAULT_SPEED,
+    .pace = DEFAULT_PACE,
     .bird_size = DEFAULT_BIRD_SIZE,
     .palette = 0,
     .flocks = 1,
@@ -322,6 +340,7 @@ static config_t config = {
     .alignment_notch = DEFAULT_NOTCH,
     /* Twelve to sixty pixels in steps of four: thirty six is the sixth notch. */
     .vision_notch = DEFAULT_VISION_NOTCH,
+    .pace_notch = DEFAULT_NOTCH,
 };
 static screen_t screen;
 static int legend_enabled; /* Hidden until --panel or h asks for it. */
@@ -379,6 +398,15 @@ static struct {
  * live frame is about 1/60 s, a picture renderer about 1/30 s, and an unlocked
  * frame whatever elapsed since the previous one. */
 static double frame_seconds = 1.0 / FRAME_RATE;
+
+/* How much flying the next step represents: the frame's time at the pace the
+ * speed slider asks for. What a bird or a hawk covers, what it may turn through
+ * and how long a hawk holds a chase run on this. The wing beats, the clocks and
+ * the way out run on the frame's own time: six beats a second reads as effort
+ * at any speed, and at two and a half times it would strobe. */
+static double flight_seconds(void) {
+    return frame_seconds * config.pace;
+}
 
 /* Paused holds the simulation still but keeps drawing and reading keys, so the
  * panel still answers and a single step is possible. Stepping is one frame of
@@ -1169,7 +1197,7 @@ static double turning_notch_radians(void) {
 
 static double turn_limit(void) {
     if (config.turning_notch >= LEGEND_BAR_CELLS) return 2 * M_PI;
-    double scaled = turning_notch_radians() * FRAME_RATE * frame_seconds;
+    double scaled = turning_notch_radians() * FRAME_RATE * flight_seconds();
     return scaled > 2 * M_PI ? 2 * M_PI : scaled;
 }
 
@@ -1441,12 +1469,12 @@ static void hunt(const bird_t *birds) {
     for (int i = 0; i < config.hawks; i++) {
         hawk_t *hawk = &hawks[i];
         if (hawk->commitment > 0) {
-            hawk->commitment -= frame_seconds;
+            hawk->commitment -= flight_seconds();
             if (hawk->commitment < 0) hawk->commitment = 0;
         }
 
         if (hawk->passing > 0) {
-            hawk->passing -= frame_seconds;
+            hawk->passing -= flight_seconds();
             if (hawk->passing < 0) hawk->passing = 0;
             hawk->prey = -1;
         } else {
@@ -2104,7 +2132,7 @@ static void legend_number(char *out, size_t size, double value, int decimals) {
     snprintf(out, size, "%.*f", decimals, value);
 }
 
-/* The panel, nine rows of it, anchored to the top left corner. */
+/* The panel, ten rows of it, anchored to the top left corner. */
 static void build_legend(char lines[LEGEND_ROWS][LEGEND_LINE_MAX]) {
     int inner = LEGEND_COLUMNS - 2;
     size_t at = 0;
@@ -2130,6 +2158,10 @@ static void build_legend(char lines[LEGEND_ROWS][LEGEND_LINE_MAX]) {
     /* Pixels are whole numbers, so they print as such. */
     snprintf(value, sizeof(value), "%dpx", config.vision_radius);
     legend_slider(lines[5], LEGEND_LINE_MAX, "perception", config.vision_notch, value, 'p', 'P');
+    /* A factor on the shipped pace, so 1.0 is the flock as it comes. Last, so the
+     * rows above keep the places they have always had. */
+    snprintf(value, sizeof(value), "%.1f\u00d7", config.pace);
+    legend_slider(lines[6], LEGEND_LINE_MAX, "speed", config.pace_notch, value, 'v', 'V');
 
     /* What the frame costs, always, rather than behind a flag: it was a switch
      * that did nothing at all unless the panel was up, and the row it wrote into
@@ -2140,14 +2172,14 @@ static void build_legend(char lines[LEGEND_ROWS][LEGEND_LINE_MAX]) {
     char measured[LEGEND_LINE_MAX / 2];
     snprintf(measured, sizeof(measured), "%-*s %5.1fms %5.0fKB %3.0ffps", LEGEND_NAME_WIDTH,
              "frame", stats.frame_ms, stats.bytes / 1024.0, stats.rate);
-    snprintf(lines[6], LEGEND_LINE_MAX, "\u2502 %-*s \u2502", inner - 2, measured);
-    snprintf(lines[7], LEGEND_LINE_MAX, "\u2502 %-*s q%*s \u2502", LEGEND_NAME_WIDTH, "quit",
-             inner - LEGEND_NAME_WIDTH - 4, "");
+    snprintf(lines[LEGEND_ROWS - 3], LEGEND_LINE_MAX, "\u2502 %-*s \u2502", inner - 2, measured);
+    snprintf(lines[LEGEND_ROWS - 2], LEGEND_LINE_MAX, "\u2502 %-*s q%*s \u2502", LEGEND_NAME_WIDTH,
+             "quit", inner - LEGEND_NAME_WIDTH - 4, "");
 
-    memcpy(lines[8], "\u2570", 3);
+    memcpy(lines[LEGEND_ROWS - 1], "\u2570", 3);
     at = 3;
-    for (int i = 0; i < inner; i++, at += 3) memcpy(lines[8] + at, "\u2500", 3);
-    memcpy(lines[8] + at, "\u256f", 4);
+    for (int i = 0; i < inner; i++, at += 3) memcpy(lines[LEGEND_ROWS - 1] + at, "\u2500", 3);
+    memcpy(lines[LEGEND_ROWS - 1] + at, "\u256f", 4);
 }
 
 static kitty_graphics_status_t queue_legend(kitty_graphics_t *graphics) {
@@ -2291,6 +2323,50 @@ static kitty_graphics_status_t queue_text_frame(kitty_graphics_t *graphics, cons
     return status;
 }
 
+static void set_frame_seconds(double seconds);
+
+/*
+ * One frame of flight, for the hawks and the flock, from the snapshot and grid the
+ * caller has just built of the birds.
+ *
+ * Above pace one the frame is flown in as many equal steps as the pace needs to
+ * keep each no longer than a step at pace one. Flown in a single step, a bird at
+ * two and a half times the pace crossed a small terminal's edge band in a frame,
+ * decided once where the flock was, and one bird in ten was off the screen at any
+ * moment against one in forty at pace one. Each step is the same decision the
+ * flock always made, so the flock flies faster and not worse; the price is the
+ * simulation run that many times, which --bench shows.
+ */
+static void fly(bird_t *birds, bird_t *snapshot, spatial_grid_t *grid) {
+    int steps = (int)ceil(config.pace - 1e-9);
+    if (steps < 1) steps = 1;
+    double whole = frame_seconds;
+    if (steps > 1) set_frame_seconds(whole / steps);
+    for (int step = 0; step < steps; step++) {
+        if (step > 0) {
+            memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
+            /* Prepared for this many birds by the caller, so it cannot fail here. */
+            spatial_grid_build(grid, config.birds, read_bird_position, snapshot);
+        }
+        hunt(snapshot);
+        update_birds(birds, snapshot, grid);
+    }
+    if (steps > 1) set_frame_seconds(whole);
+    for (int i = 0; i < config.birds; i++) birds[i].frame = direction_frame(birds[i].direction);
+}
+
+/* The way out after q: straight up, every one of them, and nothing else steering.
+ * At the shipped pace whatever the slider says, so that leaving takes the same
+ * moment every time: at a fifth of the pace the flock was still on the screen
+ * when the program closed it. */
+static void fly_away(bird_t *birds) {
+    for (int i = 0; i < config.birds; i++) {
+        birds[i].direction = 3 * M_PI / 2;
+        birds[i].y -= config.base_speed;
+        birds[i].frame = direction_frame(birds[i].direction);
+    }
+}
+
 /* Move first, then draw, and move both the flock and the hawks before drawing
  * either. Drawing first meant the frame on the screen held the birds from before
  * the step and the hawks from after it — a hawk a whole step, forty pixels, ahead
@@ -2299,12 +2375,10 @@ static kitty_graphics_status_t queue_text_frame(kitty_graphics_t *graphics, cons
  * and the sliders can be explored on a still frame; a step grants one frame of
  * motion and then stands still again. */
 static kitty_graphics_status_t render_frame(kitty_graphics_t *graphics, bird_t *birds,
-                                            const bird_t *snapshot, const spatial_grid_t *grid) {
+                                            bird_t *snapshot, spatial_grid_t *grid) {
     if (!paused || step_once) {
         step_once = 0;
-        hunt(snapshot);
-        update_birds(birds, snapshot, grid);
-        for (int i = 0; i < config.birds; i++) birds[i].frame = direction_frame(birds[i].direction);
+        fly(birds, snapshot, grid);
     }
     return queue_render_frame(graphics, birds);
 }
@@ -2319,7 +2393,10 @@ static void update_speed(void) {
     double shorter = screen.width < screen.height ? screen.width : screen.height;
     double safe_per_second = shorter / 10.0 * FRAME_RATE;
     if (shorter > 0 && pixels_per_second > safe_per_second) pixels_per_second = safe_per_second;
-    config.speed = pixels_per_second * frame_seconds;
+    config.base_speed = pixels_per_second * frame_seconds;
+    /* The pace multiplies what the screen allows rather than being capped by it,
+     * so on a small screen every notch of the slider still does something. */
+    config.speed = config.base_speed * config.pace;
 }
 
 static void set_frame_seconds(double seconds) {
@@ -2357,6 +2434,10 @@ static void apply_notches(void) {
      * reaches into. */
     config.vision_cells = (config.vision_radius + SPATIAL_CELL_SIZE - 1) / SPATIAL_CELL_SIZE;
 
+    /* Counted in whole fifths rather than through notch_value, whose arithmetic
+     * lands a hair off one at the default: one times anything is that thing, so
+     * at the fourth notch the flock is bit for bit the one that shipped. */
+    config.pace = PACE_STEP * (config.pace_notch + 1);
     update_speed();
 }
 
@@ -2438,6 +2519,9 @@ static const option_t OPTIONS[] = {
     {0, "perception", NULL, OPTION_INT, &requested_perception, MIN_VISION_RADIUS, MAX_VISION_RADIUS,
      NULL, "PIXELS", "how far a bird sees, 12 to 60 (default 36)",
      "Sliders   0 to 12, as the panel shows them", 0},
+    {0, "speed", NULL, OPTION_INT, &config.pace_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
+     "how fast the flock flies, 0.2x to 2.6x (default 4)",
+     "Sliders   0 to 12, as the panel shows them", 0},
 
     {'c', "color", "palette", OPTION_ENUM, &config.palette, 0, 0, PALETTE_NAMES, "RAMP",
      "theme, ember, ice, acid, matrix", "Look", 1},
@@ -2479,7 +2563,7 @@ enum { OPTION_COUNT = sizeof(OPTIONS) / sizeof(*OPTIONS) };
 
 /* The panel teaches the slider keys, so this only has to list the rest. */
 #define KEYS_HELP                                                      \
-    "\nKeys   b/B s/S a/A t/T p/P   one notch down / up\n"             \
+    "\nKeys   b/B s/S a/A t/T p/P v/V   one notch down / up\n"         \
     "       space pause   . step   0 reset   +/- birds   Tab preset\n" \
     "       h panel   e trails   k/K hawks\n"                          \
     "       q quit\n"
@@ -2504,10 +2588,11 @@ static void apply_preset_defaults(void) {
     config.separation_notch = DEFAULT_NOTCH;
     config.alignment_notch = DEFAULT_NOTCH;
     config.vision_notch = DEFAULT_VISION_NOTCH;
-    /* These two as well. They are not on the panel, so somebody who has turned
-     * the banking down with t and cannot see what they did has nothing else to
-     * undo it with, and "back to the defaults" left them where they were. */
+    /* The banking as well: it was once off the panel, so somebody who had turned
+     * it down with t could not see what they did and had nothing else to undo it
+     * with. And the speed, which no preset touches, so this is its only way home. */
     config.turning_notch = DEFAULT_TURNING_NOTCH;
+    config.pace_notch = DEFAULT_NOTCH;
     apply_notches();
 }
 
@@ -2716,6 +2801,14 @@ static int handle_input(void) {
                 break;
             case 'p':
                 notch = &config.vision_notch;
+                step = -1;
+                break;
+            case 'V':
+                notch = &config.pace_notch;
+                step = 1;
+                break;
+            case 'v':
+                notch = &config.pace_notch;
                 step = -1;
                 break;
             default:
@@ -3276,9 +3369,7 @@ static int run_cast_recording(void) {
 
         memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
         spatial_grid_build(&grid, config.birds, read_bird_position, snapshot);
-        hunt(snapshot);
-        update_birds(birds, snapshot, &grid);
-        for (int i = 0; i < config.birds; i++) birds[i].frame = direction_frame(birds[i].direction);
+        fly(birds, snapshot, &grid);
 
         compose_onto(&text_canvas, text_sprites, birds, 0);
         cells_read(&text_cells, CELLS_BRAILLE, &text_canvas, screen.cell_width, screen.cell_height);
@@ -3398,9 +3489,7 @@ static int run_recording(void) {
 
         memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
         spatial_grid_build(&grid, config.birds, read_bird_position, snapshot);
-        hunt(snapshot);
-        update_birds(birds, snapshot, &grid);
-        for (int i = 0; i < config.birds; i++) birds[i].frame = direction_frame(birds[i].direction);
+        fly(birds, snapshot, &grid);
 
         if (as_text) {
             compose_onto(&canvas, frames, birds, 0);
@@ -3652,14 +3741,7 @@ int main(int argc, char **argv) {
                     spatial_grid_status_string(grid_status));
             exit(EXIT_FAILURE);
         }
-        if (leaving > 0) {
-            /* Straight up, every one of them, and nothing else steering. */
-            for (int i = 0; i < config.birds; i++) {
-                birds[i].direction = 3 * M_PI / 2;
-                birds[i].y -= config.speed;
-                birds[i].frame = direction_frame(birds[i].direction);
-            }
-        }
+        if (leaving > 0) fly_away(birds);
         graphics_status = leaving > 0 ? queue_render_frame(&graphics, birds)
                                       : render_frame(&graphics, birds, snapshot, &grid);
         if (graphics_status != KITTY_GRAPHICS_OK) {

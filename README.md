@@ -94,6 +94,7 @@ fps.
 │ alignment  ▓▓▓▓░░░░░░░░  1.50  a/A │
 │ turning    ▓▓▓▓▓▓▓▓░░░░   70°  t/T │
 │ perception ▓▓▓▓▓▓░░░░░░  36px  p/P │
+│ speed      ▓▓▓▓░░░░░░░░  1.0×  v/V │
 │ frame        0.6ms    31KB  60fps  │
 │ quit       q                       │
 ╰────────────────────────────────────╯
@@ -101,7 +102,7 @@ fps.
 
 | key | | key | |
 |---|---|---|---|
-| `b`/`B` `s`/`S` `a`/`A` `t`/`T` `p`/`P` | one notch down, one up | `h` | panel |
+| `b`/`B` `s`/`S` `a`/`A` `t`/`T` `p`/`P` `v`/`V` | one notch down, one up | `h` | panel |
 | `Space` | pause | `.` | one frame |
 | `0` | back to the defaults | `Tab` | next preset |
 | `+` `-` | more birds, fewer | `k` `K` | a hawk more, one fewer |
@@ -142,6 +143,7 @@ Sliders   0 to 12, as the panel shows them
       --alignment NOTCH         how much a bird matches its neighbours (default 4)
       --turning NOTCH           sharpest turn a frame, 12 is instant (default 8)
       --perception PIXELS       how far a bird sees, 12 to 60 (default 36)
+      --speed NOTCH             how fast the flock flies, 0.2x to 2.6x (default 4)
 
 Look
   -c, --color RAMP              theme, ember, ice, acid, matrix

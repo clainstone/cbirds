@@ -67,6 +67,10 @@ static void set_test_screen(int width, int height) {
     update_turn_distances();
 }
 
+/* The speed slider's two ends, written out here rather than derived, so that a
+ * change to how the program counts its fifths has to agree with them. */
+static const double PACE_FLOOR = 0.2, PACE_CEILING = 2.6;
+
 static void reset_test_config(void) {
     frame_seconds = 1.0 / FRAME_RATE;
     config.birds = 800;
@@ -75,6 +79,7 @@ static void reset_test_config(void) {
     config.separation_notch = DEFAULT_NOTCH;
     config.alignment_notch = DEFAULT_NOTCH;
     config.vision_notch = 6;
+    config.pace_notch = DEFAULT_NOTCH;
     config.palette = 0;
     config.turning_notch = DEFAULT_TURNING_NOTCH;
     config.flocks = 1;
@@ -464,14 +469,17 @@ static void test_legend_panel_layout(void) {
      * actually mean it. */
     config.turning_notch = 0;
     config.boundary_notch = 0;
+    config.pace_notch = LEGEND_BAR_CELLS;
     apply_preset_defaults();
     assert(config.turning_notch == DEFAULT_TURNING_NOTCH);
     assert(config.boundary_notch == DEFAULT_NOTCH);
+    assert(config.pace_notch == DEFAULT_NOTCH && config.pace == DEFAULT_PACE);
 
     /* One slider a parameter, named, with a bar and its pair of keys. */
-    static const char *names[] = {"boundary", "separation", "alignment", "turning", "perception"};
-    static const char *pairs[] = {"b/B", "s/S", "a/A", "t/T", "p/P"};
-    for (int i = 0; i < 5; i++) {
+    static const char *names[] = {"boundary", "separation", "alignment",
+                                  "turning",  "perception", "speed"};
+    static const char *pairs[] = {"b/B", "s/S", "a/A", "t/T", "p/P", "v/V"};
+    for (int i = 0; i < 6; i++) {
         assert(strstr(lines[1 + i], names[i]) != NULL);
         /* Lowercase first: the key that lowers, then the one that raises. */
         assert(strstr(lines[1 + i], pairs[i]) != NULL);
@@ -480,38 +488,39 @@ static void test_legend_panel_layout(void) {
     assert(strstr(lines[LEGEND_ROWS - 2], "quit") != NULL);
 
     /* The inverted pair is the whole point, so the old order must be absent. */
-    static const char *reversed[] = {"B/b", "S/s", "A/a", "T/t", "P/p", "R/r"};
+    static const char *reversed[] = {"B/b", "S/s", "A/a", "T/t", "P/p", "R/r", "V/v"};
     for (int row = 0; row < LEGEND_ROWS; row++)
-        for (int i = 0; i < 6; i++) assert(strstr(lines[row], reversed[i]) == NULL);
+        for (int i = 0; i < 7; i++) assert(strstr(lines[row], reversed[i]) == NULL);
 
     /* Each slider states its value beside its bar, right aligned in a column of
      * its own so the numbers stack. */
-    static const char *values[] = {"0.20", "0.005", "1.50", "70\u00b0", "36px", "60"};
+    static const char *values[] = {"0.20", "0.005", "1.50", "70\u00b0", "36px", "1.0\u00d7"};
     for (int i = 0; i < 6; i++) assert(strstr(lines[1 + i], values[i]) != NULL);
+    assert(strstr(lines[LEGEND_ROWS - 3], "60fps") != NULL);
 }
 
 static void test_legend_values_follow_their_notch(void) {
     char lines[LEGEND_ROWS][LEGEND_LINE_MAX];
-    static const char *floors[] = {"0.01", "0.001", "0.10", "30\u00b0", "12px"};
-    static const char *ceilings[] = {"0.58", "0.013", "4.30", "360\u00b0", "60px"};
+    static const char *floors[] = {"0.01", "0.001", "0.10", "30\u00b0", "12px", "0.2\u00d7"};
+    static const char *ceilings[] = {"0.58", "0.013", "4.30", "360\u00b0", "60px", "2.6\u00d7"};
 
     reset_test_config();
     apply_screen_size(80, 24, 80 * 8, 24 * 16);
 
     config.boundary_notch = config.separation_notch = config.alignment_notch =
-        config.turning_notch = config.vision_notch = 0;
+        config.turning_notch = config.vision_notch = config.pace_notch = 0;
     apply_notches();
     build_legend(lines);
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 6; i++) {
         assert(strstr(lines[1 + i], floors[i]) != NULL);
         assert(filled_cells(lines[1 + i]) == 0);
     }
 
     config.boundary_notch = config.separation_notch = config.alignment_notch =
-        config.turning_notch = config.vision_notch = LEGEND_BAR_CELLS;
+        config.turning_notch = config.vision_notch = config.pace_notch = LEGEND_BAR_CELLS;
     apply_notches();
     build_legend(lines);
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 6; i++) {
         assert(strstr(lines[1 + i], ceilings[i]) != NULL);
         assert(filled_cells(lines[1 + i]) == LEGEND_BAR_CELLS);
     }
@@ -533,7 +542,8 @@ static void test_one_keypress_is_one_cell(void) {
     static const struct {
         int row;
         char raise, lower;
-    } sliders[] = {{1, 'B', 'b'}, {2, 'S', 's'}, {3, 'A', 'a'}, {4, 'T', 't'}, {5, 'P', 'p'}};
+    } sliders[] = {{1, 'B', 'b'}, {2, 'S', 's'}, {3, 'A', 'a'},
+                   {4, 'T', 't'}, {5, 'P', 'p'}, {6, 'V', 'v'}};
 
     apply_screen_size(80, 24, 80 * 8, 24 * 16);
     for (size_t i = 0; i < sizeof(sliders) / sizeof(*sliders); i++) {
@@ -579,9 +589,12 @@ static void test_bar_spans_the_whole_travel(void) {
 
     for (int n = 0; n <= LEGEND_BAR_CELLS; n++) {
         config.boundary_notch = config.separation_notch = config.alignment_notch =
-            config.vision_notch = n;
+            config.vision_notch = config.pace_notch = n;
         apply_notches();
+        /* The speed moves in fifths, which is what lets the panel print it whole. */
+        assert(fabs(config.pace - (0.2 + 0.2 * n)) < 1e-12);
         if (n == 0) {
+            assert(config.pace == PACE_FLOOR);
             assert(config.boundary == BOUNDARY_MIN);
             assert(config.separation == SEPARATION_MIN);
             assert(config.alignment == ALIGNMENT_MIN);
@@ -606,6 +619,7 @@ static void test_bar_spans_the_whole_travel(void) {
     assert(fabs(config.boundary - DEFAULT_BOUNDARY_W) < 1e-12);
     assert(fabs(config.separation - DEFAULT_SEPARATION_W) < 1e-12);
     assert(fabs(config.alignment - DEFAULT_ALIGNMENT_W) < 1e-12);
+    assert(config.pace == DEFAULT_PACE); /* Exactly one: the shipped flock is untouched. */
     assert(config.boundary_notch == DEFAULT_NOTCH);
     assert(config.alignment_notch == DEFAULT_NOTCH);
     /* The integer parameter lands exactly, being an integer. */
@@ -620,7 +634,8 @@ static void test_weights_stop_at_their_bounds(void) {
         const double *value;
     } weights[] = {{'B', 'b', &BOUNDARY_MAX, &BOUNDARY_MIN, &config.boundary},
                    {'S', 's', &SEPARATION_MAX, &SEPARATION_MIN, &config.separation},
-                   {'A', 'a', &ALIGNMENT_MAX, &ALIGNMENT_MIN, &config.alignment}};
+                   {'A', 'a', &ALIGNMENT_MAX, &ALIGNMENT_MIN, &config.alignment},
+                   {'V', 'v', &PACE_CEILING, &PACE_FLOOR, &config.pace}};
 
     keys[INPUT_BUFFER_SIZE] = '\0';
     for (size_t i = 0; i < sizeof(weights) / sizeof(*weights); i++) {
@@ -2584,6 +2599,196 @@ static void test_no_legend_leaves_the_corner_to_the_flock(void) {
     legend_enabled = 1;
 }
 
+/* The speed slider changes how fast the flock flies and not the shape of what it
+ * flies: the step and both turn limits scale together, so a turning circle is the
+ * same number of pixels at every notch. The fourth notch is the shipped flock
+ * exactly, not nearly, and the way out flies at it whatever the slider says. */
+static void test_the_speed_slider_flies_the_same_path_faster(void) {
+    reset_test_config();
+    apply_screen_size(200, 60, 1600, 960);
+    set_frame_seconds(1.0 / FRAME_RATE);
+    assert(config.pace == 1.0);
+    assert(config.speed == DEFAULT_SPEED && config.base_speed == DEFAULT_SPEED);
+    double bird_radius = config.speed / turn_limit();
+    double hawk_radius = hawk_turning_radius();
+    double shortest = 0, longest = 0;
+    for (int n = 0; n <= LEGEND_BAR_CELLS; n++) {
+        config.pace_notch = n;
+        apply_notches();
+        assert(config.base_speed == DEFAULT_SPEED);
+        assert(fabs(config.speed - DEFAULT_SPEED * config.pace) < 1e-9);
+        assert(fabs(config.speed / turn_limit() - bird_radius) < 1e-9);
+        assert(fabs(hawk_turning_radius() - hawk_radius) < 1e-9);
+        if (n == 0) shortest = config.speed;
+        if (n == LEGEND_BAR_CELLS) longest = config.speed;
+    }
+    assert(shortest < DEFAULT_SPEED / 4.0 && longest > DEFAULT_SPEED * 2.5);
+
+    /* The way out is the one thing that ignores it. */
+    for (int n = 0; n <= LEGEND_BAR_CELLS; n += LEGEND_BAR_CELLS) {
+        bird_t leaving = {.x = 800, .y = 500, .direction = 0};
+        config.pace_notch = n;
+        apply_notches();
+        config.birds = 1;
+        fly_away(&leaving);
+        assert(leaving.y == 500 - DEFAULT_SPEED && leaving.x == 800);
+        assert(fabs(leaving.direction - 3 * M_PI / 2) < 1e-12);
+    }
+    config.birds = 800;
+
+    /* On a small screen the pace multiplies what the screen allows, so the top
+     * of the bar is not a row of notches that do nothing. */
+    apply_screen_size(40, 14, 320, 224);
+    config.pace_notch = DEFAULT_NOTCH;
+    apply_notches();
+    double capped = config.speed;
+    config.pace_notch = LEGEND_BAR_CELLS;
+    apply_notches();
+    assert(config.speed > capped * 2.5);
+
+    /* The keys: one notch a press, the ends hold, 0 comes home, a preset leaves
+     * it where it is because a look is not a speed. */
+    int saved_preset = requested_preset;
+    reset_test_config();
+    assert(feed_input("V") == 1);
+    assert(config.pace_notch == DEFAULT_NOTCH + 1 && fabs(config.pace - 1.2) < 1e-12);
+    assert(feed_input("vv") == 1);
+    assert(config.pace_notch == DEFAULT_NOTCH - 1);
+    assert(feed_input("vvvvvvvvvvvvvvvv") == 1);
+    assert(config.pace_notch == 0 && config.pace == PACE_FLOOR);
+    assert(feed_input("0") == 1);
+    assert(config.pace == DEFAULT_PACE);
+    assert(feed_input("VVV\t") == 1);
+    assert(config.pace_notch == DEFAULT_NOTCH + 3);
+    requested_preset = saved_preset;
+    reset_test_config();
+}
+
+/* A notch on the line, like every other slider, and a preset given before it
+ * does not undo it. */
+static void test_the_speed_is_a_flag(void) {
+    char *argv[] = {"cbirds", "--preset", "storm", "--speed", "9", NULL};
+    int saved_preset = requested_preset;
+
+    reset_test_config();
+    read_options(5, argv);
+    assert(config.pace_notch == 9 && fabs(config.pace - 2.0) < 1e-12);
+    assert(config.boundary_notch == PRESETS[2].notch[0]);
+    assert(config.separation_notch == PRESETS[2].notch[1]);
+    requested_preset = saved_preset;
+    reset_test_config();
+}
+
+/* A hawk's hold on a chase and its run out of the flock are distances written as
+ * frames, so they run on flight time: at twice the pace they are over twice as
+ * soon, and cover the same ground. */
+static void test_a_hawk_holds_a_chase_for_a_distance(void) {
+    bird_t birds[1] = {{.x = 1500, .y = 700, .direction = 0}};
+    static const int NOTCHES[] = {DEFAULT_NOTCH, 9};
+
+    reset_test_config();
+    legend_enabled = 0;
+    apply_screen_size(200, 50, 1600, 800);
+    config.birds = 1;
+    config.hawks = 1;
+    for (size_t i = 0; i < sizeof(NOTCHES) / sizeof(*NOTCHES); i++) {
+        config.pace_notch = NOTCHES[i];
+        apply_notches();
+        set_frame_seconds(1.0 / FRAME_RATE);
+        hawks[0] = (hawk_t){.x = 300, .y = 300, .prey = 0, .commitment = 0.5};
+        hunt(birds);
+        assert(hawks[0].prey == 0); /* Still committed, so still after it. */
+        assert(fabs(hawks[0].commitment - (0.5 - config.pace / FRAME_RATE)) < 1e-12);
+        hawks[0] = (hawk_t){.x = 300, .y = 300, .prey = -1, .passing = 0.2};
+        hunt(birds);
+        assert(fabs(hawks[0].passing - (0.2 - config.pace / FRAME_RATE)) < 1e-12);
+    }
+    config.hawks = 0;
+    legend_enabled = 1;
+    reset_test_config();
+}
+
+/* How many of the birds are outside the frame, over a run long enough for the
+ * flock to find the edges. */
+static double share_off_the_screen(int pace_notch, int columns, int rows, int panel) {
+    enum { BIRDS = 300, SECONDS = 12 };
+    spatial_grid_t grid;
+    bird_t *birds = calloc(BIRDS, sizeof(*birds));
+    bird_t *snapshot = malloc(sizeof(*snapshot) * BIRDS);
+    long outside = 0, counted = 0;
+
+    assert(birds != NULL && snapshot != NULL);
+    reset_test_config();
+    config.birds = BIRDS;
+    config.pace_notch = pace_notch;
+    legend_enabled = panel;
+    apply_notches();
+    apply_screen_size(columns, rows, columns * 8, rows * 16);
+    set_frame_seconds(1.0 / FRAME_RATE);
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRDS) == SPATIAL_GRID_OK);
+    srand(7);
+    initialize_birds(birds);
+    for (int frame = 0; frame < SECONDS * FRAME_RATE; frame++) {
+        memcpy(snapshot, birds, sizeof(*birds) * BIRDS);
+        assert(spatial_grid_build(&grid, BIRDS, read_bird_position, snapshot) == SPATIAL_GRID_OK);
+        fly(birds, snapshot, &grid);
+        assert(frame_seconds == 1.0 / FRAME_RATE); /* Handed back as it was lent. */
+        if (frame < 2 * FRAME_RATE) continue;      /* Out of where it was put first. */
+        for (int i = 0; i < BIRDS; i++) {
+            counted++;
+            if (birds[i].x < 0 || birds[i].y < 0 || birds[i].x >= screen.width ||
+                birds[i].y >= screen.height)
+                outside++;
+            assert(!sprite_overlaps_legend(birds[i].x, birds[i].y));
+        }
+    }
+    spatial_grid_destroy(&grid);
+    free(snapshot);
+    free(birds);
+    legend_enabled = 1;
+    reset_test_config();
+    return (double)outside / counted;
+}
+
+/* Flown in one step, the top of the bar crossed a small terminal's edge band in a
+ * frame and put one bird in ten off the screen, against one in forty at pace one.
+ * Flown in steps no longer than pace one's, it keeps the flock the default keeps. */
+static void test_a_fast_flock_is_flown_in_steps(void) {
+    spatial_grid_t grid;
+    bird_t bird, snapshot;
+
+    /* A lone bird in open sky covers the whole of a fast frame, in three steps. */
+    reset_test_config();
+    legend_enabled = 0;
+    apply_screen_size(200, 60, 1600, 960);
+    config.birds = 1;
+    config.pace_notch = LEGEND_BAR_CELLS;
+    apply_notches();
+    set_frame_seconds(1.0 / FRAME_RATE);
+    double frame_step = config.speed;
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, 1) == SPATIAL_GRID_OK);
+    bird = (bird_t){.x = 800, .y = 480, .direction = 0};
+    snapshot = bird;
+    assert(spatial_grid_build(&grid, 1, read_bird_position, &snapshot) == SPATIAL_GRID_OK);
+    fly(&bird, &snapshot, &grid);
+    assert(fabs(bird.x - (800 + frame_step)) < 1e-9 && fabs(bird.y - 480) < 1e-9);
+    assert(config.speed == frame_step); /* The step is back to a whole frame's. */
+    spatial_grid_destroy(&grid);
+    legend_enabled = 1;
+
+    static const int SIZES[][3] = {{200, 50, 0}, {80, 24, 0}, {76, 22, 1}};
+    for (size_t i = 0; i < sizeof(SIZES) / sizeof(*SIZES); i++) {
+        double shipped = share_off_the_screen(DEFAULT_NOTCH, SIZES[i][0], SIZES[i][1], SIZES[i][2]);
+        double slow = share_off_the_screen(0, SIZES[i][0], SIZES[i][1], SIZES[i][2]);
+        double fast = share_off_the_screen(LEGEND_BAR_CELLS, SIZES[i][0], SIZES[i][1], SIZES[i][2]);
+        assert(fast <= shipped * 1.5 + 0.005);
+        assert(slow <= shipped * 1.5 + 0.005);
+    }
+    reset_test_config();
+}
+
 int main(void) {
     trig_lookup_init();
     test_the_trig_lookup_covers_the_circle();
@@ -2636,5 +2841,9 @@ int main(void) {
     test_frame_carries_the_panel();
     test_panel_switches_off_cleanly();
     test_no_legend_leaves_the_corner_to_the_flock();
+    test_the_speed_slider_flies_the_same_path_faster();
+    test_the_speed_is_a_flag();
+    test_a_hawk_holds_a_chase_for_a_distance();
+    test_a_fast_flock_is_flown_in_steps();
     return 0;
 }

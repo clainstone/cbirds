@@ -1,6 +1,7 @@
 #include "options.h"
 
 #include <errno.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
@@ -97,7 +98,9 @@ static options_status_t assign(const option_t *option, const char *text, char *e
     char *end;
     errno = 0;
     double value = strtod(text, &end);
-    if (errno == ERANGE || end == text || *end != '\0') {
+    /* strtod reads "nan" and "inf" as numbers. A NaN passes every comparison
+     * below by failing it, and would then be cast to an int, which is undefined. */
+    if (errno == ERANGE || end == text || *end != '\0' || !isfinite(value)) {
         fail(error, error_size, "--%s wants a number, not '%s'", option->name, text);
         return OPTIONS_ERROR;
     }
@@ -304,38 +307,130 @@ void options_usage(FILE *out, const char *program, const char *tagline,
     }
 }
 
+/* Help text goes inside a single quoted zsh spec, as the [description]: a quote
+ * would end the spec, as "each other's" did, and a bracket would end the
+ * description. */
+static void zsh_description(FILE *out, const char *text) {
+    for (; *text != '\0'; text++) {
+        if (*text == '\'')
+            fputs("'\\''", out);
+        else if (*text == '[' || *text == ']')
+            fprintf(out, "\\%c", *text);
+        else
+            fputc(*text, out);
+    }
+}
+
+/* And inside a double quoted fish string, where these four mean something. */
+static void fish_description(FILE *out, const char *text) {
+    for (; *text != '\0'; text++) {
+        if (*text == '"' || *text == '\\' || *text == '$') fputc('\\', out);
+        fputc(*text, out);
+    }
+}
+
+static int takes_value(const option_t *option) {
+    return option->kind != OPTION_FLAG && option->kind != OPTION_OFF;
+}
+
+/* What follows an option that takes a value in a zsh spec: its names when it is
+ * one of a list, a file when it is a file, and a bare message otherwise. */
+static void zsh_value(FILE *out, const option_t *option) {
+    if (!takes_value(option)) return;
+    if (option->kind == OPTION_ENUM && option->names != NULL) {
+        fputs(":name:(", out);
+        for (int k = 0; option->names[k] != NULL; k++)
+            fprintf(out, "%s%s", k ? " " : "", option->names[k]);
+        fputc(')', out);
+    } else if (option->metavar != NULL && strcmp(option->metavar, "FILE") == 0) {
+        fputs(":file:_files", out);
+    } else {
+        fputs(":value:", out);
+    }
+}
+
+/* The switches every table gets without being in it, as the parser answers them
+ * and --help lists them: one list, so no shell can be left without one again. */
+static const struct {
+    char shorthand;
+    const char *name;
+    const char *help;
+} SPECIAL[] = {
+    {'h', NULL, "the one-screen help"},
+    {0, "help", "every option, grouped"},
+    {0, "completion", "completions for bash, zsh or fish"},
+    {'V', "version", "print the version and quit"},
+};
+enum { SPECIAL_COUNT = sizeof(SPECIAL) / sizeof(*SPECIAL) };
+
 int options_completion(FILE *out, const char *shell, const char *program, const option_t *table,
                        size_t count) {
     if (shell == NULL) return 0;
 
     if (strcmp(shell, "bash") == 0) {
         fprintf(out, "# %s completions for bash\ncomplete -W \"", program);
-        for (size_t i = 0; i < count; i++) fprintf(out, "--%s ", table[i].name);
-        fprintf(out, "--help --version --completion\" %s\n", program);
+        for (size_t i = 0; i < count; i++) {
+            fprintf(out, "--%s ", table[i].name);
+            if (table[i].shorthand) fprintf(out, "-%c ", table[i].shorthand);
+        }
+        for (size_t i = 0; i < SPECIAL_COUNT; i++) {
+            if (SPECIAL[i].shorthand) fprintf(out, "-%c ", SPECIAL[i].shorthand);
+            if (SPECIAL[i].name != NULL) fprintf(out, "--%s ", SPECIAL[i].name);
+        }
+        fprintf(out, "\" %s\n", program);
         return 1;
     }
     if (strcmp(shell, "zsh") == 0) {
         fprintf(out, "#compdef %s\n_arguments \\\n", program);
-        for (size_t i = 0; i < count; i++)
-            fprintf(out, "  '--%s[%s]%s' \\\n", table[i].name, table[i].help,
-                    table[i].kind == OPTION_FLAG || table[i].kind == OPTION_OFF ? "" : ":value:");
-        fprintf(out, "  '--help[every option, grouped]' \\\n  '--version[show the version]'\n");
+        for (size_t i = 0; i < count; i++) {
+            fprintf(out, "  '--%s[", table[i].name);
+            zsh_description(out, table[i].help);
+            fputc(']', out);
+            zsh_value(out, &table[i]);
+            fputs("' \\\n", out);
+            if (table[i].shorthand) {
+                fprintf(out, "  '-%c[", table[i].shorthand);
+                zsh_description(out, table[i].help);
+                fputc(']', out);
+                zsh_value(out, &table[i]);
+                fputs("' \\\n", out);
+            }
+        }
+        for (size_t i = 0; i < SPECIAL_COUNT; i++) {
+            const char *more = i + 1 < SPECIAL_COUNT ? " \\" : "";
+            if (SPECIAL[i].shorthand)
+                fprintf(out, "  '-%c[%s]'%s\n", SPECIAL[i].shorthand, SPECIAL[i].help,
+                        SPECIAL[i].name != NULL ? " \\" : more);
+            if (SPECIAL[i].name != NULL)
+                fprintf(out, "  '--%s[%s]%s'%s\n", SPECIAL[i].name, SPECIAL[i].help,
+                        strcmp(SPECIAL[i].name, "completion") == 0 ? ":shell:(bash zsh fish)" : "",
+                        more);
+        }
         return 1;
     }
     if (strcmp(shell, "fish") == 0) {
         for (size_t i = 0; i < count; i++) {
             fprintf(out, "complete -c %s -l %s", program, table[i].name);
             if (table[i].shorthand) fprintf(out, " -s %c", table[i].shorthand);
-            if (table[i].kind != OPTION_FLAG && table[i].kind != OPTION_OFF) fprintf(out, " -r");
+            if (takes_value(&table[i])) fprintf(out, " -r");
             if (table[i].kind == OPTION_ENUM && table[i].names != NULL) {
-                fprintf(out, " -a \"");
+                fprintf(out, " -f -a \"");
                 for (int k = 0; table[i].names[k] != NULL; k++)
                     fprintf(out, "%s%s", k ? " " : "", table[i].names[k]);
                 fprintf(out, "\"");
             }
-            fprintf(out, " -d \"%s\"\n", table[i].help);
+            fprintf(out, " -d \"");
+            fish_description(out, table[i].help);
+            fprintf(out, "\"\n");
         }
-        fprintf(out, "complete -c %s -l help -d \"every option, grouped\"\n", program);
+        for (size_t i = 0; i < SPECIAL_COUNT; i++) {
+            fprintf(out, "complete -c %s", program);
+            if (SPECIAL[i].name != NULL) fprintf(out, " -l %s", SPECIAL[i].name);
+            if (SPECIAL[i].shorthand) fprintf(out, " -s %c", SPECIAL[i].shorthand);
+            if (SPECIAL[i].name != NULL && strcmp(SPECIAL[i].name, "completion") == 0)
+                fprintf(out, " -r -f -a \"bash zsh fish\"");
+            fprintf(out, " -d \"%s\"\n", SPECIAL[i].help);
+        }
         return 1;
     }
     return 0;

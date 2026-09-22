@@ -109,6 +109,18 @@ static void test_refusals(void) {
     reset();
     assert(parse(error, sizeof(error), "--birds", "many", NULL) == OPTIONS_ERROR);
     assert(strstr(error, "wants a number") != NULL);
+    /* strtod reads these as numbers; a NaN fails every range comparison and so
+     * slipped past them into a cast to int. */
+    for (const char *const *odd =
+             (const char *const[]){"nan", "-nan", "NAN(1)", "inf", "-inf", "infinity", NULL};
+         *odd != NULL; odd++) {
+        reset();
+        assert(parse(error, sizeof(error), "--birds", *odd, NULL) == OPTIONS_ERROR);
+        assert(strstr(error, "wants a number") != NULL && birds == 800);
+        reset();
+        assert(parse(error, sizeof(error), "--weight", *odd, NULL) == OPTIONS_ERROR);
+        assert(strstr(error, "wants a number") != NULL && weight == 0.5);
+    }
     reset();
     assert(parse(error, sizeof(error), "--birds", NULL) == OPTIONS_ERROR);
     assert(strstr(error, "wants a value") != NULL);
@@ -240,10 +252,40 @@ static void test_completions(void) {
         fclose(out);
         /* Every long name reaches the shell, or the completion is a lie. */
         for (size_t i = 0; i < COUNT; i++) assert(strstr(buffer, TABLE[i].name) != NULL);
+        /* And so does every short one, and the switches the table does not hold. */
+        const char *const *expected =
+            strcmp(*shell, "bash") == 0
+                ? (const char *const[]){"-n ", "-w ",        "-q ",     "-m ",
+                                        "-P ", "-h ",        "--help ", "--completion ",
+                                        "-V ", "--version ", NULL}
+            : strcmp(*shell, "zsh") == 0
+                ? (const char *const[]){"'-n[", "'-w[",        "'-q[",     "'-m[",
+                                        "'-P[", "'-h[",        "'--help[", "'--completion[",
+                                        "'-V[", "'--version[", NULL}
+                : (const char *const[]){"-s n",       "-s w", "-s q",    "-s m",
+                                        "-s P",       "-s h", "-l help", "-l completion",
+                                        "-l version", "-s V", NULL};
+        for (; *expected != NULL; expected++) assert(strstr(buffer, *expected) != NULL);
     }
     FILE *out = fmemopen(buffer, sizeof(buffer), "w");
     assert(!options_completion(out, "tcsh", "cbirds", TABLE, COUNT));
     fclose(out);
+
+    /* Help is free text, and a quote in it once ended zsh's quoted spec half way
+     * through: the whole file failed to load. */
+    static int flag;
+    static const option_t QUOTED[] = {{0, "shy", NULL, OPTION_FLAG, &flag, 0, 0, NULL, NULL,
+                                       "keeps out of each other's [way] \"$HOME\"", "Flock", 1}};
+    memset(buffer, 0, sizeof(buffer));
+    out = fmemopen(buffer, sizeof(buffer), "w");
+    assert(options_completion(out, "zsh", "cbirds", QUOTED, 1));
+    fclose(out);
+    assert(strstr(buffer, "'--shy[keeps out of each other'\\''s \\[way\\] \"$HOME\"]'") != NULL);
+    memset(buffer, 0, sizeof(buffer));
+    out = fmemopen(buffer, sizeof(buffer), "w");
+    assert(options_completion(out, "fish", "cbirds", QUOTED, 1));
+    fclose(out);
+    assert(strstr(buffer, "-d \"keeps out of each other's [way] \\\"\\$HOME\\\"\"") != NULL);
 }
 
 int main(void) {

@@ -122,7 +122,7 @@ table, open an issue and say which terminal it is and what
 ```
 Flock
   -n, --birds COUNT             how many birds (default 800)
-  -s, --size PIXELS             sprite size in pixels (default 30)
+  -s, --size PIXELS             sprite size in pixels (default 30, 60 in braille and blocks)
   -g, --flocks COUNT            flocks that keep to their own kind (default 1)
   -k, --hawks COUNT             predators hunting the flock (default 0)
       --preset NAME             murmuration, swarm, storm

@@ -95,6 +95,9 @@ enum {
     MAX_CAST_FPS = 120,
     DEFAULT_SPEED = 40,
     DEFAULT_BIRD_SIZE = 30,
+    /* Braille and blocks draw a bird with a handful of dots or quarter cells, so
+     * a bird there is drawn at twice the size to keep its shape. */
+    TEXT_BIRD_SIZE = 60,
     SPATIAL_CELL_SIZE = 12,
     /* Perception is tuned as a radius in pixels rather than in whole grid cells,
      * which is what lets it share the twelve notch travel: the cell scan derives
@@ -360,7 +363,7 @@ static config_t config = {
     .speed = DEFAULT_SPEED,
     .base_speed = DEFAULT_SPEED,
     .pace = DEFAULT_PACE,
-    .bird_size = DEFAULT_BIRD_SIZE,
+    .bird_size = 0, /* not given: settle_the_bird_size picks it for the renderer */
     .palette = 0,
     .flocks = 1,
     .turning_notch = DEFAULT_TURNING_NOTCH,
@@ -900,10 +903,11 @@ static void palette_tint(png_image_t *image, int shade) {
              chosen->mode);
 }
 
-/* Twice a bird, clamped: a hawk has to read as the bigger thing at a glance. */
+/* Twice a bird: a hawk has to read as the bigger thing at a glance, at the
+ * largest bird too, which is why its ceiling is twice the bird's. */
 static int hawk_sprite_size(void) {
     int size = config.bird_size * 2;
-    return size > MAX_BIRD_SIZE ? MAX_BIRD_SIZE : size;
+    return size > 2 * MAX_BIRD_SIZE ? 2 * MAX_BIRD_SIZE : size;
 }
 
 /* A bird is drawn from its top left corner; a hawk from its middle, so that the
@@ -2596,7 +2600,7 @@ static const option_t OPTIONS[] = {
     {'n', "birds", NULL, OPTION_INT, &config.birds, 1, MAX_BIRDS, NULL, "COUNT",
      "how many birds (default 800)", "Flock", 1},
     {'s', "size", NULL, OPTION_INT, &config.bird_size, MIN_BIRD_SIZE, MAX_BIRD_SIZE, NULL, "PIXELS",
-     "sprite size in pixels (default 30)", "Flock", 1},
+     "sprite size in pixels (default 30, 60 in braille and blocks)", "Flock", 1},
     /* k is the hawk key in the panel, so k is the hawk flag on the line: -k 3 used
      * to mean three flocks, which is a trap laid by the program's own help. */
     {'g', "flocks", "groups", OPTION_INT, &config.flocks, 1, MAX_FLOCKS, NULL, "COUNT",
@@ -3090,8 +3094,21 @@ static png_status_t rasterise_geometry(const png_image_t *source, png_image_t *f
     return status;
 }
 
+/* The size a bird is drawn at when --size was not given: bigger under braille
+ * and blocks, whose cells are coarse, than under Kitty or sextants. */
+static int default_bird_size(void) {
+    return render_mode == RENDER_BRAILLE || render_mode == RENDER_BLOCKS ? TEXT_BIRD_SIZE
+                                                                        : DEFAULT_BIRD_SIZE;
+}
+
+/* Once the renderer is known, and before anything is sized from the bird. */
+static void settle_the_bird_size(void) {
+    if (config.bird_size == 0) config.bird_size = default_bird_size();
+}
+
 static png_status_t rasterise_sprites(png_image_t *frames) {
     png_image_t source = {0, 0, NULL};
+    settle_the_bird_size();
     png_status_t status = load_sprite(&source);
     if (status != PNG_OK) return status;
     int shades = palette_shades();
@@ -3437,6 +3454,7 @@ static int run_cast_recording(void) {
     set_frame_seconds(1.0 / record_fps);
     legend_enabled = 0;
     render_mode = RENDER_BRAILLE;
+    settle_the_bird_size();
     apply_screen_size(record_columns, record_rows, record_columns * DEFAULT_CELL_WIDTH,
                       record_rows * DEFAULT_CELL_HEIGHT);
     if (spatial_grid_init(&grid, SPATIAL_CELL_SIZE) != SPATIAL_GRID_OK) return EXIT_FAILURE;
@@ -3662,6 +3680,7 @@ static int run_benchmark(void) {
     /* There is no terminal to ask, so auto means Kitty; any other renderer is
      * measured as asked for, sprites built the way it builds them. */
     if (render_mode == RENDER_AUTO) render_mode = RENDER_KITTY;
+    settle_the_bird_size();
     if (drawing_with_text() && !prepare_text_renderer()) return EXIT_FAILURE;
     set_frame_seconds(1.0 / FRAME_RATE);
     if (spatial_grid_init(&grid, SPATIAL_CELL_SIZE) != SPATIAL_GRID_OK) return EXIT_FAILURE;
@@ -3733,6 +3752,7 @@ int main(int argc, char **argv) {
         protocols_t answered = terminal_protocols();
         render_mode = answered.kitty ? RENDER_KITTY : RENDER_BRAILLE;
     }
+    settle_the_bird_size();
     if (palette_follows_the_theme() && !learn_the_theme()) config.palette = FALLBACK_PALETTE;
 
     spatial_grid_status_t grid_status = spatial_grid_init(&grid, SPATIAL_CELL_SIZE);

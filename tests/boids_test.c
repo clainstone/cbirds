@@ -2704,6 +2704,32 @@ static void test_the_speed_slider_flies_the_same_path_faster(void) {
 
 /* A notch on the line, like every other slider, and a preset given before it
  * does not undo it. */
+/* Without --size, a bird is 30 pixels under Kitty and sextants and 60 under
+ * braille and blocks, whose cells are coarse; --size, when given, is kept; and a
+ * hawk stays twice a bird at the largest birds too. */
+static void test_the_default_size_follows_the_renderer(void) {
+    int saved_render = render_mode;
+    static const struct { int mode, size; } CASES[] = {
+        {RENDER_KITTY, DEFAULT_BIRD_SIZE},  {RENDER_SEXTANTS, DEFAULT_BIRD_SIZE},
+        {RENDER_BRAILLE, TEXT_BIRD_SIZE},   {RENDER_BLOCKS, TEXT_BIRD_SIZE},
+    };
+    for (size_t k = 0; k < sizeof(CASES) / sizeof(CASES[0]); k++) {
+        render_mode = CASES[k].mode;
+        config.bird_size = 0;
+        settle_the_bird_size();
+        assert(config.bird_size == CASES[k].size);
+        assert(hawk_sprite_size() == 2 * CASES[k].size);
+    }
+    render_mode = RENDER_BRAILLE;
+    config.bird_size = 30; /* as if --size 30 had been given */
+    settle_the_bird_size();
+    assert(config.bird_size == 30);
+    config.bird_size = MAX_BIRD_SIZE;
+    assert(hawk_sprite_size() == 2 * MAX_BIRD_SIZE);
+    render_mode = saved_render;
+    reset_test_config();
+}
+
 static void test_the_speed_is_a_flag(void) {
     char *argv[] = {"cbirds", "--preset", "storm", "--speed", "9", NULL};
     int saved_preset = requested_preset;
@@ -3182,6 +3208,7 @@ int main(void) {
     test_panel_switches_off_cleanly();
     test_no_legend_leaves_the_corner_to_the_flock();
     test_the_speed_slider_flies_the_same_path_faster();
+    test_the_default_size_follows_the_renderer();
     test_the_speed_is_a_flag();
     test_a_hawk_holds_a_chase_for_a_distance();
     test_a_fast_flock_is_flown_in_steps();

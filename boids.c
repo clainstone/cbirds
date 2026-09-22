@@ -1014,7 +1014,18 @@ static png_status_t load_sprite(png_image_t *out) {
         }
         static uint8_t buffer[1 << 22]; /* Four megabytes of PNG is a generous bird. */
         size_t length = fread(buffer, 1, sizeof(buffer), file);
+        /* Said as it is, rather than decoding the first four megabytes and
+         * reporting a truncated file the user knows is whole. */
+        int too_large = length == sizeof(buffer) && fgetc(file) != EOF;
+        int unreadable = ferror(file);
         fclose(file);
+        if (too_large || unreadable) {
+            fprintf(stderr,
+                    too_large ? "%s: %s is over 4 MB, too large for a sprite\n"
+                              : "%s: cannot read %s\n",
+                    program_name, sprite_path);
+            exit(EXIT_FAILURE);
+        }
         return png_decode(buffer, length, out);
     }
     if (config.shape != 0) return draw_shape(config.shape, SPRITE_WORK_MAX, out);

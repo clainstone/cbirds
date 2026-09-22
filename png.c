@@ -79,7 +79,9 @@ typedef struct {
     uint8_t *out;
     size_t out_len;
     size_t out_cap;
+    size_t out_limit; /*the stream is refused as soon as it inflates past this*/
     int failed;
+    int no_memory;
 } inflate_t;
 
 typedef struct {
@@ -103,7 +105,13 @@ static int inflate_bits(inflate_t *s, int need) {
     return (int)(val & ((1u << need) - 1u));
 }
 
+/*Makes room for extra bytes of output, never past the limit : the caller knows
+ * how much the stream is meant to hold, and a stream that holds more is refused
+ * before a byte of the excess is allocated. Without it a file of a few hundred
+ * kilobytes inflates to gigabytes (a decompression bomb), since one DEFLATE
+ * match repeats 258 bytes for as little as two bits.*/
 static int inflate_reserve(inflate_t *s, size_t extra) {
+    if (extra > s->out_limit - s->out_len) return 0;
     size_t needed = s->out_len + extra;
     if (needed <= s->out_cap) return 1;
 
@@ -112,8 +120,12 @@ static int inflate_reserve(inflate_t *s, size_t extra) {
         if (cap > (size_t)-1 / 2) return 0;
         cap *= 2;
     }
+    if (cap > s->out_limit) cap = s->out_limit;
     uint8_t *grown = (uint8_t *)realloc(s->out, cap);
-    if (grown == NULL) return 0;
+    if (grown == NULL) {
+        s->no_memory = 1;
+        return 0;
+    }
     s->out = grown;
     s->out_cap = cap;
     return 1;
@@ -160,7 +172,7 @@ static int inflate_stored(inflate_t *s) {
     if (s->src_pos + len > s->src_len) return 0;
     if (!inflate_reserve(s, len)) return 0;
 
-    memcpy(s->out + s->out_len, s->src + s->src_pos, len);
+    if (len) memcpy(s->out + s->out_len, s->src + s->src_pos, len); /*out is NULL until then*/
     s->out_len += len;
     s->src_pos += len;
     return 1;
@@ -266,8 +278,9 @@ static int inflate_dynamic_tables(inflate_t *s, huffman_t *lencode, huffman_t *d
     return 1;
 }
 
-/*Inflates a raw DEFLATE stream, *out must be freed by the caller*/
-static png_status_t inflate_raw(const uint8_t *data, size_t length, uint8_t **out,
+/*Inflates a raw DEFLATE stream of at most limit bytes of output, *out must be
+ * freed by the caller*/
+static png_status_t inflate_raw(const uint8_t *data, size_t length, size_t limit, uint8_t **out,
                                 size_t *out_length, size_t *consumed) {
     inflate_t s;
     huffman_t lencode, distcode;
@@ -276,6 +289,7 @@ static png_status_t inflate_raw(const uint8_t *data, size_t length, uint8_t **ou
     memset(&s, 0, sizeof(s));
     s.src = data;
     s.src_len = length;
+    s.out_limit = limit;
 
     do {
         final = inflate_bits(&s, 1);
@@ -299,7 +313,7 @@ static png_status_t inflate_raw(const uint8_t *data, size_t length, uint8_t **ou
         }
         if (!ok || s.failed) {
             free(s.out);
-            return PNG_ERR_DEFLATE;
+            return s.no_memory ? PNG_ERR_MEMORY : PNG_ERR_DEFLATE;
         }
     } while (!final);
 
@@ -309,8 +323,9 @@ static png_status_t inflate_raw(const uint8_t *data, size_t length, uint8_t **ou
     return PNG_OK;
 }
 
-/*Inflates a zlib stream (RFC 1950) verifying header and Adler checksum*/
-static png_status_t inflate_zlib(const uint8_t *data, size_t length, uint8_t **out,
+/*Inflates a zlib stream (RFC 1950) verifying header and Adler checksum, output
+ * past limit bytes is refused as corrupted*/
+static png_status_t inflate_zlib(const uint8_t *data, size_t length, size_t limit, uint8_t **out,
                                  size_t *out_length) {
     if (length < 6) return PNG_ERR_TRUNCATED;
     if ((data[0] & 0x0f) != 8) return PNG_ERR_UNSUPPORTED; /*not deflate*/
@@ -318,7 +333,7 @@ static png_status_t inflate_zlib(const uint8_t *data, size_t length, uint8_t **o
     if ((((unsigned)data[0] << 8) | data[1]) % 31u) return PNG_ERR_DEFLATE;
 
     size_t consumed = 0;
-    png_status_t status = inflate_raw(data + 2, length - 2, out, out_length, &consumed);
+    png_status_t status = inflate_raw(data + 2, length - 2, limit, out, out_length, &consumed);
     if (status != PNG_OK) return status;
 
     if (length - 2 - consumed >= 4) {
@@ -547,9 +562,124 @@ static int paeth_predictor(int a, int b, int c) {
     return c;
 }
 
-/*Undoes the per scanline filters, in place, on the raw (still packed) raster*/
-static int png_unfilter(uint8_t *raster, int width, int height, int channels) {
-    size_t stride = (size_t)width * (size_t)channels;
+/*Everything IHDR, PLTE and tRNS say about how to read the raster. The decoder
+ * reads every still PNG : grayscale at 1, 2, 4, 8 and 16 bits, palette at 1, 2,
+ * 4 and 8, RGB, gray + alpha and RGBA at 8 and 16, each either as it is or
+ * Adam7 interlaced, and always brings it to 8 bit RGBA*/
+typedef struct {
+    int width;
+    int height;
+    int bit_depth;    /*bits per sample*/
+    int color_type;   /*0 gray, 2 RGB, 3 palette, 4 gray + alpha, 6 RGBA*/
+    int channels;     /*samples per pixel*/
+    int interlaced;   /*Adam7*/
+    int palette_size; /*PLTE entries, 0 until it is seen*/
+    int has_key;      /*tRNS on gray or RGB : pixels of that one color are transparent*/
+    unsigned key[3];  /*that color, at the full sample depth*/
+    /*What each index expands to. Indices past PLTE are an error in the file ;
+     * they are left transparent black rather than refused, so a stray index
+     * shows as a hole instead of costing the whole image, and every index a
+     * sample can hold (8 bits at most) lands inside the table without a check*/
+    uint8_t palette[256 * 4];
+} png_format_t;
+
+/*Adam7 sends the image as seven reduced images, each with scanlines and
+ * filters of its own : pass p holds the pixels at (x0 + i * dx, y0 + j * dy).
+ * An image that is not interlaced is the single pass holding every pixel.*/
+typedef struct {
+    int x0, y0, dx, dy;
+} png_pass_t;
+
+static const png_pass_t png_adam7[7] = {{0, 0, 8, 8}, {4, 0, 8, 8}, {0, 4, 4, 8}, {2, 0, 4, 4},
+                                        {0, 2, 2, 4}, {1, 0, 2, 2}, {0, 1, 1, 2}};
+static const png_pass_t png_whole[1] = {{0, 0, 1, 1}};
+
+static int png_passes(const png_format_t *f, const png_pass_t **passes) {
+    *passes = f->interlaced ? png_adam7 : png_whole;
+    return f->interlaced ? 7 : 1;
+}
+
+/*Size of the reduced image a pass carries, 0 wide or 0 high when the image is
+ * too small to reach it*/
+static void png_pass_size(const png_format_t *f, const png_pass_t *pass, int *width, int *height) {
+    *width = f->width > pass->x0 ? (f->width - pass->x0 + pass->dx - 1) / pass->dx : 0;
+    *height = f->height > pass->y0 ? (f->height - pass->y0 + pass->dy - 1) / pass->dy : 0;
+}
+
+/*Bytes in a scanline of that many pixels, filter byte excluded : at most
+ * 16384 pixels of 64 bits, so it never comes near overflowing*/
+static size_t png_row_bytes(const png_format_t *f, int width) {
+    return ((size_t)width * (size_t)(f->channels * f->bit_depth) + 7) / 8;
+}
+
+/*The byte distance the filters look back : one pixel, or one byte when pixels
+ * are smaller than that*/
+static size_t png_filter_unit(const png_format_t *f) {
+    size_t bytes = (size_t)(f->channels * f->bit_depth) / 8;
+    return bytes ? bytes : 1;
+}
+
+/*Exact length of the inflated raster : for every pass, its scanlines each with
+ * their filter byte. A pass with no pixel sends nothing, not even filter bytes.
+ * 0 if it could not be represented, which the size limits already rule out.*/
+static size_t png_raster_length(const png_format_t *f) {
+    const png_pass_t *passes;
+    int count = png_passes(f, &passes);
+    size_t total = 0;
+
+    for (int p = 0; p < count; p++) {
+        int width, height;
+        png_pass_size(f, &passes[p], &width, &height);
+        if (width == 0 || height == 0) continue;
+
+        size_t row = png_row_bytes(f, width) + 1;
+        if (row > ((size_t)-1 - total) / (size_t)height) return 0;
+        total += row * (size_t)height;
+    }
+    return total;
+}
+
+static int png_depth_allowed(int color_type, int bit_depth) {
+    switch (color_type) {
+        case 0:
+            return bit_depth == 1 || bit_depth == 2 || bit_depth == 4 || bit_depth == 8 ||
+                   bit_depth == 16;
+        case 3:
+            return bit_depth == 1 || bit_depth == 2 || bit_depth == 4 || bit_depth == 8;
+        case 2:
+        case 4:
+        case 6:
+            return bit_depth == 8 || bit_depth == 16;
+    }
+    return 0;
+}
+
+/*Validates the 13 bytes of IHDR : the size limits, a bit depth the color type
+ * allows, the one compression and filter method there is, no interlacing or
+ * Adam7*/
+static png_status_t png_parse_header(const uint8_t *body, png_format_t *f) {
+    uint32_t width = read_be32(body), height = read_be32(body + 4);
+    int bit_depth = body[8], color_type = body[9];
+
+    if (width == 0 || height == 0 || width > PNG_MAX_DIMENSION || height > PNG_MAX_DIMENSION ||
+        (size_t)width * (size_t)height > PNG_MAX_PIXELS)
+        return PNG_ERR_UNSUPPORTED;
+    if (!png_depth_allowed(color_type, bit_depth) || body[10] != 0 || body[11] != 0 || body[12] > 1)
+        return PNG_ERR_UNSUPPORTED;
+
+    f->width = (int)width;
+    f->height = (int)height;
+    f->bit_depth = bit_depth;
+    f->color_type = color_type;
+    f->channels = color_type == 2 ? 3 : color_type == 4 ? 2 : color_type == 6 ? 4 : 1;
+    f->interlaced = body[12];
+    return PNG_OK;
+}
+
+/*Undoes the per scanline filters, in place, on one pass of the raw (still
+ * packed) raster : height rows of a filter byte followed by stride bytes. The
+ * filters work on bytes, the left neighbor being unit bytes back.*/
+static int png_unfilter(uint8_t *raster, size_t stride, int height, size_t unit) {
     uint8_t *previous = NULL;
     uint8_t *row = raster;
 
@@ -558,9 +688,9 @@ static int png_unfilter(uint8_t *raster, int width, int height, int channels) {
         uint8_t *current = row + 1;
 
         for (size_t i = 0; i < stride; i++) {
-            int a = i >= (size_t)channels ? current[i - (size_t)channels] : 0;
+            int a = i >= unit ? current[i - unit] : 0;
             int b = previous ? previous[i] : 0;
-            int c = (previous && i >= (size_t)channels) ? previous[i - (size_t)channels] : 0;
+            int c = (previous && i >= unit) ? previous[i - unit] : 0;
             int value = current[i];
 
             switch (filter) {
@@ -589,42 +719,100 @@ static int png_unfilter(uint8_t *raster, int width, int height, int channels) {
     return 1;
 }
 
-/*Expands the unfiltered raster into straight RGBA*/
-static void png_expand(const uint8_t *raster, int width, int height, int color_type, int channels,
-                       uint8_t *rgba) {
-    size_t stride = (size_t)width * (size_t)channels;
+/*Sample number index of an unfiltered scanline, at its full depth. Samples
+ * under 8 bits are packed from the most significant bit down and never
+ * straddle two bytes.*/
+static unsigned png_sample(const uint8_t *row, size_t index, int bit_depth) {
+    if (bit_depth == 8) return row[index];
+    if (bit_depth == 16) return ((unsigned)row[2 * index] << 8) | row[2 * index + 1];
 
-    for (int y = 0; y < height; y++) {
-        const uint8_t *src = raster + (stride + 1) * (size_t)y + 1;
-        uint8_t *dst = rgba + (size_t)y * (size_t)width * 4;
+    size_t bit = index * (size_t)bit_depth;
+    unsigned shift = 8u - (unsigned)bit_depth - (unsigned)(bit % 8);
+    return ((unsigned)row[bit / 8] >> shift) & ((1u << bit_depth) - 1u);
+}
 
-        for (int x = 0; x < width; x++) {
-            const uint8_t *p = src + (size_t)x * (size_t)channels;
-            uint8_t *q = dst + (size_t)x * 4;
+/*A sample brought to 8 bits. Small ones are stretched so that the largest
+ * value is 255. 16 bit ones keep their high byte, as libpng's strip does :
+ * exact for 8 bit data widened by 257, never more than one level from the
+ * rounded value otherwise, and no division per sample.*/
+static uint8_t png_to_8(unsigned value, int bit_depth) {
+    if (bit_depth == 16) return (uint8_t)(value >> 8);
+    if (bit_depth == 8) return (uint8_t)value;
+    return (uint8_t)(value * 255u / ((1u << bit_depth) - 1u));
+}
 
-            switch (color_type) {
-                case 0:
-                    q[0] = q[1] = q[2] = p[0];
-                    q[3] = 255;
-                    break;
-                case 4:
-                    q[0] = q[1] = q[2] = p[0];
-                    q[3] = p[1];
-                    break;
-                case 2:
-                    q[0] = p[0];
-                    q[1] = p[1];
-                    q[2] = p[2];
-                    q[3] = 255;
-                    break;
-                default:
-                    q[0] = p[0];
-                    q[1] = p[1];
-                    q[2] = p[2];
-                    q[3] = p[3];
-                    break;
+/*Pixel x of an unfiltered scanline, as straight RGBA*/
+static void png_pixel(const png_format_t *f, const uint8_t *row, size_t x, uint8_t *rgba) {
+    unsigned s[4] = {0, 0, 0, 0};
+
+    if (f->color_type == 3) {
+        memcpy(rgba, f->palette + 4 * png_sample(row, x, f->bit_depth), 4);
+        return;
+    }
+    for (int c = 0; c < f->channels; c++)
+        s[c] = png_sample(row, x * (size_t)f->channels + (size_t)c, f->bit_depth);
+
+    switch (f->color_type) {
+        case 0:
+            rgba[0] = rgba[1] = rgba[2] = png_to_8(s[0], f->bit_depth);
+            rgba[3] = (f->has_key && s[0] == f->key[0]) ? 0 : 255;
+            break;
+        case 4:
+            rgba[0] = rgba[1] = rgba[2] = png_to_8(s[0], f->bit_depth);
+            rgba[3] = png_to_8(s[1], f->bit_depth);
+            break;
+        case 2:
+            for (int c = 0; c < 3; c++) rgba[c] = png_to_8(s[c], f->bit_depth);
+            rgba[3] = (f->has_key && s[0] == f->key[0] && s[1] == f->key[1] && s[2] == f->key[2])
+                          ? 0
+                          : 255;
+            break;
+        default:
+            for (int c = 0; c < 4; c++) rgba[c] = png_to_8(s[c], f->bit_depth);
+            break;
+    }
+}
+
+/*Unfilters every pass of the raster in place, 0 on an unknown filter type*/
+static int png_unfilter_passes(const png_format_t *f, uint8_t *raster) {
+    const png_pass_t *passes;
+    int count = png_passes(f, &passes);
+
+    for (int p = 0; p < count; p++) {
+        int width, height;
+        png_pass_size(f, &passes[p], &width, &height);
+        if (width == 0 || height == 0) continue;
+
+        size_t stride = png_row_bytes(f, width);
+        if (!png_unfilter(raster, stride, height, png_filter_unit(f))) return 0;
+        raster += (stride + 1) * (size_t)height;
+    }
+    return 1;
+}
+
+/*Expands the unfiltered raster into straight RGBA, scattering the pixels of
+ * each pass to where they belong in the full image*/
+static void png_expand(const png_format_t *f, const uint8_t *raster, uint8_t *rgba) {
+    const png_pass_t *passes;
+    int count = png_passes(f, &passes);
+
+    for (int p = 0; p < count; p++) {
+        const png_pass_t *pass = &passes[p];
+        int width, height;
+        png_pass_size(f, pass, &width, &height);
+        if (width == 0 || height == 0) continue;
+
+        size_t stride = png_row_bytes(f, width);
+        for (int y = 0; y < height; y++) {
+            const uint8_t *row = raster + (stride + 1) * (size_t)y + 1;
+            size_t dst_y = (size_t)pass->y0 + (size_t)y * (size_t)pass->dy;
+
+            for (int x = 0; x < width; x++) {
+                size_t dst_x = (size_t)pass->x0 + (size_t)x * (size_t)pass->dx;
+                png_pixel(f, row, (size_t)x, rgba + (dst_y * (size_t)f->width + dst_x) * 4);
             }
         }
+        raster += (stride + 1) * (size_t)height;
     }
 }
 
@@ -633,18 +821,19 @@ png_status_t png_decode(const uint8_t *data, size_t length, png_image_t *out) {
     if (length < sizeof(png_signature)) return PNG_ERR_TRUNCATED;
     if (memcmp(data, png_signature, sizeof(png_signature)) != 0) return PNG_ERR_SIGNATURE;
 
-    int width = 0, height = 0, color_type = -1, channels = 0;
+    png_format_t f;
     uint8_t *idat = NULL;
     size_t idat_len = 0, idat_cap = 0;
     size_t pos = sizeof(png_signature);
     png_status_t status = PNG_ERR_CHUNK;
-    int seen_end = 0;
+    int seen_header = 0, seen_idat = 0, seen_trns = 0, seen_end = 0;
 
-    while (pos + 8 <= length) {
+    memset(&f, 0, sizeof(f));
+    while (length - pos >= 8) {
         uint32_t chunk_len = read_be32(data + pos);
         const uint8_t *type = data + pos + 4;
 
-        if (chunk_len > 0x7fffffffu || pos + 12 + chunk_len > length) {
+        if (chunk_len > 0x7fffffffu || length - pos < 12 || chunk_len > length - pos - 12) {
             status = PNG_ERR_TRUNCATED;
             goto fail;
         }
@@ -655,43 +844,58 @@ png_status_t png_decode(const uint8_t *data, size_t length, png_image_t *out) {
         }
 
         if (memcmp(type, "IHDR", 4) == 0) {
-            if (chunk_len != 13 || color_type >= 0) goto fail;
-            width = (int)read_be32(body);
-            height = (int)read_be32(body + 4);
-            int bit_depth = body[8];
-            color_type = body[9];
-
-            if (width <= 0 || height <= 0 || width > PNG_MAX_DIMENSION ||
-                height > PNG_MAX_DIMENSION || (long)width * height > PNG_MAX_PIXELS) {
-                status = PNG_ERR_UNSUPPORTED;
+            if (chunk_len != 13 || seen_header) goto fail;
+            png_status_t header = png_parse_header(body, &f);
+            if (header != PNG_OK) {
+                status = header;
                 goto fail;
             }
-            if (bit_depth != 8 || body[10] != 0 || body[11] != 0 || body[12] != 0) {
-                status = PNG_ERR_UNSUPPORTED; /*only 8 bit, deflate, no interlace*/
-                goto fail;
+            seen_header = 1;
+        } else if (memcmp(type, "PLTE", 4) == 0) {
+            if (!seen_header) goto fail;
+            /*Read for palette images only : for RGB it is a hint for displays
+             * that cannot show true color, and gray has no use for it*/
+            if (f.color_type == 3) {
+                if (f.palette_size > 0 || seen_idat || chunk_len == 0 || chunk_len % 3 != 0 ||
+                    chunk_len > 256 * 3)
+                    goto fail;
+                f.palette_size = (int)(chunk_len / 3);
+                for (int i = 0; i < f.palette_size; i++) {
+                    memcpy(f.palette + 4 * i, body + 3 * i, 3);
+                    f.palette[4 * i + 3] = 255;
+                }
             }
-            switch (color_type) {
-                case 0:
-                    channels = 1;
-                    break;
-                case 2:
-                    channels = 3;
-                    break;
-                case 4:
-                    channels = 2;
-                    break;
-                case 6:
-                    channels = 4;
-                    break;
-                default:
-                    status = PNG_ERR_UNSUPPORTED;
-                    goto fail; /*palette*/
+        } else if (memcmp(type, "tRNS", 4) == 0) {
+            if (!seen_header || seen_trns || seen_idat) goto fail;
+            seen_trns = 1;
+            if (f.color_type == 3) {
+                /*One alpha per palette entry, those it does not reach stay opaque*/
+                if (f.palette_size == 0 || chunk_len > (uint32_t)f.palette_size) goto fail;
+                for (uint32_t i = 0; i < chunk_len; i++) f.palette[4 * i + 3] = body[i];
+            } else if (f.color_type == 0 || f.color_type == 2) {
+                /*One color, two bytes per sample whatever the depth : compared
+                 * with the samples before they are brought to 8 bits, the bits
+                 * above the depth masked off as the specification asks*/
+                uint32_t samples = f.color_type == 0 ? 1 : 3;
+                unsigned mask = (1u << f.bit_depth) - 1u;
+                if (chunk_len != 2 * samples) goto fail;
+                for (uint32_t c = 0; c < samples; c++)
+                    f.key[c] = (((unsigned)body[2 * c] << 8) | body[2 * c + 1]) & mask;
+                f.has_key = 1;
             }
+            /*Next to an alpha channel it has nothing to add, and is ignored*/
         } else if (memcmp(type, "IDAT", 4) == 0) {
-            if (color_type < 0) goto fail;
-            if (idat_len + chunk_len > idat_cap) {
+            if (!seen_header || (f.color_type == 3 && f.palette_size == 0)) goto fail;
+            seen_idat = 1;
+            if (chunk_len > idat_cap - idat_len) {
                 size_t cap = idat_cap ? idat_cap : 8192;
-                while (cap < idat_len + chunk_len) cap *= 2;
+                while (chunk_len > cap - idat_len) {
+                    if (cap > (size_t)-1 / 2) {
+                        status = PNG_ERR_MEMORY;
+                        goto fail;
+                    }
+                    cap *= 2;
+                }
                 uint8_t *grown = (uint8_t *)realloc(idat, cap);
                 if (grown == NULL) {
                     status = PNG_ERR_MEMORY;
@@ -700,7 +904,7 @@ png_status_t png_decode(const uint8_t *data, size_t length, png_image_t *out) {
                 idat = grown;
                 idat_cap = cap;
             }
-            memcpy(idat + idat_len, body, chunk_len);
+            if (chunk_len) memcpy(idat + idat_len, body, chunk_len); /*idat may still be NULL*/
             idat_len += chunk_len;
         } else if (memcmp(type, "IEND", 4) == 0) {
             seen_end = 1;
@@ -709,34 +913,43 @@ png_status_t png_decode(const uint8_t *data, size_t length, png_image_t *out) {
         pos += 12 + chunk_len;
     }
 
-    if (color_type < 0 || idat_len == 0 || !seen_end) {
+    if (!seen_header || idat_len == 0 || !seen_end) {
         status = seen_end ? PNG_ERR_CHUNK : PNG_ERR_TRUNCATED;
         goto fail;
     }
 
+    /*The header says exactly how long the raster is, and inflating stops at
+     * that : a small file that would expand into gigabytes is refused at the
+     * first byte too many, and a raster that comes out short is refused too*/
+    size_t expected = png_raster_length(&f);
+    if (expected == 0) {
+        status = PNG_ERR_UNSUPPORTED;
+        goto fail;
+    }
     uint8_t *raster = NULL;
     size_t raster_len = 0;
-    status = inflate_zlib(idat, idat_len, &raster, &raster_len);
+    status = inflate_zlib(idat, idat_len, expected, &raster, &raster_len);
     free(idat);
     idat = NULL;
     if (status != PNG_OK) return status;
 
-    size_t expected = ((size_t)width * (size_t)channels + 1) * (size_t)height;
-    if (raster_len < expected) {
+    if (raster_len != expected) {
         free(raster);
         return PNG_ERR_TRUNCATED;
     }
-    if (!png_unfilter(raster, width, height, channels)) {
+    /*Every pass is unfiltered before the image is allocated, so that a bad
+     * filter leaves *out untouched like every other failure*/
+    if (!png_unfilter_passes(&f, raster)) {
         free(raster);
         return PNG_ERR_CHUNK;
     }
 
-    status = png_image_alloc(out, width, height);
+    status = png_image_alloc(out, f.width, f.height);
     if (status != PNG_OK) {
         free(raster);
         return status;
     }
-    png_expand(raster, width, height, color_type, channels, out->pixels);
+    png_expand(&f, raster, out->pixels);
     free(raster);
     return PNG_OK;
 

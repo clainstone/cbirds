@@ -1,11 +1,14 @@
 /*
  * Minimal self contained PNG library.
  *
- * Handles what this project needs and nothing more : decoding of 8 bit
- * non interlaced PNG files (grayscale, RGB, with or without alpha), a few
- * geometric and color transformations, and encoding back to a PNG kept in
- * memory. No external dependency, zlib included : the DEFLATE decompressor
- * and the CRC/Adler checksums are implemented here.
+ * Handles what this project needs and nothing more : decoding of any still
+ * PNG file (grayscale at 1, 2, 4, 8 or 16 bits, palette at 1, 2, 4 or 8 with
+ * tRNS transparency, RGB, gray + alpha and RGBA at 8 or 16, plain or Adam7
+ * interlaced) into 8 bit RGBA, a few geometric and color transformations,
+ * and encoding back to a PNG kept in memory. Ancillary chunks other than
+ * tRNS (gamma, color profiles, text) are ignored, and 16 bit samples keep
+ * their high byte. No external dependency, zlib included : the DEFLATE
+ * decompressor and the CRC/Adler checksums are implemented here.
  */
 
 #ifndef PNG_H
@@ -44,7 +47,10 @@ const char *png_status_string(png_status_t status);
 png_status_t png_image_alloc(png_image_t *image, int width, int height);
 void png_image_free(png_image_t *image);
 
-/*Decodes an in memory PNG file into a RGBA image*/
+/*Decodes an in memory PNG file into a RGBA image. Images over 16384 pixels a
+ * side or 64 M pixels are PNG_ERR_UNSUPPORTED, and compressed data that
+ * inflates past the size IHDR gives is refused (PNG_ERR_DEFLATE) as soon as it
+ * does. *out is only written on success.*/
 png_status_t png_decode(const uint8_t *data, size_t length, png_image_t *out);
 
 /*Encodes a RGBA image into an in memory PNG file, *out_data must be freed*/

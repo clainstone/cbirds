@@ -4,6 +4,7 @@
 #define _DARWIN_C_SOURCE
 
 #include <errno.h>
+#include <limits.h>
 #include <math.h>
 #include <poll.h>
 #include <signal.h>
@@ -2018,7 +2019,7 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
         }
     }
     if (neighbors) {
-        if (kin) {
+        if (kin != 0) {
             alignment.x /= kin;
             alignment.y /= kin;
             cohesion.x = cohesion.x / kin - target->x;
@@ -2718,11 +2719,31 @@ static void apply_preset_defaults(void) {
     apply_notches();
 }
 
+/* Reads the decimal digits at *text into *value and moves past them. sscanf's %d
+ * is undefined on a number too large for an int, and what the digits are is up
+ * to a terminal's reply or a command line, so the overflow is checked here. */
+static int read_decimal(const char **text, int *value) {
+    const char *at = *text;
+    int result = 0;
+    if (*at < '0' || *at > '9') return 0;
+    for (; *at >= '0' && *at <= '9'; at++) {
+        int digit = *at - '0';
+        if (result > (INT_MAX - digit) / 10) return 0;
+        result = result * 10 + digit;
+    }
+    *text = at;
+    *value = result;
+    return 1;
+}
+
 /* CSI < button ; column ; row M or m, one based, as mode 1006 sends it. */
 static void read_mouse_report(const char *sequence) {
     int button, column, row;
+    const char *at = sequence + 1;
     if (sequence[0] != '<') return;
-    if (sscanf(sequence + 1, "%d;%d;%d", &button, &column, &row) != 3) return;
+    if (!read_decimal(&at, &button) || *at++ != ';' || !read_decimal(&at, &column) ||
+        *at++ != ';' || !read_decimal(&at, &row))
+        return;
     if (column < 1 || row < 1) return;
     mouse.x = (column - 0.5) * screen.cell_width;
     mouse.y = (row - 0.5) * screen.cell_height;
@@ -3338,9 +3359,9 @@ static void read_options(int argc, char **argv) {
     }
     if (requested_record_size != NULL) {
         int columns = 0, rows = 0;
-        char extra = 0;
-        if (sscanf(requested_record_size, "%dx%d%c", &columns, &rows, &extra) != 2 ||
-            columns < 40 || columns > 400 || rows < 14 || rows > 120) {
+        const char *at = requested_record_size;
+        if (!read_decimal(&at, &columns) || *at++ != 'x' || !read_decimal(&at, &rows) ||
+            *at != '\0' || columns < 40 || columns > 400 || rows < 14 || rows > 120) {
             fprintf(stderr, "%s: --record-size wants COLUMNSxROWS, 40x14 to 400x120, not '%s'\n",
                     program_name, requested_record_size);
             exit(EXIT_USAGE);

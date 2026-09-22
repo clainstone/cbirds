@@ -99,7 +99,7 @@ fps.
 │ alignment  ▓▓▓▓░░░░░░░░  1.50  a/A │
 │ turning    ▓▓▓▓▓▓▓▓░░░░   70°  t/T │
 │ perception ▓▓▓▓▓▓░░░░░░  36px  p/P │
-│ speed      ▓▓▓▓░░░░░░░░  1.0×  v/V │
+│ speed      ▓░░░░░░░░░░░  0.4×  v/V │
 │ frame        0.6ms    31KB  60fps  │
 │ quit       q                       │
 ╰────────────────────────────────────╯
@@ -136,7 +136,7 @@ table, open an issue and say which terminal it is and what
 ```
 Flock
   -n, --birds COUNT             how many birds (default 800)
-  -s, --size PIXELS             sprite size in pixels (default 15)
+  -s, --size PIXELS             sprite size in pixels (default 30)
   -g, --flocks COUNT            flocks that keep to their own kind (default 1)
   -k, --hawks COUNT             predators hunting the flock (default 0)
       --preset NAME             murmuration, swarm, storm
@@ -148,7 +148,7 @@ Sliders   0 to 12, as the panel shows them
       --alignment NOTCH         how much a bird matches its neighbours (default 4)
       --turning NOTCH           sharpest turn a frame, 12 is instant (default 8)
       --perception PIXELS       how far a bird sees, 12 to 60 (default 36)
-      --speed NOTCH             how fast the flock flies, 0.2x to 2.6x (default 4)
+      --speed NOTCH             how fast the flock flies, 0.2x to 2.6x (default 1, 0.4x)
       --avoidance NOTCH         how much flocks keep out of each other's way (default 4)
 
 Look

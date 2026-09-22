@@ -505,7 +505,7 @@ static void test_legend_panel_layout(void) {
     apply_preset_defaults();
     assert(config.turning_notch == DEFAULT_TURNING_NOTCH);
     assert(config.boundary_notch == DEFAULT_NOTCH);
-    assert(config.pace_notch == DEFAULT_NOTCH && config.pace == DEFAULT_PACE);
+    assert(config.pace_notch == DEFAULT_PACE_NOTCH && config.pace == DEFAULT_PACE);
 
     /* One slider a parameter, named, with a bar and its pair of keys. */
     static const char *names[] = {"boundary", "separation", "alignment",
@@ -651,7 +651,9 @@ static void test_bar_spans_the_whole_travel(void) {
     assert(fabs(config.boundary - DEFAULT_BOUNDARY_W) < 1e-12);
     assert(fabs(config.separation - DEFAULT_SEPARATION_W) < 1e-12);
     assert(fabs(config.alignment - DEFAULT_ALIGNMENT_W) < 1e-12);
-    assert(config.pace == DEFAULT_PACE); /* Exactly one: the shipped flock is untouched. */
+    /* The tests fly the reference flock on the fourth notch: exactly one, the
+     * flock that shipped. The program itself starts slower, on DEFAULT_PACE_NOTCH. */
+    assert(config.pace == 1.0);
     assert(config.boundary_notch == DEFAULT_NOTCH);
     assert(config.alignment_notch == DEFAULT_NOTCH);
     /* The integer parameter lands exactly, being an integer. */
@@ -2694,8 +2696,8 @@ static void test_the_speed_slider_flies_the_same_path_faster(void) {
     assert(config.pace_notch == 0 && config.pace == PACE_FLOOR);
     assert(feed_input("0") == 1);
     assert(config.pace == DEFAULT_PACE);
-    assert(feed_input("VVV\t") == 1);
-    assert(config.pace_notch == DEFAULT_NOTCH + 3);
+    assert(feed_input("VVV\t") == 1); /* From the home notch, which 0 went back to. */
+    assert(config.pace_notch == DEFAULT_PACE_NOTCH + 3);
     requested_preset = saved_preset;
     reset_test_config();
 }

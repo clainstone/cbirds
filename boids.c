@@ -94,7 +94,7 @@ enum {
     FRAME_RATE = 60,
     MAX_CAST_FPS = 120,
     DEFAULT_SPEED = 40,
-    DEFAULT_BIRD_SIZE = 15,
+    DEFAULT_BIRD_SIZE = 30,
     SPATIAL_CELL_SIZE = 12,
     /* Perception is tuned as a radius in pixels rather than in whole grid cells,
      * which is what lets it share the twelve notch travel: the cell scan derives
@@ -247,9 +247,10 @@ static const double ALIGNMENT_MAX = NOTCH_CEILING(0.1, DEFAULT_ALIGNMENT_W);
  * is slow motion; at the top a frame is flown in three steps (see fly), which
  * keeps eight hundred birds near a millisecond a frame. A fifth a notch, from a
  * fifth at notch zero to thirteen fifths at the top, so the panel prints each
- * one as it is and the default sits on the fourth notch like every other
- * slider's. */
-#define DEFAULT_PACE 1.0
+ * one as it is. The default is the second notch, two fifths: the flock starts
+ * slow enough to follow one bird with the eye, and v/V is there for more. */
+#define DEFAULT_PACE_NOTCH 1
+#define DEFAULT_PACE 0.4
 static const double PACE_STEP = 0.2;
 
 /* How much one flock avoids another, with two or more of them.
@@ -374,7 +375,7 @@ static config_t config = {
     .alignment_notch = DEFAULT_NOTCH,
     /* Twelve to sixty pixels in steps of four: thirty six is the sixth notch. */
     .vision_notch = DEFAULT_VISION_NOTCH,
-    .pace_notch = DEFAULT_NOTCH,
+    .pace_notch = DEFAULT_PACE_NOTCH,
     .avoid_notch = DEFAULT_NOTCH,
 };
 static screen_t screen;
@@ -2595,7 +2596,7 @@ static const option_t OPTIONS[] = {
     {'n', "birds", NULL, OPTION_INT, &config.birds, 1, MAX_BIRDS, NULL, "COUNT",
      "how many birds (default 800)", "Flock", 1},
     {'s', "size", NULL, OPTION_INT, &config.bird_size, MIN_BIRD_SIZE, MAX_BIRD_SIZE, NULL, "PIXELS",
-     "sprite size in pixels (default 15)", "Flock", 1},
+     "sprite size in pixels (default 30)", "Flock", 1},
     /* k is the hawk key in the panel, so k is the hawk flag on the line: -k 3 used
      * to mean three flocks, which is a trap laid by the program's own help. */
     {'g', "flocks", "groups", OPTION_INT, &config.flocks, 1, MAX_FLOCKS, NULL, "COUNT",
@@ -2622,7 +2623,7 @@ static const option_t OPTIONS[] = {
      NULL, "PIXELS", "how far a bird sees, 12 to 60 (default 36)",
      "Sliders   0 to 12, as the panel shows them", 0},
     {0, "speed", NULL, OPTION_INT, &config.pace_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
-     "how fast the flock flies, 0.2x to 2.6x (default 4)",
+     "how fast the flock flies, 0.2x to 2.6x (default 1, 0.4x)",
      "Sliders   0 to 12, as the panel shows them", 0},
     {0, "avoidance", NULL, OPTION_INT, &config.avoid_notch, 0, LEGEND_BAR_CELLS, NULL, "NOTCH",
      "how much flocks keep out of each other's way (default 4)",
@@ -2697,7 +2698,7 @@ static void apply_preset_defaults(void) {
      * it down with t could not see what they did and had nothing else to undo it
      * with. And the speed, which no preset touches, so this is its only way home. */
     config.turning_notch = DEFAULT_TURNING_NOTCH;
-    config.pace_notch = DEFAULT_NOTCH;
+    config.pace_notch = DEFAULT_PACE_NOTCH;
     config.avoid_notch = DEFAULT_NOTCH;
     apply_notches();
 }

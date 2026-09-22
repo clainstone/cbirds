@@ -138,6 +138,12 @@ static void test_nonblocking_flush_backpressure(void) {
     }
     assert(errno == EAGAIN || errno == EWOULDBLOCK);
     assert(fcntl(descriptors[1], F_SETFL, flags) == 0);
+    /* Read again, now that the pipe has been written to: macOS reports private
+     * status bits in F_GETFL (a descriptor that was written says so), which no
+     * F_SETFL can clear, so the flags before the first write are not the ones
+     * to compare with. What the flush owes the caller is O_NONBLOCK as it was. */
+    flags = fcntl(descriptors[1], F_GETFL);
+    assert(flags >= 0 && !(flags & O_NONBLOCK));
 
     assert(kitty_graphics_init(&graphics, descriptors[1]) == KITTY_GRAPHICS_OK);
     assert(kitty_graphics_upload_png(&graphics, 1, png, sizeof(png)) == KITTY_GRAPHICS_OK);
@@ -145,6 +151,7 @@ static void test_nonblocking_flush_backpressure(void) {
     assert(kitty_graphics_flush_nonblocking(&graphics) == KITTY_GRAPHICS_AGAIN);
     assert(graphics.length == expected_length);
     assert(fcntl(descriptors[1], F_GETFL) == flags);
+    assert(!(fcntl(descriptors[1], F_GETFL) & O_NONBLOCK));
 
     assert(read(descriptors[0], drain, sizeof(drain)) > 0);
     assert(kitty_graphics_flush_nonblocking(&graphics) == KITTY_GRAPHICS_OK);

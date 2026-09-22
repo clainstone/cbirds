@@ -449,6 +449,106 @@ static void test_birds_start_spread_inside_the_free_region(void) {
     assert(distinct > BIRD_COUNT * 3 / 4);
 }
 
+/* A bird added with + starts from nothing, whatever the memory it was given held:
+ * with trails on, its tail index is an array index on the very next frame. And
+ * the flock is resized whole, keeping the birds already flying. */
+static void test_a_grown_flock_starts_its_new_birds_clean(void) {
+    enum { FEW = 8, MANY = 64 };
+    reset_test_config();
+    set_test_screen(900, 600);
+    config.trails = 1;
+    seed_random(11);
+
+    bird_t poisoned;
+    memset(&poisoned, 0xa5, sizeof(poisoned));
+    place_one_bird(&poisoned, 0);
+    assert(poisoned.trail_at == 0 && poisoned.trail_held == 0 && poisoned.gliding == 0);
+
+    config.birds = FEW;
+    bird_t *birds = calloc(FEW, sizeof(*birds));
+    bird_t *snapshot = malloc(FEW * sizeof(*snapshot));
+    assert(birds != NULL && snapshot != NULL);
+    initialize_birds(birds);
+    bird_t first = birds[0];
+
+    config.birds = MANY;
+    assert(resize_the_flock(&birds, &snapshot, FEW, MANY));
+    assert(memcmp(&birds[0], &first, sizeof(first)) == 0);
+    for (int i = FEW; i < MANY; i++)
+        assert(birds[i].trail_at == 0 && birds[i].trail_held == 0 && birds[i].wing < WING_CYCLE);
+
+    /* Flown with trails for a while, which reads and writes every tail. */
+    spatial_grid_t grid;
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, MANY) == SPATIAL_GRID_OK);
+    for (int frame = 0; frame < 2 * TRAIL_LENGTH; frame++) {
+        memcpy(snapshot, birds, MANY * sizeof(*birds));
+        assert(spatial_grid_build(&grid, MANY, read_bird_position, snapshot) == SPATIAL_GRID_OK);
+        update_birds(birds, snapshot, &grid);
+    }
+    for (int i = 0; i < MANY; i += TRAIL_EVERY)
+        assert(birds[i].trail_held == TRAIL_LENGTH && birds[i].trail_at < TRAIL_LENGTH);
+
+    /* And shrunk, the survivors are the first ones, untouched. */
+    first = birds[0];
+    config.birds = FEW / 2;
+    assert(resize_the_flock(&birds, &snapshot, MANY, FEW / 2));
+    assert(memcmp(&birds[0], &first, sizeof(first)) == 0);
+
+    spatial_grid_destroy(&grid);
+    free(snapshot);
+    free(birds);
+    reset_test_config();
+}
+
+/* However the program ends, the terminal is put back, and a reader that goes
+ * away, as head does after its first bytes, is one of the ways: SIGPIPE's default
+ * used to kill it there and leave the shell raw, with no echo. The whole program
+ * runs in a child on a terminal of its own, writing into a pipe that is closed
+ * under it. */
+static void test_a_closed_pipe_leaves_the_terminal_as_it_was(void) {
+    int master = posix_openpt(O_RDWR | O_NOCTTY);
+    assert(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0);
+    const char *name = ptsname(master);
+    assert(name != NULL);
+    int terminal = open(name, O_RDWR | O_NOCTTY);
+    assert(terminal >= 0);
+    struct termios before, after;
+    assert(tcgetattr(terminal, &before) == 0);
+    int output[2];
+    assert(pipe(output) == 0);
+    fflush(NULL);
+
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        alarm(20); /* A hang fails the test instead of stalling the suite. */
+        int quiet = open("/dev/null", O_WRONLY);
+        if (quiet < 0 || dup2(terminal, STDIN_FILENO) < 0 || dup2(output[1], STDOUT_FILENO) < 0 ||
+            dup2(quiet, STDERR_FILENO) < 0)
+            _exit(99);
+        close(output[0]);
+        /* As a fresh process has them: earlier tests leave state behind. */
+        terminal_is_raw = terminal_restored = alt_screen_is_on = sprites_uploaded = 0;
+        char *argv[] = {"cbirds", "--render", "braille", "-n", "50", NULL};
+        exit(cbirds_application_main(5, argv));
+    }
+    close(output[1]);
+    char byte;
+    assert(read(output[0], &byte, 1) == 1);
+    close(output[0]);
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    /* An error it reports and exits on, not a signal it dies of. */
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_FAILURE);
+    assert(tcgetattr(terminal, &after) == 0);
+    assert(after.c_iflag == before.c_iflag && after.c_oflag == before.c_oflag &&
+           after.c_cflag == before.c_cflag && after.c_lflag == before.c_lflag);
+    assert(memcmp(after.c_cc, before.c_cc, sizeof(before.c_cc)) == 0);
+    close(terminal);
+    close(master);
+}
+
 static int feed_input(const char *keys) {
     int descriptors[2];
     assert(pipe(descriptors) == 0);
@@ -3106,6 +3206,8 @@ static void test_flocks_avoid_each_other_as_much_as_asked(void) {
 int main(void) {
     make_scratch();
     trig_lookup_init();
+    /* First, while every global is as a fresh process has it. */
+    test_a_closed_pipe_leaves_the_terminal_as_it_was();
     test_the_trig_lookup_covers_the_circle();
     test_the_frame_rate_can_be_unlocked();
     test_engine_matches_brute_force();
@@ -3113,6 +3215,7 @@ int main(void) {
     test_the_edge_pushes_harder_the_further_out_a_bird_is();
     test_bottom_band_scales_on_a_short_viewport();
     test_birds_start_spread_inside_the_free_region();
+    test_a_grown_flock_starts_its_new_birds_clean();
     test_the_recording_rate_is_one_a_gif_has();
     test_birds_bank_rather_than_snap();
     test_the_konami_code();

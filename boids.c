@@ -287,6 +287,7 @@ static const double AVOID_WEIGHT_MAX = 1.5;
  * clicks, and 1006 lifts the 223 column ceiling of the original encoding. */
 #define MOUSE_REPORT_ON "\033[?1003h\033[?1006h"
 #define MOUSE_REPORT_OFF "\033[?1006l\033[?1003l"
+#define KITTY_FREE_IMAGES "\033_Ga=d,d=A,q=2\033\\"
 
 typedef struct {
     double x, y;
@@ -463,6 +464,7 @@ static struct termios saved_termios;
 static volatile sig_atomic_t terminal_is_raw;
 static volatile sig_atomic_t terminal_restored;
 static volatile sig_atomic_t alt_screen_is_on;
+static volatile sig_atomic_t sprites_uploaded;
 
 static void write_all(const void *data, size_t length) {
     const char *bytes = data;
@@ -486,6 +488,11 @@ static void restore_terminal(void) {
         terminal_is_raw = 0;
     }
     if (!alt_screen_is_on) return; /* The probe failed before we took the screen. */
+    /* The sprites were uploaded once and outlive the frames that placed them:
+     * the lowercase delete every frame sends clears placements only. Uppercase
+     * frees every image left without one, so the terminal is not holding a few
+     * megabytes of birds after they have flown. */
+    if (sprites_uploaded) write_all(KITTY_FREE_IMAGES, sizeof(KITTY_FREE_IMAGES) - 1);
     write_all(MOUSE_REPORT_OFF, sizeof(MOUSE_REPORT_OFF) - 1);
     write_all(SYNC_UPDATE_END, sizeof(SYNC_UPDATE_END) - 1);
     write_all(CURSOR_SHOW, sizeof(CURSOR_SHOW) - 1);
@@ -507,6 +514,13 @@ static void install_signal_handlers(void) {
     sigemptyset(&action.sa_mask);
     for (size_t i = 0; i < sizeof(signals) / sizeof(*signals); i++)
         sigaction(signals[i], &action, NULL);
+    /* A reader that goes away, as head does, is an error to report rather than a
+     * death: SIGPIPE's default kills the process before the terminal is put back,
+     * and leaves the shell without echo. Ignored, the write fails with EPIPE and
+     * the program leaves through exit, which restores it. */
+    action.sa_handler = SIG_IGN;
+    action.sa_flags = 0;
+    sigaction(SIGPIPE, &action, NULL);
 }
 
 /* Sends a request and collects whatever comes back until a terminator or the
@@ -1738,6 +1752,10 @@ static int shade_for_flock(int flock) {
 
 /* One bird, so that growing the flock at runtime places only the new ones. */
 static void place_one_bird(bird_t *bird, int index) {
+    /* A bird starts from nothing: the memory a + grows the flock into is
+     * whatever the allocator left there, and the tail index is read as an array
+     * index the moment trails are on. */
+    *bird = (bird_t){0};
     double min_x = screen.turn_x, max_x = screen.width - screen.turn_x;
     double min_y = screen.turn_y, max_y = screen.height - screen.turn_bottom;
     if (max_x <= min_x) min_x = max_x = screen.width / 2.0;
@@ -1793,6 +1811,27 @@ static void place_one_bird(bird_t *bird, int index) {
 
 static void initialize_birds(bird_t *birds) {
     for (int i = 0; i < config.birds; i++) place_one_bird(&birds[i], i);
+}
+
+/* Grown or shrunk by a keypress: the birds already flying carry on and only the
+ * new ones are placed. Both arrays change or neither does. A realloc each could
+ * leave one resized and the other not, and one count cannot describe two
+ * lengths, so both are built new and swapped in only once both exist. */
+static int resize_the_flock(bird_t **birds, bird_t **snapshot, int from, int to) {
+    bird_t *grown = malloc(sizeof(**birds) * (size_t)to);
+    bird_t *grown_snapshot = malloc(sizeof(**snapshot) * (size_t)to);
+    if (grown == NULL || grown_snapshot == NULL) {
+        free(grown);
+        free(grown_snapshot);
+        return 0;
+    }
+    memcpy(grown, *birds, sizeof(**birds) * (size_t)(from < to ? from : to));
+    for (int i = from; i < to; i++) place_one_bird(&grown[i], i);
+    free(*birds);
+    free(*snapshot);
+    *birds = grown;
+    *snapshot = grown_snapshot;
+    return 1;
 }
 
 /*
@@ -3880,6 +3919,7 @@ int main(int argc, char **argv) {
     place_hawks();
     begin_the_intro();
     if (render_mode == RENDER_KITTY) {
+        sprites_uploaded = 1; /* Even a failed upload may have left some behind. */
         graphics_status = upload_sprite_sets(&graphics, text_sprites);
         free_sprites(text_sprites);
         if (graphics_status != KITTY_GRAPHICS_OK) {
@@ -3926,19 +3966,12 @@ int main(int argc, char **argv) {
             exit(EXIT_FAILURE);
         }
         if (population_changed) {
-            /* Grown or shrunk by a keypress. The birds already flying carry on;
-             * only the new ones need placing, and the grid needs room for them. */
+            /* Grown or shrunk by a keypress, and the grid needs room for them. */
             population_changed = 0;
-            bird_t *grown = realloc(birds, sizeof(*birds) * (size_t)config.birds);
-            bird_t *grown_snapshot = realloc(snapshot, sizeof(*snapshot) * (size_t)config.birds);
-            if (grown != NULL) birds = grown;
-            if (grown_snapshot != NULL) snapshot = grown_snapshot;
-            if (grown == NULL || grown_snapshot == NULL) {
-                config.birds = live_birds; /* Keep what we have rather than lose it. */
-            } else {
-                for (int i = live_birds; i < config.birds; i++) place_one_bird(&birds[i], i);
+            if (resize_the_flock(&birds, &snapshot, live_birds, config.birds))
                 live_birds = config.birds;
-            }
+            else
+                config.birds = live_birds; /* Keep what we have rather than lose it. */
             grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, config.birds);
             if (grid_status != SPATIAL_GRID_OK) {
                 fprintf(stderr, "Cannot resize spatial grid: %s\n",
@@ -3973,8 +4006,14 @@ int main(int argc, char **argv) {
                 continue;
             }
             if (graphics_status != KITTY_GRAPHICS_OK) {
-                fprintf(stderr, "Cannot flush Kitty graphics: %s\n",
-                        kitty_graphics_status_string(graphics_status));
+                /* Whatever the renderer: the text ones go through this buffer
+                 * too, and a reader that went away is the usual reason. */
+                if (graphics_status == KITTY_GRAPHICS_ERR_IO)
+                    fprintf(stderr, "%s: cannot write to the terminal: %s\n", program_name,
+                            strerror(errno));
+                else
+                    fprintf(stderr, "%s: cannot write to the terminal: %s\n", program_name,
+                            kitty_graphics_status_string(graphics_status));
                 exit(EXIT_FAILURE);
             }
         }

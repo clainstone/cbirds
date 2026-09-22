@@ -10,12 +10,11 @@ make
 # eight seconds is five of flocking. Each flies slower than the tuned pace, at
 # its own notch: --speed 0 is 0.2x, 1 is 0.4x (the default), 2 is 0.6x.
 
-# The clip at the top: the murmuration preset with tails, wheeling around one
-# hawk, at the default pace. 96x32 cells is 768x512 pixels, which GitHub shows
-# at full size on a laptop and taller than a wide clip on a phone.
-./cbirds --record docs/demo.gif --record-fps 25 --record-seconds 8 \
-         --record-size 96x32 -n 285 -s 14 --color ember --preset murmuration \
-         --trails --hawks 1 --speed 1 --seed 15
+# The clip at the top: two hawks through an ice-blue flock, at a fifth of the
+# pace and at 50 frames a second, the most a GIF can carry. 96x32 cells is
+# 768x512 pixels, which GitHub shows at full size on a laptop.
+./cbirds --record docs/demo.gif --record-fps 50 --record-seconds 8 \
+         --record-size 96x32 -n 300 -s 14 --color ice --hawks 2 --speed 0 --seed 33
 
 # The gallery. The sprite cells are recorded at 64x18 cells, 25 frames a
 # second, so that GitHub shows the birds near the size they were drawn at.
@@ -50,8 +49,8 @@ and cbirds says so rather than pretending.
 
 A GIF frame costs about three bits per bird pixel, so the size of a clip is set
 by how many birds are on the screen and how big they are, not by the
-resolution. The clip at the top, 285 birds at fourteen pixels for eight
-seconds at 25 frames a second, with tails and a hawk, is 3.4 megabytes; the text clips are a fraction of
+resolution. The clip at the top, 300 birds at fourteen pixels for eight
+seconds at 50 frames a second, with two hawks, is 5.3 megabytes; the text clips are a fraction of
 that, because dots compress. The cost is birds times sprite area times frames,
 so a slower, smoother clip pays for its frames with birds, not with
 resolution.

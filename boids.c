@@ -2679,8 +2679,8 @@ enum { EXIT_USAGE = 2 }; /* A mistyped command is not a run that went wrong. */
 static const option_example_t EXAMPLES[] = {
     {"cbirds", "a flock, and nothing to read"},
     {"cbirds --preset murmuration", "the starling look"},
-    {"cbirds --hawks 2 --color ember", "something to watch"},
-    {"cbirds --flocks 3 --color ice", "three of them, keeping to their own"},
+    {"cbirds --hawks 2 --color ice", "something to watch"},
+    {"cbirds --flocks 3 --color ember", "three of them, keeping to their own"},
     {"cbirds --depth --trails", "a second sky behind the first"},
     {"cbirds --render braille", "the same flock as dots, in any terminal"},
     {"cbirds --record flock.gif", "a GIF, with no terminal in the way"},

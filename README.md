@@ -2,7 +2,9 @@
 
 A flock of birds in your terminal.
 
-![The flock writes BOIDS, lets go, and flocks](docs/demo.gif)
+![The flock writes BOIDS, lets go, and gathers into a murmuration](docs/demo.gif)
+
+<p align="center"><code>cbirds --preset murmuration --color ember --trails</code></p>
 
 Craig Reynolds' boids, drawn as sprites through the terminal's graphics
 protocol, and as braille where there is none. One C99 program, no
@@ -10,44 +12,28 @@ dependencies. Every clip on this page was recorded by cbirds itself.
 
 <table>
 <tr>
-<td width="50%"><img src="docs/hawks.gif" alt="Two hawks hunting the flock"></td>
-<td width="50%"><img src="docs/flocks.gif" alt="Three flocks keeping to their own"></td>
+<td width="50%"><img src="docs/hawks.gif" alt="Two scarlet hawks hunt an ice-blue flock, which parts around them and closes behind"></td>
+<td width="50%"><img src="docs/flocks.gif" alt="Three flocks in gold, orange and red, each keeping to its own kind and crossing the others"></td>
 </tr>
 <tr>
-<td align="center"><code>cbirds --hawks 2 --color acid</code></td>
+<td align="center"><code>cbirds --hawks 2 --color ice --speed 0</code></td>
 <td align="center"><code>cbirds --flocks 3 --color ember</code></td>
 </tr>
 <tr>
-<td width="50%"><img src="docs/murmuration.gif" alt="A murmuration with tails"></td>
-<td width="50%"><img src="docs/depth.gif" alt="Two planes of birds, the far one smaller and slower"></td>
+<td width="50%"><img src="docs/matrix.gif" alt="Matrix rain, as green birds with tails falling through the screen"></td>
+<td width="50%"><img src="docs/depth.gif" alt="Two skies: birds with tails in front, smaller and dimmer birds drifting slower behind them"></td>
 </tr>
 <tr>
-<td align="center"><code>cbirds --preset murmuration --trails --color ice</code></td>
+<td align="center"><code>cbirds --matrix --speed 0</code></td>
 <td align="center"><code>cbirds --depth --trails --color ice</code></td>
 </tr>
 <tr>
-<td width="50%"><img src="docs/storm.gif" alt="The storm preset, flown as planes"></td>
-<td width="50%"><img src="docs/matrix.gif" alt="Matrix rain, as birds"></td>
+<td width="50%"><img src="docs/braille.gif" alt="The same flock and hawks in braille dots, as a terminal without a graphics protocol shows it"></td>
+<td width="50%"><img src="docs/sextants.gif" alt="The flock in sextant blocks, as a text terminal with a font from 2020 or later shows it"></td>
 </tr>
 <tr>
-<td align="center"><code>cbirds --preset storm --shape plane --color acid</code></td>
-<td align="center"><code>cbirds --matrix</code></td>
-</tr>
-<tr>
-<td width="50%"><img src="docs/ember.gif" alt="The flock on the ember ramp"></td>
-<td width="50%"><img src="docs/arrows.gif" alt="Two flocks of arrows on the matrix ramp"></td>
-</tr>
-<tr>
-<td align="center"><code>cbirds --color ember</code></td>
-<td align="center"><code>cbirds --flocks 2 --shape arrow --color matrix</code></td>
-</tr>
-<tr>
-<td width="50%"><img src="docs/braille.gif" alt="The flock in braille, for a terminal with no graphics"></td>
-<td width="50%"><img src="docs/sextants.gif" alt="The flock in sextants"></td>
-</tr>
-<tr>
-<td align="center"><code>cbirds --render braille --hawks 2 --color ember</code></td>
-<td align="center"><code>cbirds --render sextants --color ice</code></td>
+<td align="center"><code>cbirds --render braille --hawks 2 --color ice</code></td>
+<td align="center"><code>cbirds --render sextants --color acid --speed 2</code></td>
 </tr>
 </table>
 
@@ -69,8 +55,8 @@ a C compiler and `make`, nothing else. `make test` runs the tests.
 ```
 cbirds                              a flock, in your terminal's own colours
 cbirds --preset murmuration         the starling look
-cbirds --hawks 2 --color ember      something to watch
-cbirds --flocks 3 --color ice       three flocks that keep to their own
+cbirds --hawks 2 --color ice        something to watch
+cbirds --flocks 3 --color ember     three flocks that keep to their own
 cbirds --depth --trails             a second sky behind the first
 cbirds --matrix                     it is raining birds
 ```

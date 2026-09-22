@@ -3,6 +3,25 @@
 #undef main
 
 #include <assert.h>
+#include <fcntl.h>
+#include <sys/wait.h>
+
+/* A directory of the run's own for the files it writes: a fixed name in /tmp
+ * collides with a second run, and may already be something else, a symlink
+ * included, that a truncating open would then write through. */
+static char scratch[512];
+
+static void make_scratch(void) {
+    const char *base = getenv("TMPDIR");
+    snprintf(scratch, sizeof(scratch), "%s/cbirds_boids_test.XXXXXX",
+             base != NULL && *base != '\0' ? base : "/tmp");
+    assert(mkdtemp(scratch) != NULL);
+}
+
+static void scratch_file(char *path, size_t size, const char *name) {
+    int length = snprintf(path, size, "%s/%s", scratch, name);
+    assert(length > 0 && (size_t)length < size);
+}
 
 /* The model, written out a second time the obvious way. It knows the three rules,
  * the edges and the leash, and it deliberately does not know the pointer, the
@@ -189,6 +208,9 @@ static uint32_t test_random(uint32_t *state) {
 static void initialize_test_birds(bird_t *birds, int count) {
     uint32_t state = 0x93d765b1u;
     for (int i = 0; i < count; i++) {
+        /* Whole, not just the fields this test sets: the engine reads the layer,
+         * the wings and the rest, and a stack array holds whatever was there. */
+        birds[i] = (bird_t){0};
         birds[i].x = (double)(test_random(&state) % 7600u) / 10.0 - 60.0;
         birds[i].y = (double)(test_random(&state) % 5000u) / 10.0 - 50.0;
         birds[i].direction = (double)(test_random(&state) % 3600u) * M_PI / 1800.0;
@@ -1916,8 +1938,11 @@ static void test_a_text_terminal_gets_the_flock_in_braille(void) {
 
     /* And a snapshot under either is a picture of the cells, the size of the
      * screen, not of the pixels they were read from. */
-    char path[] = "/tmp/cbirds_text_snapshot.png";
+    char path[600];
+    scratch_file(path, sizeof(path), "text_snapshot.png");
     assert(write_snapshot(path, birds));
+    /* And a disk that is full says so, even when it only says it on close. */
+    if (access("/dev/full", W_OK) == 0) assert(!write_snapshot("/dev/full", birds));
     FILE *file = fopen(path, "rb");
     assert(file != NULL);
     static uint8_t bytes[1 << 20];
@@ -1943,7 +1968,8 @@ static void test_a_text_terminal_gets_the_flock_in_braille(void) {
 /* Under a text renderer the GIF is of the cells, painted as a terminal shows
  * them: dots on the ground, in the palette's colours, and nothing else. */
 static void test_a_text_renderer_records_its_cells(void) {
-    char path[] = "/tmp/cbirds_record_test_braille.gif";
+    char path[600];
+    scratch_file(path, sizeof(path), "record_braille.gif");
     reset_test_config();
     config.birds = 60;
     config.palette = palette_named("ember");
@@ -1988,7 +2014,8 @@ static void test_a_text_renderer_records_its_cells(void) {
 /* A recording named .cast is text: an asciinema file, a JSON header and a line
  * of escape text per frame, playable in any terminal and a fraction of a GIF. */
 static void test_a_cast_is_the_flock_as_text(void) {
-    char path[] = "/tmp/cbirds_record_test.cast";
+    char path[600];
+    scratch_file(path, sizeof(path), "record.cast");
     reset_test_config();
     config.birds = 60;
     config.palette = palette_named("ember");
@@ -2219,7 +2246,8 @@ static void test_wings_beat_and_sometimes_glide(void) {
  * it is drawn without a terminal, so the palette that asks the terminal what
  * colours it uses has to fall back to one that has colours in it. */
 static void test_recording_gives_the_whole_frame_to_the_flock(void) {
-    char path[] = "/tmp/cbirds_record_test.gif";
+    char path[600];
+    scratch_file(path, sizeof(path), "record.gif");
     legend_enabled = 1;
     reset_test_config();
     config.palette = palette_named("theme");
@@ -3046,6 +3074,7 @@ static void test_flocks_avoid_each_other_as_much_as_asked(void) {
 }
 
 int main(void) {
+    make_scratch();
     trig_lookup_init();
     test_the_trig_lookup_covers_the_circle();
     test_the_frame_rate_can_be_unlocked();
@@ -3105,5 +3134,7 @@ int main(void) {
     test_the_avoidance_slider_needs_two_flocks();
     test_the_avoidance_is_a_flag();
     test_flocks_avoid_each_other_as_much_as_asked();
+    /* Every test removes what it wrote, so this fails if one did not. */
+    assert(rmdir(scratch) == 0);
     return 0;
 }

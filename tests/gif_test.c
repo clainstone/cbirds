@@ -1,9 +1,31 @@
+#define _XOPEN_SOURCE 700 /* mkdtemp. */
+#define _DARWIN_C_SOURCE
+
 #include "../gif.h"
 
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+
+/* A directory of the run's own for the files it writes: a fixed name in /tmp
+ * collides with a second run, and may already be something else, a symlink
+ * included, that a truncating open would then write through. */
+static char scratch[512];
+
+static void make_scratch(void) {
+    const char *base = getenv("TMPDIR");
+    snprintf(scratch, sizeof(scratch), "%s/cbirds_gif_test.XXXXXX",
+             base != NULL && *base != '\0' ? base : "/tmp");
+    assert(mkdtemp(scratch) != NULL);
+}
+
+static const char *scratch_file(const char *name) {
+    static char path[600];
+    snprintf(path, sizeof(path), "%s/%s", scratch, name);
+    return path;
+}
 
 /*
  * A GIF reader, written here from the specification rather than borrowed from
@@ -158,7 +180,7 @@ static void paint(png_image_t *frame, int step) {
 
 static void test_round_trip(void) {
     enum { W = 64, H = 40, N = 6 };
-    const char *path = "/tmp/cbirds_gif_test.gif";
+    const char *path = scratch_file("round_trip.gif");
     gif_writer_t *writer = NULL;
     png_image_t frame = {0, 0, NULL};
     reading_t read;
@@ -198,19 +220,20 @@ static void test_refusals(void) {
     gif_writer_t *writer = NULL;
     png_image_t frame = {0, 0, NULL};
 
-    assert(gif_open(NULL, "/tmp/x.gif", 4, 4, 5) == GIF_ERR_ARGUMENT);
+    const char *path = scratch_file("refuse.gif");
+    assert(gif_open(NULL, path, 4, 4, 5) == GIF_ERR_ARGUMENT);
     assert(gif_open(&writer, NULL, 4, 4, 5) == GIF_ERR_ARGUMENT);
-    assert(gif_open(&writer, "/tmp/x.gif", 0, 4, 5) == GIF_ERR_ARGUMENT);
+    assert(gif_open(&writer, path, 0, 4, 5) == GIF_ERR_ARGUMENT);
     assert(gif_open(&writer, "/nowhere/at/all/x.gif", 4, 4, 5) == GIF_ERR_IO);
 
-    assert(gif_open(&writer, "/tmp/cbirds_gif_refuse.gif", 8, 8, 5) == GIF_OK);
+    assert(gif_open(&writer, path, 8, 8, 5) == GIF_OK);
     assert(gif_add_frame(writer, NULL) == GIF_ERR_ARGUMENT);
     /* A frame of the wrong size is not this animation's frame. */
     assert(png_image_alloc(&frame, 9, 8) == PNG_OK);
     assert(gif_add_frame(writer, &frame) == GIF_ERR_ARGUMENT);
     png_image_free(&frame);
     assert(gif_close(writer, NULL, NULL) == GIF_OK);
-    remove("/tmp/cbirds_gif_refuse.gif");
+    remove(path);
 
     for (int s = GIF_OK; s <= GIF_ERR_IO; s++) {
         const char *text = gif_status_string((gif_status_t)s);
@@ -222,7 +245,7 @@ static void test_refusals(void) {
  * had better compress. */
 static void test_flat_frames_compress(void) {
     enum { W = 320, H = 200, N = 4 };
-    const char *path = "/tmp/cbirds_gif_flat.gif";
+    const char *path = scratch_file("flat.gif");
     gif_writer_t *writer = NULL;
     png_image_t frame = {0, 0, NULL};
     size_t bytes = 0;
@@ -244,8 +267,11 @@ static void test_flat_frames_compress(void) {
 }
 
 int main(void) {
+    make_scratch();
     test_round_trip();
     test_refusals();
     test_flat_frames_compress();
+    /* Every test removes what it wrote, so this fails if one did not. */
+    assert(rmdir(scratch) == 0);
     return 0;
 }

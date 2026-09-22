@@ -3259,7 +3259,8 @@ static int write_snapshot(const char *path, const bird_t *birds) {
         FILE *out = fopen(path, "wb");
         if (out != NULL) {
             written = fwrite(encoded, 1, encoded_length, out) == encoded_length;
-            fclose(out);
+            /* A full disk may only say so when the buffer is flushed on close. */
+            if (fclose(out) != 0) written = 0;
         }
     }
     free(encoded);
@@ -3937,16 +3938,21 @@ int main(int argc, char **argv) {
             nanosleep(&delay, NULL);
         }
     }
+    /* A snapshot asked for and not written is a failed run, so a script that
+     * takes one can tell. */
+    int outcome = EXIT_SUCCESS;
     if (snapshot_path != NULL) {
         restore_terminal();
-        if (write_snapshot(snapshot_path, birds))
+        if (write_snapshot(snapshot_path, birds)) {
             fprintf(stderr, "%s: wrote %s\n", program_name, snapshot_path);
-        else
+        } else {
             fprintf(stderr, "%s: could not write %s\n", program_name, snapshot_path);
+            outcome = EXIT_FAILURE;
+        }
     }
     spatial_grid_destroy(&grid);
     kitty_graphics_destroy(&graphics);
     free(snapshot);
     free(birds);
-    return EXIT_SUCCESS;
+    return outcome;
 }

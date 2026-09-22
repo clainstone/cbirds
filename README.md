@@ -48,7 +48,9 @@ cbirds
 ```
 
 Linux, macOS and the BSDs, or WSL inside Windows Terminal. You need
-a C compiler and `make`, nothing else. `make test` runs the tests.
+a C compiler and `make`, nothing else. `make test` runs the tests. The build
+uses the system's `cc` and honours `CC`, `CFLAGS`, `LDFLAGS`, `PREFIX` and
+`DESTDIR`, so `make CC=clang` and packaging work as usual.
 
 ## Use
 

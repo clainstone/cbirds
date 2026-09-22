@@ -1055,8 +1055,50 @@ static kitty_graphics_status_t upload_sprite_sets(kitty_graphics_t *graphics,
     return status == KITTY_GRAPHICS_OK ? kitty_graphics_flush(graphics) : status;
 }
 
+/*
+ * The flock's own random numbers.
+ *
+ * --seed promises the same flock for the same seed, and rand() cannot keep that:
+ * its sequence belongs to the C library, and glibc, macOS and the BSDs each draw
+ * a different one from the same seed. This is glibc's generator written out, an
+ * additive lagged Fibonacci over 31 words seeded by a Park and Miller LCG and
+ * run 310 steps before its first number. A seed now gives the same flock
+ * everywhere, and every clip recorded on Linux before it existed still comes
+ * out byte for byte.
+ */
+enum { RANDOM_WORDS = 31, RANDOM_LAG = 3, RANDOM_WARMUP = 310, RANDOM_MAX = 2147483647 };
+static struct {
+    uint32_t word[RANDOM_WORDS];
+    int front, rear;
+} random_state;
+
+static uint32_t next_random(void) {
+    uint32_t sum = random_state.word[random_state.front] += random_state.word[random_state.rear];
+    random_state.front = (random_state.front + 1) % RANDOM_WORDS;
+    random_state.rear = (random_state.rear + 1) % RANDOM_WORDS;
+    return sum >> 1; /* The lowest bit is the least random one. */
+}
+
+static void seed_random(unsigned seed) {
+    if (seed == 0) seed = 1;
+    /* glibc holds the seed as a 32 bit signed word; the wrap is spelled out so it
+     * does not rest on how this compiler converts an unsigned that does not fit. */
+    int64_t word = seed > INT32_MAX ? (int64_t)seed - 4294967296 : (int64_t)seed;
+    random_state.word[0] = (uint32_t)seed;
+    for (int i = 1; i < RANDOM_WORDS; i++) {
+        /* 16807 * word % 2147483647 by Schrage's method, as glibc computes it. */
+        int64_t high = word / 127773, low = word % 127773;
+        word = 16807 * low - 2836 * high;
+        if (word < 0) word += 2147483647;
+        random_state.word[i] = (uint32_t)word;
+    }
+    random_state.front = RANDOM_LAG;
+    random_state.rear = 0;
+    for (int i = 0; i < RANDOM_WARMUP; i++) next_random();
+}
+
 static double random_unit(void) {
-    return (double)rand() / RAND_MAX;
+    return (double)next_random() / RANDOM_MAX;
 }
 
 static int direction_frame(double radians) {
@@ -3516,7 +3558,7 @@ static int run_cast_recording(void) {
             "\"title\": \"cbirds\", \"env\": {\"TERM\": \"xterm-256color\", \"SHELL\": "
             "\"/bin/sh\"}}\n",
             screen.cols, screen.rows, (long)time(NULL));
-    srand(requested_seed >= 0 ? (unsigned)requested_seed : 1u);
+    seed_random(requested_seed >= 0 ? (unsigned)requested_seed : 1u);
     initialize_birds(birds);
     place_hawks();
     begin_the_intro();
@@ -3641,7 +3683,7 @@ static int run_recording(void) {
     bird_t *birds = calloc((size_t)config.birds, sizeof(*birds));
     bird_t *snapshot = malloc(sizeof(*snapshot) * (size_t)config.birds);
     if (birds == NULL || snapshot == NULL) return EXIT_FAILURE;
-    srand(requested_seed >= 0 ? (unsigned)requested_seed : 1u);
+    seed_random(requested_seed >= 0 ? (unsigned)requested_seed : 1u);
     initialize_birds(birds);
     place_hawks();
     begin_the_intro();
@@ -3724,7 +3766,7 @@ static int run_benchmark(void) {
     bird_t *birds = calloc((size_t)config.birds, sizeof(*birds));
     bird_t *snapshot = malloc(sizeof(*snapshot) * (size_t)config.birds);
     if (birds == NULL || snapshot == NULL) return EXIT_FAILURE;
-    srand(requested_seed >= 0 ? (unsigned)requested_seed : 1u);
+    seed_random(requested_seed >= 0 ? (unsigned)requested_seed : 1u);
     initialize_birds(birds);
     place_hawks();
 
@@ -3796,7 +3838,7 @@ int main(int argc, char **argv) {
     }
     /* A named seed makes a run repeatable, which is what lets a look be shared
      * and a bug report be reproduced. */
-    srand(requested_seed >= 0 ? (unsigned)requested_seed : (unsigned)time(NULL));
+    seed_random(requested_seed >= 0 ? (unsigned)requested_seed : (unsigned)time(NULL));
     update_screen_dimensions();
     grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, config.birds);
     if (grid_status != SPATIAL_GRID_OK) {

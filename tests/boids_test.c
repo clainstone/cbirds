@@ -434,7 +434,7 @@ static void test_birds_start_spread_inside_the_free_region(void) {
 
     set_test_screen(900, 600);
     config.birds = BIRD_COUNT;
-    srand(20260911u);
+    seed_random(20260911u);
     initialize_birds(birds);
 
     int distinct = 0;
@@ -837,7 +837,7 @@ static void test_birds_start_clear_of_the_panel(void) {
     enum { BIRD_COUNT = 512 };
     bird_t birds[BIRD_COUNT];
 
-    srand(20260912u);
+    seed_random(20260912u);
     /* A roomy viewport, and one where the panel covers most of the free region. */
     static const int sizes[][2] = {{200, 50}, {80, 24}, {50, 15}};
     for (size_t i = 0; i < sizeof(sizes) / sizeof(*sizes); i++) {
@@ -1023,7 +1023,7 @@ static void test_autopilot_wanders_and_yields(void) {
     assert(!flying_itself());
 
     /* A drift moves exactly one notch, and stays inside the bar. */
-    srand(7);
+    seed_random(7);
     for (int step = 0; step < 400; step++) {
         int before[] = {config.boundary_notch, config.separation_notch, config.alignment_notch,
                         config.vision_notch};
@@ -2184,7 +2184,7 @@ static void test_the_far_layer_is_another_sky(void) {
     /* One plane unless asked: under --depth a bird is born into one or the other. */
     config.hawks = 0;
     int far = 0;
-    srand(3);
+    seed_random(3);
     deep_look = 1;
     for (int i = 0; i < BIRD_COUNT; i++) {
         place_one_bird(&birds[i], i);
@@ -2201,6 +2201,38 @@ static void test_the_far_layer_is_another_sky(void) {
     reset_test_config();
 }
 
+/* A seed is the same flock on every system: the numbers are the program's own,
+ * and they are glibc's, so what was recorded on Linux before still is. */
+static void test_a_seed_draws_the_same_numbers_everywhere(void) {
+    /* What glibc's rand() gives after srand(1), which is also srand(0). */
+    static const uint32_t FIRST[] = {1804289383u, 846930886u, 1681692777u, 1714636915u,
+                                     1957747793u, 424238335u, 719885386u,  1649760492u};
+    for (unsigned seed = 0; seed <= 1; seed++) {
+        seed_random(seed);
+        for (size_t i = 0; i < sizeof(FIRST) / sizeof(*FIRST); i++)
+            assert(next_random() == FIRST[i]);
+    }
+    seed_random(42);
+    double lowest = 1, highest = 0;
+    for (int i = 0; i < 100000; i++) {
+        double unit = random_unit();
+        assert(unit >= 0 && unit <= 1);
+        if (unit < lowest) lowest = unit;
+        if (unit > highest) highest = unit;
+    }
+    assert(lowest < 0.001 && highest > 0.999);
+#ifdef __GLIBC__
+    /* And where there is a glibc to ask, all of it, for seeds either side of
+     * the one that no longer fits a signed word. */
+    static const unsigned SEEDS[] = {2, 33, 20260911u, 2147483647u, 2147483648u, 4294967295u};
+    for (size_t s = 0; s < sizeof(SEEDS) / sizeof(*SEEDS); s++) {
+        srand(SEEDS[s]);
+        seed_random(SEEDS[s]);
+        for (int i = 0; i < 10000; i++) assert(next_random() == (uint32_t)rand());
+    }
+#endif
+}
+
 /* Wings beat at WING_HZ whatever the frame rate, out and back through the
  * sequence, and a bird sometimes stops to glide with them out. */
 static void test_wings_beat_and_sometimes_glide(void) {
@@ -2209,11 +2241,9 @@ static void test_wings_beat_and_sometimes_glide(void) {
     bird_t bird = {.wing = 0, .wing_clock = 0, .gliding = 0};
     /* One beat is WING_CYCLE phases; at sixty frames a second and six beats a
      * second, that is ten frames a beat. A hundred seconds, so that what is
-     * counted is the rule and not the luck of one short run: how many glides
-     * there are depends on the C library's rand(), which differs between
-     * systems (macOS draws a different sequence from glibc for the same seed). */
+     * counted is the rule and not the luck of one short run. */
     int phases_seen[WING_CYCLE] = {0};
-    srand(1);
+    seed_random(1);
     int frames = 0, beats = 0, glided = 0, glides = 0;
     for (frames = 0; frames < 6000; frames++) {
         int before = bird.wing;
@@ -2300,7 +2330,7 @@ static void test_flocks_keep_to_their_own_side_of_the_sky(void) {
         apply_screen_size(100, 28, 800, 448);
         config.birds = BIRD_COUNT;
         config.flocks = flocks;
-        srand(1); /* The glides draw on it, so the run is pinned. */
+        seed_random(1); /* The glides draw on it, so the run is pinned. */
 
         /* All of them started in one heap in the middle, which is the hardest
          * case: if they sort themselves out from there they sort themselves out
@@ -2828,7 +2858,7 @@ static double share_off_the_screen(int pace_notch, int columns, int rows, int pa
     set_frame_seconds(1.0 / FRAME_RATE);
     assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
     assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRDS) == SPATIAL_GRID_OK);
-    srand(7);
+    seed_random(7);
     initialize_birds(birds);
     for (int frame = 0; frame < SECONDS * FRAME_RATE; frame++) {
         memcpy(snapshot, birds, sizeof(*birds) * BIRDS);
@@ -3007,7 +3037,7 @@ static flocks_apart_t three_flocks_at(int avoid_notch, int columns, int rows, in
     for (int f = 0; f < MAX_FLOCKS; f++) flock_home_x[f] = flock_home_y[f] = 0;
     assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
     assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRDS) == SPATIAL_GRID_OK);
-    srand(5);
+    seed_random(5);
     initialize_birds(birds);
     for (int frame = 0; frame < SECONDS * FRAME_RATE; frame++) {
         memcpy(snapshot, birds, sizeof(*birds) * BIRDS);
@@ -3103,6 +3133,7 @@ int main(void) {
     test_the_matrix_is_the_only_thing_that_rains();
     test_the_sprite_catalogue_has_a_place_for_everything();
     test_the_far_layer_is_another_sky();
+    test_a_seed_draws_the_same_numbers_everywhere();
     test_wings_beat_and_sometimes_glide();
     test_a_text_terminal_gets_the_flock_in_braille();
     test_a_text_renderer_records_its_cells();

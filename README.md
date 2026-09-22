@@ -2,9 +2,9 @@
 
 A flock of birds in your terminal.
 
-![The flock writes BOIDS, lets go, and gathers into a murmuration](docs/demo.gif)
+<p align="center"><img src="docs/demo.gif" alt="The flock writes BOIDS, lets go, and gathers into an ember murmuration that wheels around a single cyan hawk"></p>
 
-<p align="center"><code>cbirds --preset murmuration --color ember --trails</code></p>
+<p align="center"><code>cbirds --preset murmuration --color ember --trails --hawks 1</code></p>
 
 Craig Reynolds' boids, drawn as sprites through the terminal's graphics
 protocol, and as braille where there is none. One C99 program, no

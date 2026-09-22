@@ -107,8 +107,8 @@ cbirds asks the terminal what it can draw and uses the best of it.
 
 | terminal | what you see |
 |---|---|
-| Kitty, WezTerm, Ghostty, recent Konsole | sprites, over the Kitty graphics protocol |
-| everything else: Alacritty, GNOME Terminal, Terminal.app, iTerm2, xterm, foot, Windows Terminal, tmux | the same flock in braille |
+| Kitty, WezTerm, Ghostty, recent Konsole, recent iTerm2 | sprites, over the Kitty graphics protocol |
+| everything else: Alacritty, GNOME Terminal, Terminal.app, older iTerm2, xterm, foot, Windows Terminal, tmux | the same flock in braille |
 
 `--render kitty|braille|sextants|blocks` overrides it.
 Sextants are bolder than braille and need a font from 2020 or later; blocks
@@ -167,7 +167,12 @@ General
   -V, --version                 print the version and quit
 ```
 
-That is `cbirds --help`, verbatim.
+That is the options part of `cbirds --help`, as it prints it; the full help
+adds usage, examples and the keys.
+
+`--sprite` takes any PNG up to 4 MB: palette, grayscale, RGB or RGBA, at any bit
+depth, interlaced or not. `--seed` is the same flock on every system: the random
+numbers are cbirds' own, not the C library's.
 
 ## Recording
 

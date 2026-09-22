@@ -2181,24 +2181,33 @@ static void test_wings_beat_and_sometimes_glide(void) {
     set_frame_seconds(1.0 / FRAME_RATE);
     bird_t bird = {.wing = 0, .wing_clock = 0, .gliding = 0};
     /* One beat is WING_CYCLE phases; at sixty frames a second and six beats a
-     * second, that is ten frames a beat. */
+     * second, that is ten frames a beat. A hundred seconds, so that what is
+     * counted is the rule and not the luck of one short run: how many glides
+     * there are depends on the C library's rand(), which differs between
+     * systems (macOS draws a different sequence from glibc for the same seed). */
     int phases_seen[WING_CYCLE] = {0};
     srand(1);
-    int frames = 0, beats = 0, glided = 0;
-    for (frames = 0; frames < 600; frames++) {
+    int frames = 0, beats = 0, glided = 0, glides = 0;
+    for (frames = 0; frames < 6000; frames++) {
         int before = bird.wing;
+        int was_gliding = bird.gliding > 0;
         beat_wings(&bird);
         phases_seen[bird.wing % WING_CYCLE]++;
         if (bird.gliding > 0) glided++;
+        if (bird.gliding > 0 && !was_gliding) glides++;
         if (before == WING_CYCLE - 1 && bird.wing == 0) beats++;
         /* Never a jump of more than one phase in a frame. */
         assert(bird.wing == before || bird.wing == (before + 1) % WING_CYCLE ||
                (bird.gliding > 0 && bird.wing == 0));
     }
     for (int p = 0; p < WING_CYCLE; p++) assert(phases_seen[p] > 0);
-    assert(beats >= 40 && beats <= 62); /* About six a second, less the glides. */
-    assert(glided > 0);                 /* It glided at some point... */
-    assert(glided < frames / 2);        /* ...and mostly did not. */
+    /* Six a second whenever it is not gliding: a beat every ten flapping frames.
+     * A glide starts on the frame that completes a beat, so each one can shift
+     * the count by a frame. */
+    int flapping = frames - glided;
+    assert(abs(beats * 10 - flapping) <= 10 + glides);
+    assert(glides > 0);          /* It glided at some point... */
+    assert(glided < frames / 2); /* ...and mostly did not. */
     /* The sequence goes out, half, folded, half: the picture for phase 3 is the
      * same as for phase 1. */
     assert(WING_SEQUENCE[1] == WING_SEQUENCE[3]);
@@ -3043,8 +3052,9 @@ typedef struct {
     double turns_a_minute, milling, strangers_nearest;
 } flocks_as_bodies_t;
 
-static flocks_as_bodies_t flocks_as_bodies(int flocks, int avoid_notch, int columns, int rows,
-                                           int bird_count, int seconds) {
+static flocks_as_bodies_t flocks_as_bodies_seeded(int flocks, int avoid_notch, int columns,
+                                                  int rows, int bird_count, int seconds,
+                                                  unsigned seed) {
     spatial_grid_t grid;
     bird_t *birds = calloc((size_t)bird_count, sizeof(*birds));
     bird_t *snapshot = malloc(sizeof(*snapshot) * (size_t)bird_count);
@@ -3064,7 +3074,7 @@ static flocks_as_bodies_t flocks_as_bodies(int flocks, int avoid_notch, int colu
     for (int f = 0; f < MAX_FLOCKS; f++) flock_home_x[f] = flock_home_y[f] = 0;
     assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
     assert(spatial_grid_prepare(&grid, screen.width, screen.height, bird_count) == SPATIAL_GRID_OK);
-    srand(3);
+    srand(seed);
     initialize_birds(birds);
     for (int frame = 0; frame < seconds * FRAME_RATE; frame++) {
         memcpy(snapshot, birds, sizeof(*birds) * (size_t)bird_count);
@@ -3124,17 +3134,39 @@ static flocks_as_bodies_t flocks_as_bodies(int flocks, int avoid_notch, int colu
     return (flocks_as_bodies_t){turns, milling / mills, (double)strangers / sampled};
 }
 
+static flocks_as_bodies_t flocks_as_bodies(int flocks, int avoid_notch, int columns, int rows,
+                                           int bird_count, int seconds) {
+    return flocks_as_bodies_seeded(flocks, avoid_notch, columns, rows, bird_count, seconds, 3);
+}
+
+/* The same measure averaged over three flocks. A property of the flocking has
+ * to hold on average, not in one flight: which flight a seed gives depends on
+ * the C library's rand(), and macOS and glibc give different ones. */
+static flocks_as_bodies_t flocks_as_bodies_on_average(int flocks, int avoid_notch, int columns,
+                                                      int rows, int bird_count, int seconds) {
+    static const unsigned SEEDS[] = {3, 4, 5};
+    flocks_as_bodies_t mean = {0};
+    for (size_t k = 0; k < sizeof(SEEDS) / sizeof(SEEDS[0]); k++) {
+        flocks_as_bodies_t one = flocks_as_bodies_seeded(flocks, avoid_notch, columns, rows,
+                                                         bird_count, seconds, SEEDS[k]);
+        mean.turns_a_minute += one.turns_a_minute / 3;
+        mean.milling += one.milling / 3;
+        mean.strangers_nearest += one.strangers_nearest / 3;
+    }
+    return mean;
+}
+
 /* A flock with a home of its own flew round it, and a flock too big for a fixed
  * leash wound itself into a mill: a thousand birds in two flocks on a large
  * terminal turned 37 times a minute and milled at 0.53, where one flock of them
  * turns under three times. Flying where they like, with a leash as wide as the
  * flock, two flocks turn as one does. */
 static void test_flocks_do_not_fly_in_circles(void) {
-    flocks_as_bodies_t two = flocks_as_bodies(2, DEFAULT_NOTCH, 300, 80, 1000, 60);
+    flocks_as_bodies_t two = flocks_as_bodies_on_average(2, DEFAULT_NOTCH, 300, 80, 1000, 60);
     assert(two.turns_a_minute < 8);
     assert(two.milling < 0.25);
     assert(two.strangers_nearest < 0.15); /* And still two flocks, not one. */
-    flocks_as_bodies_t three = flocks_as_bodies(3, DEFAULT_NOTCH, 200, 50, 600, 60);
+    flocks_as_bodies_t three = flocks_as_bodies_on_average(3, DEFAULT_NOTCH, 200, 50, 600, 60);
     assert(three.turns_a_minute < 8);
     assert(three.milling < 0.25);
     assert(three.strangers_nearest < 0.2);

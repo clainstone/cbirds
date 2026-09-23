@@ -54,6 +54,19 @@ With Homebrew, on macOS or Linux, completions for bash, zsh and fish included:
 brew install clainstone/tap/cbirds
 ```
 
+On Debian 12, Ubuntu 22.04 and later, amd64 or arm64, from its
+[apt repository](https://clainstone.com/apt), so that `apt upgrade` keeps it up
+to date:
+
+```
+curl -fsSL https://clainstone.com/apt/cbirds.gpg | sudo tee /etc/apt/keyrings/cbirds.gpg >/dev/null
+echo "deb [signed-by=/etc/apt/keyrings/cbirds.gpg] https://clainstone.com/apt stable main" | sudo tee /etc/apt/sources.list.d/cbirds.list
+sudo apt update && sudo apt install cbirds
+```
+
+The same `.deb` files are on the [release page](https://github.com/clainstone/cbirds/releases/latest),
+for `sudo apt install ./cbirds_*.deb`.
+
 Or from source:
 
 ```
@@ -78,8 +91,10 @@ work as usual.
 
 ## Uninstall
 
-With Homebrew, `brew uninstall cbirds`. From source, in the same directory
-and with the same `PREFIX` it was installed with:
+With Homebrew, `brew uninstall cbirds`. With apt, `sudo apt remove cbirds`, and
+`sudo rm /etc/apt/sources.list.d/cbirds.list /etc/apt/keyrings/cbirds.gpg` for
+the repository. From source, in the same directory and with the same `PREFIX`
+it was installed with:
 
 ```
 sudo make uninstall                     # installed with sudo make install

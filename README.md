@@ -7,7 +7,7 @@ A flock of birds in your terminal.
 <a href="LICENSE"><img src="https://img.shields.io/github/license/clainstone/cbirds" alt="MIT license"></a>
 <img src="https://img.shields.io/badge/C-99-00599C?logo=c&logoColor=white" alt="C99">
 <img src="https://img.shields.io/badge/dependencies-none-brightgreen" alt="no dependencies">
-<img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20BSD-lightgrey" alt="Linux, macOS, BSD">
+<img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey" alt="Linux, macOS">
 <a href="#terminals"><img src="https://img.shields.io/badge/sprites-Kitty%20%7C%20Ghostty-8A2BE2" alt="sprites in Kitty and Ghostty"></a>
 </p>
 
@@ -56,10 +56,10 @@ sudo make install
 cbirds
 ```
 
-Linux, macOS and the BSDs, or WSL inside Windows Terminal. You need
-a C compiler and `make`, nothing else. `make test` runs the tests. The build
-uses the system's `cc` and honours `CC`, `CFLAGS`, `LDFLAGS`, `PREFIX` and
-`DESTDIR`, so `make CC=clang` and packaging work as usual.
+Linux and macOS. You need a C compiler and `make`, nothing else.
+`make test` runs the tests. The build uses the system's `cc` and honours `CC`,
+`CFLAGS`, `LDFLAGS`, `PREFIX` and `DESTDIR`, so `make CC=clang` and packaging
+work as usual.
 
 ## Use
 
@@ -115,7 +115,7 @@ fps.
 | terminal | what you see |
 |---|---|
 | Kitty, Ghostty, also over ssh | sprites, over the Kitty graphics protocol |
-| everything else: WezTerm, Konsole, iTerm2, Warp, Rio, Alacritty, GNOME Terminal, Terminal.app, xterm, foot, Windows Terminal, VS Code, tmux | the same flock in braille |
+| everything else: WezTerm, Konsole, iTerm2, Warp, Rio, Alacritty, GNOME Terminal, Terminal.app, xterm, foot, VS Code, tmux | the same flock in braille |
 
 WezTerm, Konsole, iTerm2, Warp and Rio answer for the Kitty protocol, but
 each places cbirds' sprites wrong, from too few birds to none at all, so they

@@ -56,10 +56,29 @@ sudo make install
 cbirds
 ```
 
+That puts one file, `/usr/local/bin/cbirds`. Without sudo, in your home
+instead (`~/.local/bin` has to be on your `PATH`):
+
+```
+make install PREFIX="$HOME/.local"
+```
+
 Linux and macOS. You need a C compiler and `make`, nothing else.
 `make test` runs the tests. The build uses the system's `cc` and honours `CC`,
 `CFLAGS`, `LDFLAGS`, `PREFIX` and `DESTDIR`, so `make CC=clang` and packaging
 work as usual.
+
+## Uninstall
+
+From the same directory, with the same `PREFIX` it was installed with:
+
+```
+sudo make uninstall                     # installed with sudo make install
+make uninstall PREFIX="$HOME/.local"    # installed in your home
+```
+
+Without the clone it is the one file: `sudo rm /usr/local/bin/cbirds`, or
+`rm ~/.local/bin/cbirds`.
 
 ## Use
 

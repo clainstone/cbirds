@@ -1,0 +1,60 @@
+name: tests
+
+# Builds cbirds and runs its tests on every push and pull request: on Linux and
+# macOS, on x86_64 and arm64, and once more under the address and
+# undefined-behaviour sanitizers.
+on:
+  push:
+    paths-ignore: ["**.md", "docs/**"]
+  pull_request:
+    paths-ignore: ["**.md", "docs/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, ${{ matrix.cc }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, cc: gcc }
+          - { os: ubuntu-24.04, cc: clang }
+          - { os: ubuntu-24.04-arm, cc: gcc }
+          - { os: macos-15, cc: clang }
+          - { os: macos-15-intel, cc: clang }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build, warnings as errors
+        run: make CC=${{ matrix.cc }} CFLAGS="-O2 -g -Wpedantic -Wshadow -Werror" cbirds
+      - name: Test
+        run: make CC=${{ matrix.cc }} test
+      - name: Run it
+        run: |
+          ./cbirds --version
+          ./cbirds --bench 60 --render braille | tail -3
+          ./cbirds --record ci.gif --record-seconds 1
+          ./cbirds --record ci.cast --record-seconds 1
+
+  sanitizers:
+    name: sanitizers (${{ matrix.os }}, ${{ matrix.cc }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, cc: gcc }
+          - { os: macos-15, cc: clang }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Test under ASan and UBSan
+        run: >-
+          make CC=${{ matrix.cc }}
+          CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all"
+          LDFLAGS="-fsanitize=address,undefined"
+          test

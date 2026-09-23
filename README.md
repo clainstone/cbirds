@@ -3,6 +3,7 @@
 A flock of birds in your terminal.
 
 <p>
+<a href="https://github.com/clainstone/cbirds/actions/workflows/tests.yml"><img src="https://github.com/clainstone/cbirds/actions/workflows/tests.yml/badge.svg" alt="tests"></a>
 <a href="https://github.com/clainstone/cbirds/tags"><img src="https://img.shields.io/github/v/tag/clainstone/cbirds?sort=semver&label=version" alt="version"></a>
 <a href="LICENSE"><img src="https://img.shields.io/github/license/clainstone/cbirds" alt="MIT license"></a>
 <img src="https://img.shields.io/badge/C-99-00599C?logo=c&logoColor=white" alt="C99">

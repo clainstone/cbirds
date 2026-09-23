@@ -2,6 +2,15 @@
 
 A flock of birds in your terminal.
 
+<p>
+<a href="https://github.com/clainstone/cbirds/tags"><img src="https://img.shields.io/github/v/tag/clainstone/cbirds?sort=semver&label=version" alt="version"></a>
+<a href="LICENSE"><img src="https://img.shields.io/github/license/clainstone/cbirds" alt="MIT license"></a>
+<img src="https://img.shields.io/badge/C-99-00599C?logo=c&logoColor=white" alt="C99">
+<img src="https://img.shields.io/badge/dependencies-none-brightgreen" alt="no dependencies">
+<img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20BSD-lightgrey" alt="Linux, macOS, BSD">
+<a href="#terminals"><img src="https://img.shields.io/badge/sprites-Kitty%20%7C%20Ghostty-8A2BE2" alt="sprites in Kitty and Ghostty"></a>
+</p>
+
 <p align="center"><img src="docs/demo.gif" alt="The flock writes BOIDS, lets go, and parts around two scarlet hawks in slow motion"></p>
 
 <p align="center"><code>cbirds --hawks 2 --color ice --speed 0</code></p>

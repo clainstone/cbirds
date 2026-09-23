@@ -209,7 +209,7 @@ terminal it is. That is the report that helps most.
 ```
 Flock
   -n, --birds COUNT             how many birds (default 800)
-  -s, --size PIXELS             sprite size in pixels (default 30, 60 in braille and blocks)
+  -s, --size PIXELS             sprite size in pixels (default 30)
   -g, --flocks COUNT            flocks that keep to their own kind (default 1)
   -k, --hawks COUNT             predators hunting the flock (default 0)
       --preset NAME             murmuration, swarm, storm

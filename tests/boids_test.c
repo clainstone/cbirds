@@ -2896,26 +2896,23 @@ static void test_the_speed_slider_flies_the_same_path_faster(void) {
 
 /* A notch on the line, like every other slider, and a preset given before it
  * does not undo it. */
-/* Without --size, a bird is 30 pixels under Kitty and sextants and 60 under
- * braille and blocks, whose cells are coarse; --size, when given, is kept; and a
- * hawk stays twice a bird at the largest birds too. */
+/* Without --size, a bird is 30 pixels under every renderer; --size, when given,
+ * is kept; and a hawk stays twice a bird at the largest birds too. */
 static void test_the_default_size_follows_the_renderer(void) {
     int saved_render = render_mode;
-    static const struct { int mode, size; } CASES[] = {
-        {RENDER_KITTY, DEFAULT_BIRD_SIZE},  {RENDER_SEXTANTS, DEFAULT_BIRD_SIZE},
-        {RENDER_BRAILLE, TEXT_BIRD_SIZE},   {RENDER_BLOCKS, TEXT_BIRD_SIZE},
-    };
-    for (size_t k = 0; k < sizeof(CASES) / sizeof(CASES[0]); k++) {
-        render_mode = CASES[k].mode;
+    static const int MODES[] = {RENDER_UNSET, RENDER_KITTY, RENDER_BRAILLE, RENDER_SEXTANTS,
+                                RENDER_BLOCKS};
+    for (size_t k = 0; k < sizeof(MODES) / sizeof(MODES[0]); k++) {
+        render_mode = MODES[k];
         config.bird_size = 0;
         settle_the_bird_size();
-        assert(config.bird_size == CASES[k].size);
-        assert(hawk_sprite_size() == 2 * CASES[k].size);
+        assert(config.bird_size == DEFAULT_BIRD_SIZE && DEFAULT_BIRD_SIZE == 30);
+        assert(hawk_sprite_size() == 2 * DEFAULT_BIRD_SIZE);
     }
     render_mode = RENDER_BRAILLE;
-    config.bird_size = 30; /* as if --size 30 had been given */
+    config.bird_size = 60; /* as if --size 60 had been given */
     settle_the_bird_size();
-    assert(config.bird_size == 30);
+    assert(config.bird_size == 60);
     config.bird_size = MAX_BIRD_SIZE;
     assert(hawk_sprite_size() == 2 * MAX_BIRD_SIZE);
     render_mode = saved_render;

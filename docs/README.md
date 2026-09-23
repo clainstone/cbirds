@@ -36,9 +36,10 @@ make
 ./cbirds --record docs/sextants.gif --record-fps 50 --record-seconds 7 \
          --record-size 80x22 -n 360 -s 12 --color acid --render sextants --speed 2 --seed 5
 
-# And the asciinema cast, at the default pace.
+# And the asciinema cast, at the default pace, with the braille birds at the
+# 60 pixels they were drawn at before 30 became the default everywhere.
 ./cbirds --record docs/demo.cast --record-fps 30 --record-seconds 8 \
-         --record-size 96x26 -n 700 --color ember --hawks 2 --seed 5
+         --record-size 96x26 -n 700 -s 60 --color ember --hawks 2 --seed 5
 ```
 
 The ceiling is 50 frames a second, and the reason is the format, not the

@@ -27,7 +27,7 @@ make
 ./cbirds --record docs/depth.gif --record-fps 25 --record-seconds 8 \
          --record-size 64x18 -n 160 -s 14 --color ice --depth --trails --speed 1 --seed 9
 
-# The text ones are what a terminal with no graphics protocol shows: under
+# The text ones are what a terminal shows by default: under
 # --render braille or sextants the GIF is of the cells, not of the pixels.
 # 80 columns is an honest text terminal; dots are cheap, so they get more
 # frames a second.

@@ -388,23 +388,24 @@ static int legend_enabled; /* Hidden until --panel or h asks for it. */
 /*
  * How the frame reaches the screen.
  *
- * Kitty's graphics protocol draws real sprites, and is asked for first. A
- * terminal that does not answer for it gets the same flock as text: the frame
- * is rendered to pixels exactly as it is for a recording, and the pixels are
- * read back as braille — eight dots a cell, the finest thing text can do — or
- * as half blocks, two a cell, each cell in the colour of the bird in it. So
- * every terminal that can show colour gets a flock; the only question is how
- * fine.
+ * Braille, in every terminal, unless asked otherwise: the frame is rendered to
+ * pixels exactly as it is for a recording, and the pixels are read back as
+ * braille — eight dots a cell, the finest thing text can do — or as sextants or
+ * half blocks, each cell in the colour of the bird in it. Kitty's graphics
+ * protocol draws real sprites, and only when --render kitty asks for it: Kitty
+ * and Ghostty place them right, and elsewhere what it does is undefined. Other
+ * terminals answer for the protocol and then place nothing, too few birds or
+ * the wrong ones, so no terminal is guessed at.
  */
 typedef enum {
-    RENDER_AUTO = 0, /* The best the terminal answers for; braille if it answers for none. */
+    RENDER_UNSET = -1, /* Not asked for: braille live, sprites in a recording. */
     RENDER_KITTY,
     RENDER_BRAILLE,
     RENDER_SEXTANTS, /* Solid two by three blocks: bolder than dots, needs a 2020 font. */
     RENDER_BLOCKS,
 } render_mode_t;
-static const char *const RENDER_NAMES[] = {"auto", "kitty", "braille", "sextants", "blocks", NULL};
-static int render_mode = RENDER_AUTO;
+static const char *const RENDER_NAMES[] = {"kitty", "braille", "sextants", "blocks", NULL};
+static int render_mode = RENDER_UNSET;
 /* --depth: a second plane of birds further off. The default is the one. */
 static int deep_look;
 
@@ -524,11 +525,10 @@ static void install_signal_handlers(void) {
 }
 
 /* Sends a request and collects whatever comes back until a terminator or the
- * deadline, whichever is first. Both the graphics probe and the colour queries
- * are the same shape, asking the terminal a question that it may simply not
- * answer, and neither may hang the startup path waiting for a reply that is
- * never coming. Raw mode has to be on already, or the reply would be echoed and
- * held until a newline. */
+ * deadline, whichever is first. The colour queries ask the terminal a question
+ * it may simply not answer, and may not hang the startup path waiting for a
+ * reply that is never coming. Raw mode has to be on already, or the reply would
+ * be echoed and held until a newline. */
 static size_t terminal_query(const char *request, size_t request_length, char *reply,
                              size_t reply_size, int milliseconds) {
     struct timespec start, now;
@@ -565,39 +565,9 @@ static size_t terminal_query(const char *request, size_t request_length, char *r
     return length;
 }
 
-/*
- * Ask whether the terminal speaks the graphics protocol, rather than drawing to
- * a terminal that cannot show it and leaving a stranger with a black screen and
- * a bad first impression. A one pixel image is offered for query only, which
- * uploads nothing and displays nothing; a terminal that understands answers
- * with an APC reply, and one that does not ignores it silently. The Primary
- * Device Attributes request that follows is the control: every terminal answers
- * that, so an answer to the second with none to the first is a clear no rather
- * than a timeout.
- */
-typedef struct {
-    int kitty; /* Answered the graphics query. */
-} protocols_t;
-
-static protocols_t terminal_protocols(void) {
-    static const char probe[] = "\033_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\033\\\033[c";
-    char reply[256];
-    protocols_t answered = {0};
-    size_t length = terminal_query(probe, sizeof(probe) - 1, reply, sizeof(reply), 250);
-    if (length == 0) return answered; /* Answered nothing at all: assume the worst. */
-    answered.kitty = strstr(reply, "\033_G") != NULL;
-    return answered;
-}
-
-/* Sprites only where they are known to land. iTerm2, Konsole, Warp and the VS
- * Code terminal answer the graphics query and then place nothing, WezTerm and
- * Rio place the wrong birds or too few, so only Kitty and Ghostty are asked. TERM
- * is what each terminal sets for itself and ssh carries: a variable of their
- * own would be inherited by another terminal started from their shell, and
- * inside tmux TERM is tmux's, whose pane would take the query for a title. */
-static int terminal_draws_sprites(void) {
-    const char *term = getenv("TERM");
-    return term != NULL && (strcmp(term, "xterm-kitty") == 0 || strcmp(term, "xterm-ghostty") == 0);
+/* What a live run draws with: braille unless something else was asked for. */
+static int live_render_mode(void) {
+    return render_mode == RENDER_UNSET ? RENDER_BRAILLE : render_mode;
 }
 
 static void enter_alt_screen(void) {
@@ -2750,7 +2720,7 @@ static const option_t OPTIONS[] = {
     {'l', "panel", NULL, OPTION_FLAG, &legend_enabled, 0, 0, NULL, NULL,
      "the sliders in the corner from the start; h toggles them", "Look", 1},
     {0, "render", NULL, OPTION_ENUM, &render_mode, 0, 0, RENDER_NAMES, "HOW",
-     "kitty, braille, sextants, blocks; auto asks", "Look", 1},
+     "braille by default; sextants, blocks, or kitty in Kitty and Ghostty", "Look", 1},
 
     {0, "matrix", NULL, OPTION_FLAG, &matrix_mode, 0, 0, NULL, NULL, "it is raining birds",
      "Oddities", 0},
@@ -2785,12 +2755,12 @@ enum { OPTION_COUNT = sizeof(OPTIONS) / sizeof(*OPTIONS) };
 enum { EXIT_USAGE = 2 }; /* A mistyped command is not a run that went wrong. */
 
 static const option_example_t EXAMPLES[] = {
-    {"cbirds", "a flock, and nothing to read"},
+    {"cbirds", "a flock in braille, and nothing to read"},
     {"cbirds --preset murmuration", "the starling look"},
     {"cbirds --hawks 2 --color ice", "something to watch"},
     {"cbirds --flocks 3 --color ember", "three of them, keeping to their own"},
     {"cbirds --depth --trails", "a second sky behind the first"},
-    {"cbirds --render braille", "the same flock as dots, in any terminal"},
+    {"cbirds --render kitty", "sprites, in Kitty or Ghostty"},
     {"cbirds --record flock.gif", "a GIF, with no terminal in the way"},
     {NULL, NULL},
 };
@@ -3802,9 +3772,10 @@ static int run_benchmark(void) {
 
     settle_the_palette_without_a_terminal();
     apply_screen_size(200, 50, 1600, 800);
-    /* There is no terminal to ask, so auto means Kitty; any other renderer is
-     * measured as asked for, sprites built the way it builds them. */
-    if (render_mode == RENDER_AUTO) render_mode = RENDER_KITTY;
+    /* There is no terminal, so unasked means the sprites, as in a recording; any
+     * other renderer is measured as asked for, sprites built the way it builds
+     * them. */
+    if (render_mode == RENDER_UNSET) render_mode = RENDER_KITTY;
     settle_the_bird_size();
     if (drawing_with_text() && !prepare_text_renderer()) return EXIT_FAILURE;
     set_frame_seconds(1.0 / FRAME_RATE);
@@ -3871,12 +3842,9 @@ int main(int argc, char **argv) {
         perror("Can't enable raw mode");
         exit(EXIT_FAILURE);
     }
-    /* Kitty's protocol on Kitty and Ghostty when it answers for it, over ssh
-     * too, and the same flock in braille everywhere else: there is no terminal
-     * this refuses to run in. */
-    if (render_mode == RENDER_AUTO)
-        render_mode =
-            terminal_draws_sprites() && terminal_protocols().kitty ? RENDER_KITTY : RENDER_BRAILLE;
+    /* Braille in every terminal, and the sprites when --render kitty asks: there
+     * is no terminal this refuses to run in, and none it has to guess about. */
+    render_mode = live_render_mode();
     settle_the_bird_size();
     if (palette_follows_the_theme() && !learn_the_theme()) config.palette = FALLBACK_PALETTE;
 

@@ -1964,44 +1964,29 @@ static void test_the_matrix_is_the_only_thing_that_rains(void) {
     reset_test_config();
 }
 
-/* Sprites are asked for on Kitty and Ghostty only, by the TERM they set: not by
- * a variable another terminal could inherit from their shell, and not inside
- * tmux or screen, whatever runs outside them. */
-static void test_only_kitty_and_ghostty_are_asked_for_sprites(void) {
-    static const struct {
-        const char *term, *program;
-        int sprites;
-    } CASES[] = {
-        {"xterm-kitty", NULL, 1},
-        {"xterm-ghostty", "ghostty", 1},
-        {"xterm-256color", "iTerm.app", 0},
-        {"xterm-256color", "ghostty", 0},
-        {"xterm-256color", NULL, 0},
-        {"wezterm", "WezTerm", 0},
-        {"tmux-256color", "tmux", 0},
-        {"screen-256color", NULL, 0},
-        {"", NULL, 0},
-        {NULL, NULL, 0},
-    };
-    const char *saved = getenv("TERM");
-    char *term = saved != NULL ? strdup(saved) : NULL;
-    for (size_t i = 0; i < sizeof(CASES) / sizeof(*CASES); i++) {
-        if (CASES[i].term)
-            setenv("TERM", CASES[i].term, 1);
-        else
-            unsetenv("TERM");
-        if (CASES[i].program)
-            setenv("TERM_PROGRAM", CASES[i].program, 1);
-        else
-            unsetenv("TERM_PROGRAM");
-        assert(terminal_draws_sprites() == CASES[i].sprites);
+/* Braille unless something else is asked for: no terminal is guessed at, and
+ * the sprites are there for whoever runs Kitty or Ghostty and asks for them.
+ * "auto" is gone, and the names are exactly the four renderers. */
+static void test_braille_unless_asked(void) {
+    int saved = render_mode;
+    render_mode = RENDER_UNSET;
+    assert(live_render_mode() == RENDER_BRAILLE);
+    static const int ASKED[] = {RENDER_KITTY, RENDER_BRAILLE, RENDER_SEXTANTS, RENDER_BLOCKS};
+    for (size_t i = 0; i < sizeof(ASKED) / sizeof(*ASKED); i++) {
+        render_mode = ASKED[i];
+        assert(live_render_mode() == ASKED[i]);
     }
-    if (term != NULL)
-        setenv("TERM", term, 1);
-    else
-        unsetenv("TERM");
-    free(term);
-    unsetenv("TERM_PROGRAM");
+
+    char error[160];
+    render_mode = RENDER_UNSET;
+    char *kitty[] = {"cbirds", "--render", "kitty", NULL};
+    assert(options_parse(OPTIONS, OPTION_COUNT, 3, kitty, error, sizeof(error)) == OPTIONS_OK);
+    assert(render_mode == RENDER_KITTY);
+    char *automatic[] = {"cbirds", "--render", "auto", NULL};
+    assert(options_parse(OPTIONS, OPTION_COUNT, 3, automatic, error, sizeof(error)) ==
+           OPTIONS_ERROR);
+    assert(strstr(error, "kitty, braille, sextants, blocks") != NULL);
+    render_mode = saved;
 }
 
 /* A terminal with no graphics protocol gets the same flock as text: braille by
@@ -3278,7 +3263,7 @@ int main(void) {
     test_the_far_layer_is_another_sky();
     test_a_seed_draws_the_same_numbers_everywhere();
     test_wings_beat_and_sometimes_glide();
-    test_only_kitty_and_ghostty_are_asked_for_sprites();
+    test_braille_unless_asked();
     test_a_text_terminal_gets_the_flock_in_braille();
     test_a_text_renderer_records_its_cells();
     test_a_cast_is_the_flock_as_text();

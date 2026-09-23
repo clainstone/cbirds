@@ -13,10 +13,10 @@ A flock of birds in your terminal.
 
 <p align="center"><img src="docs/demo.gif" alt="The flock writes BOIDS, lets go, and parts around two scarlet hawks in slow motion"></p>
 
-<p align="center"><code>cbirds --hawks 2 --color ice --speed 0</code></p>
+<p align="center"><code>cbirds --render kitty --hawks 2 --color ice --speed 0</code></p>
 
-Craig Reynolds' boids, drawn as sprites through the terminal's graphics
-protocol, and as braille where there is none. One C99 program, no
+Craig Reynolds' boids, drawn in braille in any terminal, and as sprites over
+the Kitty graphics protocol in Kitty and Ghostty. One C99 program, no
 dependencies. Every clip on this page was recorded by cbirds itself.
 
 <table>
@@ -25,16 +25,16 @@ dependencies. Every clip on this page was recorded by cbirds itself.
 <td width="50%"><img src="docs/flocks.gif" alt="Three flocks in gold, orange and red, each keeping to its own kind and crossing the others"></td>
 </tr>
 <tr>
-<td align="center"><code>cbirds --hawks 2 --color ice --speed 0</code></td>
-<td align="center"><code>cbirds --flocks 3 --color ember</code></td>
+<td align="center"><code>cbirds --render kitty --hawks 2 --color ice --speed 0</code></td>
+<td align="center"><code>cbirds --render kitty --flocks 3 --color ember</code></td>
 </tr>
 <tr>
 <td width="50%"><img src="docs/matrix.gif" alt="Matrix rain, as green birds with tails falling through the screen"></td>
 <td width="50%"><img src="docs/depth.gif" alt="Two skies: birds with tails in front, smaller and dimmer birds drifting slower behind them"></td>
 </tr>
 <tr>
-<td align="center"><code>cbirds --matrix --speed 0</code></td>
-<td align="center"><code>cbirds --depth --trails --color ice</code></td>
+<td align="center"><code>cbirds --render kitty --matrix --speed 0</code></td>
+<td align="center"><code>cbirds --render kitty --depth --trails --color ice</code></td>
 </tr>
 <tr>
 <td width="50%"><img src="docs/braille.gif" alt="The same flock and hawks in braille dots, as a terminal without a graphics protocol shows it"></td>
@@ -139,7 +139,8 @@ Without the clone it is the one file: `sudo rm /usr/local/bin/cbirds`, or
 ## Use
 
 ```
-cbirds                              a flock, in your terminal's own colours
+cbirds                              a flock in braille, in your terminal's own colours
+cbirds --render kitty               sprites, in Kitty or Ghostty
 cbirds --preset murmuration         the starling look
 cbirds --hawks 2 --color ice        something to watch
 cbirds --flocks 3 --color ember     three flocks that keep to their own
@@ -187,24 +188,20 @@ fps.
 
 ## Terminals
 
-| terminal | what you see |
-|---|---|
-| Kitty, Ghostty, also over ssh | sprites, over the Kitty graphics protocol |
-| everything else: WezTerm, Konsole, iTerm2, Warp, Rio, Alacritty, GNOME Terminal, Terminal.app, xterm, foot, VS Code, tmux | the same flock in braille |
+cbirds draws in braille by default, in every terminal: no terminal is guessed
+at. `--render sextants` and `--render blocks` are bolder text versions;
+sextants need a font from 2020 or later, blocks work everywhere. In text mode
+only the cells that changed are sent, and the background is never painted, so
+the flock wears your theme.
 
-WezTerm, Konsole, iTerm2, Warp and Rio answer for the Kitty protocol, but
-each places cbirds' sprites wrong, from too few birds to none at all, so they
-get braille until that is sorted out.
+`--render kitty` draws real sprites over the Kitty graphics protocol, and is
+yours to ask for: it is made for **Kitty** and **Ghostty**. In any other
+terminal what it does is undefined. WezTerm, Konsole, iTerm2, Warp and Rio
+answer for the protocol and then draw too few birds, the wrong ones or none,
+and inside tmux the sprites never reach the terminal.
 
-`--render kitty|braille|sextants|blocks` overrides it; `--render kitty` tries
-the sprites anyway.
-Sextants are bolder than braille and need a font from 2020 or later; blocks
-work everywhere. In text mode only the cells that changed are sent, and the
-background is never painted, so the flock wears your theme.
-
-If it draws nothing, or the wrong thing, in a terminal that is not in the
-table, open an issue and say which terminal it is and what
-`cbirds --render braille` does there. That is the report that helps most.
+If braille does not look right in your terminal, open an issue and say which
+terminal it is. That is the report that helps most.
 
 ## Options
 
@@ -233,7 +230,7 @@ Look
   -e, --trails                  faint tails behind the flock
       --depth                   a second sky further off: smaller, slower, dimmer birds
   -l, --panel                   the sliders in the corner from the start; h toggles them
-      --render HOW              kitty, braille, sextants, blocks; auto asks
+      --render HOW              braille by default; sextants, blocks, or kitty in Kitty and Ghostty
 
 Oddities
       --matrix                  it is raining birds
@@ -272,9 +269,9 @@ cbirds --snapshot frame.png --frames 400
 `--record` needs no terminal: it runs the flock headless and writes the GIF
 with its own encoder. If the file name ends in `.cast` you get an
 [asciinema](https://asciinema.org) recording instead, which plays in any
-terminal and is about half the size. With `--render braille` or
-`--render sextants` the GIF is of the cells, as a text terminal would show
-them. `--snapshot` saves a live frame as a PNG, so it wants a
+terminal and is about half the size. A GIF is drawn with sprites unless
+`--render braille` or `--render sextants` asks for the cells, as a text
+terminal would show them. `--snapshot` saves a live frame as a PNG, so it wants a
 terminal. The commands behind every clip here are in
 [docs/README.md](docs/README.md).
 
@@ -283,9 +280,9 @@ terminal. The commands behind every clip here are in
 The bird is one PNG compiled into the binary. At startup it is rotated into
 sixty headings, squashed into three wing positions, and tinted into every
 shade on the ramp: about fifteen hundred small images, built in a fifth of a
-second. Under Kitty they are uploaded once, and a frame is then one short
-command per bird. Every other terminal gets the same pixels sampled down into
-braille, sextants or blocks. The wings beat six times a second, and now and then
+second. They are sampled down into braille, sextants or blocks, or, with
+`--render kitty`, uploaded once, and a frame is then one short command per
+bird. The wings beat six times a second, and now and then
 a bird glides.
 
 Neighbours are found with a grid, so eight hundred birds cost about half a

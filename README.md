@@ -48,6 +48,14 @@ dependencies. Every clip on this page was recorded by cbirds itself.
 
 ## Install
 
+With Homebrew, on macOS or Linux, completions for bash, zsh and fish included:
+
+```
+brew install clainstone/tap/cbirds
+```
+
+Or from source:
+
 ```
 git clone https://github.com/clainstone/cbirds
 cd cbirds
@@ -70,7 +78,8 @@ work as usual.
 
 ## Uninstall
 
-From the same directory, with the same `PREFIX` it was installed with:
+With Homebrew, `brew uninstall cbirds`. From source, in the same directory
+and with the same `PREFIX` it was installed with:
 
 ```
 sudo make uninstall                     # installed with sudo make install

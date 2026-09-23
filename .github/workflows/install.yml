@@ -1,0 +1,130 @@
+name: install
+
+# Runs the README's install and uninstall commands, as written, everywhere they
+# are meant to work: Homebrew on macOS and Linux, apt on Debian, Ubuntu and
+# derivatives, on both architectures.
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+  schedule:
+    - cron: "0 6 * * 1"
+  push:
+    paths:
+      - README.md
+      - .github/workflows/install.yml
+      - .github/scripts/readme-block.sh
+
+permissions:
+  contents: read
+
+jobs:
+  brew:
+    name: brew (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15, macos-26, macos-15-intel, ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Homebrew/actions/setup-homebrew@main
+      - name: Install, as the README says
+        run: sh .github/scripts/readme-block.sh brew-install | bash -euxo pipefail
+      - name: Check the install
+        run: |
+          version=$(brew info --json=v2 clainstone/tap/cbirds | jq -r '.formulae[0].versions.stable')
+          cbirds --version | grep -x "cbirds $version"
+          cbirds --bench 30 | grep -q fps
+          prefix=$(brew --prefix)
+          test -s "$prefix/etc/bash_completion.d/cbirds"
+          test -s "$prefix/share/zsh/site-functions/_cbirds"
+          test -s "$prefix/share/fish/vendor_completions.d/cbirds.fish"
+      - name: Build master through the formula too
+        run: |
+          brew uninstall cbirds
+          brew install --HEAD clainstone/tap/cbirds
+          cbirds --version
+          cbirds --bench 30 | grep -q fps
+      - name: Uninstall, as the README says
+        run: sh .github/scripts/readme-block.sh brew-uninstall | bash -euxo pipefail
+      - name: Check nothing is left
+        run: |
+          prefix=$(brew --prefix)
+          test ! -e "$prefix/bin/cbirds"
+          test ! -e "$prefix/share/zsh/site-functions/_cbirds"
+          test ! -e "$prefix/etc/bash_completion.d/cbirds"
+          if brew tap | grep -qx clainstone/tap; then exit 1; fi
+
+  apt:
+    name: apt (${{ matrix.image }}, ${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04, image: "debian:12" }
+          - { arch: amd64, runner: ubuntu-24.04, image: "debian:13" }
+          - { arch: amd64, runner: ubuntu-24.04, image: "debian:testing" }
+          - { arch: amd64, runner: ubuntu-24.04, image: "ubuntu:22.04" }
+          - { arch: amd64, runner: ubuntu-24.04, image: "ubuntu:24.04" }
+          - { arch: amd64, runner: ubuntu-24.04, image: "ubuntu:26.04" }
+          - { arch: amd64, runner: ubuntu-24.04, image: "linuxmintd/mint22-amd64" }
+          - { arch: amd64, runner: ubuntu-24.04, image: "kalilinux/kali-rolling" }
+          - { arch: arm64, runner: ubuntu-24.04-arm, image: "debian:12" }
+          - { arch: arm64, runner: ubuntu-24.04-arm, image: "debian:13" }
+          - { arch: arm64, runner: ubuntu-24.04-arm, image: "ubuntu:22.04" }
+          - { arch: arm64, runner: ubuntu-24.04-arm, image: "ubuntu:24.04" }
+          - { arch: arm64, runner: ubuntu-24.04-arm, image: "ubuntu:26.04" }
+          - { arch: arm64, runner: ubuntu-24.04-arm, image: "kalilinux/kali-rolling" }
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.image }}
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: A user with sudo, as on a desktop
+        run: |
+          apt-get update
+          apt-get install -y sudo
+          # The README's apt commands ask before they install; the test says yes.
+          echo 'APT::Get::Assume-Yes "true";' > /etc/apt/apt.conf.d/90assume-yes
+          useradd -m tester
+          echo 'tester ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/tester
+      - name: Install, as the README says
+        run: |
+          sh .github/scripts/readme-block.sh apt-install > /tmp/install.sh
+          su tester -c 'bash -euxo pipefail /tmp/install.sh'
+      - name: Check the install
+        run: |
+          version=$(dpkg-query -W -f='${Version}' cbirds)
+          cbirds --version | grep -x "cbirds ${version%-*}"
+          cbirds --bench 30 | grep -q fps
+          test -s /usr/share/bash-completion/completions/cbirds
+          test -s /usr/share/zsh/vendor-completions/_cbirds
+          test -s /usr/share/fish/vendor_completions.d/cbirds.fish
+          su tester -c 'sudo apt upgrade'
+      - name: Uninstall, as the README says
+        run: |
+          sh .github/scripts/readme-block.sh apt-uninstall > /tmp/uninstall.sh
+          su tester -c 'bash -euxo pipefail /tmp/uninstall.sh'
+      - name: Check nothing is left
+        run: |
+          test ! -e /usr/bin/cbirds
+          test ! -e /usr/share/zsh/vendor-completions/_cbirds
+          test ! -e /etc/apt/sources.list.d/cbirds.list
+          test ! -e /etc/apt/keyrings/cbirds.gpg
+          if apt-cache policy cbirds | grep -q 'Candidate: [0-9]'; then exit 1; fi
+      - name: The .deb on its own, from the release page
+        run: |
+          arch=$(dpkg --print-architecture)
+          url=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+              https://api.github.com/repos/clainstone/cbirds/releases/latest |
+              grep -o "https://[^\"]*_${arch}\.deb" | head -1)
+          test -n "$url"
+          cd /tmp && curl -fsSLO "$url"
+          su tester -c 'cd /tmp && sudo apt install ./cbirds_*.deb'
+          cbirds --version
+          su tester -c 'sudo apt remove cbirds'
+          test ! -e /usr/bin/cbirds

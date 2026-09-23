@@ -48,26 +48,36 @@ dependencies. Every clip on this page was recorded by cbirds itself.
 
 ## Install
 
-With Homebrew, on macOS or Linux, completions for bash, zsh and fish included:
+### Homebrew
 
+macOS and Linux. Completions for bash, zsh and fish come with it, and
+`brew upgrade` keeps it up to date.
+
+<!-- test: brew-install -->
 ```
 brew install clainstone/tap/cbirds
 ```
 
-On Debian 12, Ubuntu 22.04 and later, amd64 or arm64, from its
-[apt repository](https://clainstone.com/apt), so that `apt upgrade` keeps it up
-to date:
+### apt
 
+Debian 12, Ubuntu 22.04 and later, and their derivatives, on amd64 or arm64,
+from its [apt repository](https://clainstone.com/apt). Completions come with
+it, and `sudo apt upgrade` keeps it up to date.
+
+<!-- test: apt-install -->
 ```
+sudo apt install curl
 curl -fsSL https://clainstone.com/apt/cbirds.gpg | sudo tee /etc/apt/keyrings/cbirds.gpg >/dev/null
 echo "deb [signed-by=/etc/apt/keyrings/cbirds.gpg] https://clainstone.com/apt stable main" | sudo tee /etc/apt/sources.list.d/cbirds.list
-sudo apt update && sudo apt install cbirds
+sudo apt update
+sudo apt install cbirds
 ```
 
-The same `.deb` files are on the [release page](https://github.com/clainstone/cbirds/releases/latest),
+Or just the package, without the repository and so without updates: the
+`.deb` files are on the [release page](https://github.com/clainstone/cbirds/releases/latest),
 for `sudo apt install ./cbirds_*.deb`.
 
-Or from source:
+### From source
 
 ```
 git clone https://github.com/clainstone/cbirds
@@ -91,10 +101,32 @@ work as usual.
 
 ## Uninstall
 
-With Homebrew, `brew uninstall cbirds`. With apt, `sudo apt remove cbirds`, and
-`sudo rm /etc/apt/sources.list.d/cbirds.list /etc/apt/keyrings/cbirds.gpg` for
-the repository. From source, in the same directory and with the same `PREFIX`
-it was installed with:
+### Homebrew
+
+The second line removes the tap as well; leave it out to keep it.
+
+<!-- test: brew-uninstall -->
+```
+brew uninstall cbirds
+brew untap clainstone/tap
+```
+
+### apt
+
+The last two lines remove the repository as well; leave them out to keep it.
+
+<!-- test: apt-uninstall -->
+```
+sudo apt remove cbirds
+sudo rm /etc/apt/sources.list.d/cbirds.list /etc/apt/keyrings/cbirds.gpg
+sudo apt update
+```
+
+A `.deb` installed on its own goes with the first line alone.
+
+### From source
+
+In the same directory, and with the same `PREFIX` it was installed with:
 
 ```
 sudo make uninstall                     # installed with sudo make install

@@ -589,16 +589,15 @@ static protocols_t terminal_protocols(void) {
     return answered;
 }
 
-/* iTerm2 answers the graphics query, then cannot place an image by its number,
- * which is how every sprite here is placed, and the screen stays empty. It gets
- * braille instead. LC_TERMINAL is what survives tmux and ssh; a TERM_PROGRAM
- * other than tmux is another terminal started from an iTerm2 shell. */
-static int terminal_is_iterm2(void) {
-    const char *program = getenv("TERM_PROGRAM");
-    if (program != NULL && strcmp(program, "iTerm.app") == 0) return 1;
-    if (program != NULL && strcmp(program, "tmux") != 0) return 0;
-    const char *terminal = getenv("LC_TERMINAL");
-    return terminal != NULL && strcmp(terminal, "iTerm2") == 0;
+/* Sprites only where they are known to land. iTerm2, Konsole, Warp and the VS
+ * Code terminal answer the graphics query and then place nothing, WezTerm and
+ * Rio place the wrong birds or too few, so only Kitty and Ghostty are asked. TERM
+ * is what each terminal sets for itself and ssh carries: a variable of their
+ * own would be inherited by another terminal started from their shell, and
+ * inside tmux TERM is tmux's, whose pane would take the query for a title. */
+static int terminal_draws_sprites(void) {
+    const char *term = getenv("TERM");
+    return term != NULL && (strcmp(term, "xterm-kitty") == 0 || strcmp(term, "xterm-ghostty") == 0);
 }
 
 static void enter_alt_screen(void) {
@@ -3872,11 +3871,12 @@ int main(int argc, char **argv) {
         perror("Can't enable raw mode");
         exit(EXIT_FAILURE);
     }
-    /* Kitty's protocol if the terminal answers for it, and the same flock in
-     * braille if it does not: there is no terminal this refuses to run in. */
+    /* Kitty's protocol on Kitty and Ghostty when it answers for it, over ssh
+     * too, and the same flock in braille everywhere else: there is no terminal
+     * this refuses to run in. */
     if (render_mode == RENDER_AUTO)
         render_mode =
-            !terminal_is_iterm2() && terminal_protocols().kitty ? RENDER_KITTY : RENDER_BRAILLE;
+            terminal_draws_sprites() && terminal_protocols().kitty ? RENDER_KITTY : RENDER_BRAILLE;
     settle_the_bird_size();
     if (palette_follows_the_theme() && !learn_the_theme()) config.palette = FALLBACK_PALETTE;
 

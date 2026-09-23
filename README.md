@@ -103,17 +103,17 @@ fps.
 
 ## Terminals
 
-cbirds asks the terminal what it can draw and uses the best of it.
-
 | terminal | what you see |
 |---|---|
-| Kitty, WezTerm, Ghostty, recent Konsole | sprites, over the Kitty graphics protocol |
-| everything else: Alacritty, GNOME Terminal, Terminal.app, iTerm2, xterm, foot, Windows Terminal, tmux | the same flock in braille |
+| Kitty, Ghostty, also over ssh | sprites, over the Kitty graphics protocol |
+| everything else: WezTerm, Konsole, iTerm2, Warp, Rio, Alacritty, GNOME Terminal, Terminal.app, xterm, foot, Windows Terminal, VS Code, tmux | the same flock in braille |
 
-iTerm2 answers for the Kitty protocol but cannot yet place an image by its
-number, which is how cbirds places every sprite, so it gets braille.
+WezTerm, Konsole, iTerm2, Warp and Rio answer for the Kitty protocol, but
+each places cbirds' sprites wrong, from too few birds to none at all, so they
+get braille until that is sorted out.
 
-`--render kitty|braille|sextants|blocks` overrides it.
+`--render kitty|braille|sextants|blocks` overrides it; `--render kitty` tries
+the sprites anyway.
 Sextants are bolder than braille and need a font from 2020 or later; blocks
 work everywhere. In text mode only the cells that changed are sent, and the
 background is never painted, so the flock wears your theme.

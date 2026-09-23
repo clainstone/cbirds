@@ -1964,30 +1964,44 @@ static void test_the_matrix_is_the_only_thing_that_rains(void) {
     reset_test_config();
 }
 
-/* iTerm2 is told apart by what it puts in the environment, directly, through
- * tmux, over ssh, and not when it only started another terminal. */
-static void test_iterm2_is_recognised(void) {
+/* Sprites are asked for on Kitty and Ghostty only, by the TERM they set: not by
+ * a variable another terminal could inherit from their shell, and not inside
+ * tmux or screen, whatever runs outside them. */
+static void test_only_kitty_and_ghostty_are_asked_for_sprites(void) {
     static const struct {
-        const char *program, *terminal;
-        int iterm2;
+        const char *term, *program;
+        int sprites;
     } CASES[] = {
-        {"iTerm.app", "iTerm2", 1}, {"iTerm.app", NULL, 1},   {"tmux", "iTerm2", 1},
-        {NULL, "iTerm2", 1},        {"ghostty", "iTerm2", 0}, {"WezTerm", NULL, 0},
-        {"tmux", NULL, 0},          {NULL, NULL, 0},
+        {"xterm-kitty", NULL, 1},
+        {"xterm-ghostty", "ghostty", 1},
+        {"xterm-256color", "iTerm.app", 0},
+        {"xterm-256color", "ghostty", 0},
+        {"xterm-256color", NULL, 0},
+        {"wezterm", "WezTerm", 0},
+        {"tmux-256color", "tmux", 0},
+        {"screen-256color", NULL, 0},
+        {"", NULL, 0},
+        {NULL, NULL, 0},
     };
+    const char *saved = getenv("TERM");
+    char *term = saved != NULL ? strdup(saved) : NULL;
     for (size_t i = 0; i < sizeof(CASES) / sizeof(*CASES); i++) {
+        if (CASES[i].term)
+            setenv("TERM", CASES[i].term, 1);
+        else
+            unsetenv("TERM");
         if (CASES[i].program)
             setenv("TERM_PROGRAM", CASES[i].program, 1);
         else
             unsetenv("TERM_PROGRAM");
-        if (CASES[i].terminal)
-            setenv("LC_TERMINAL", CASES[i].terminal, 1);
-        else
-            unsetenv("LC_TERMINAL");
-        assert(terminal_is_iterm2() == CASES[i].iterm2);
+        assert(terminal_draws_sprites() == CASES[i].sprites);
     }
+    if (term != NULL)
+        setenv("TERM", term, 1);
+    else
+        unsetenv("TERM");
+    free(term);
     unsetenv("TERM_PROGRAM");
-    unsetenv("LC_TERMINAL");
 }
 
 /* A terminal with no graphics protocol gets the same flock as text: braille by
@@ -3264,7 +3278,7 @@ int main(void) {
     test_the_far_layer_is_another_sky();
     test_a_seed_draws_the_same_numbers_everywhere();
     test_wings_beat_and_sometimes_glide();
-    test_iterm2_is_recognised();
+    test_only_kitty_and_ghostty_are_asked_for_sprites();
     test_a_text_terminal_gets_the_flock_in_braille();
     test_a_text_renderer_records_its_cells();
     test_a_cast_is_the_flock_as_text();

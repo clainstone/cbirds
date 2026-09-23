@@ -589,6 +589,18 @@ static protocols_t terminal_protocols(void) {
     return answered;
 }
 
+/* iTerm2 answers the graphics query, then cannot place an image by its number,
+ * which is how every sprite here is placed, and the screen stays empty. It gets
+ * braille instead. LC_TERMINAL is what survives tmux and ssh; a TERM_PROGRAM
+ * other than tmux is another terminal started from an iTerm2 shell. */
+static int terminal_is_iterm2(void) {
+    const char *program = getenv("TERM_PROGRAM");
+    if (program != NULL && strcmp(program, "iTerm.app") == 0) return 1;
+    if (program != NULL && strcmp(program, "tmux") != 0) return 0;
+    const char *terminal = getenv("LC_TERMINAL");
+    return terminal != NULL && strcmp(terminal, "iTerm2") == 0;
+}
+
 static void enter_alt_screen(void) {
     write_all(ALT_SCREEN_ON, sizeof(ALT_SCREEN_ON) - 1);
     write_all(CURSOR_HIDE, sizeof(CURSOR_HIDE) - 1);
@@ -3862,10 +3874,9 @@ int main(int argc, char **argv) {
     }
     /* Kitty's protocol if the terminal answers for it, and the same flock in
      * braille if it does not: there is no terminal this refuses to run in. */
-    if (render_mode == RENDER_AUTO) {
-        protocols_t answered = terminal_protocols();
-        render_mode = answered.kitty ? RENDER_KITTY : RENDER_BRAILLE;
-    }
+    if (render_mode == RENDER_AUTO)
+        render_mode =
+            !terminal_is_iterm2() && terminal_protocols().kitty ? RENDER_KITTY : RENDER_BRAILLE;
     settle_the_bird_size();
     if (palette_follows_the_theme() && !learn_the_theme()) config.palette = FALLBACK_PALETTE;
 

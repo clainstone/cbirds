@@ -107,8 +107,11 @@ cbirds asks the terminal what it can draw and uses the best of it.
 
 | terminal | what you see |
 |---|---|
-| Kitty, WezTerm, Ghostty, recent Konsole, recent iTerm2 | sprites, over the Kitty graphics protocol |
-| everything else: Alacritty, GNOME Terminal, Terminal.app, older iTerm2, xterm, foot, Windows Terminal, tmux | the same flock in braille |
+| Kitty, WezTerm, Ghostty, recent Konsole | sprites, over the Kitty graphics protocol |
+| everything else: Alacritty, GNOME Terminal, Terminal.app, iTerm2, xterm, foot, Windows Terminal, tmux | the same flock in braille |
+
+iTerm2 answers for the Kitty protocol but cannot yet place an image by its
+number, which is how cbirds places every sprite, so it gets braille.
 
 `--render kitty|braille|sextants|blocks` overrides it.
 Sextants are bolder than braille and need a font from 2020 or later; blocks

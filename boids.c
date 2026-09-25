@@ -3068,7 +3068,7 @@ static int wait_for_terminal_io(void) {
     return result < 0 ? -1 : 0;
 }
 
-#define CBIRDS_VERSION "1.3.1"
+#define CBIRDS_VERSION "1.4.0"
 
 /*
  * The program writes its own PNG, with its own encoder.

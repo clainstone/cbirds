@@ -1835,6 +1835,55 @@ static void test_the_hawk_is_never_the_colour_of_the_flock(void) {
     reset_test_config();
 }
 
+/* The help for --color is written out by hand, as --preset's and --shape's are,
+ * so this is what keeps it the list of ramps: every name in the table, in the
+ * table's order, and nothing else. Every name reaches its own ramp, which a
+ * name used twice would not, because the parser takes the first it finds. And
+ * every ramp has five shades, because MAX_FLOCKS was measured on five. */
+static void test_the_help_names_every_ramp(void) {
+    char error[160];
+    const option_t *color = NULL;
+    reset_test_config();
+    name_the_palettes();
+    for (int i = 0; i < OPTION_COUNT; i++)
+        if (strcmp(OPTIONS[i].name, "color") == 0) color = &OPTIONS[i];
+    assert(color != NULL && color->names == PALETTE_NAMES);
+
+    const char *listed = color->help;
+    for (int i = 0; i < PALETTE_COUNT; i++) {
+        size_t length = strlen(PALETTES[i].name);
+        if (i > 0) {
+            assert(strncmp(listed, ", ", 2) == 0);
+            listed += 2;
+        }
+        assert(strncmp(listed, PALETTES[i].name, length) == 0);
+        listed += length;
+
+        char *argv[] = {"cbirds", "--color", (char *)PALETTES[i].name, NULL};
+        config.palette = -1;
+        assert(options_parse(OPTIONS, OPTION_COUNT, 3, argv, error, sizeof(error)) == OPTIONS_OK);
+        assert(config.palette == i);
+        assert(PALETTES[i].shades == 5);
+    }
+    assert(*listed == '\0');
+    reset_test_config();
+}
+
+/* A ramp may be any colour it likes, as long as none of it fades into a dark
+ * terminal. The dimmest shade a ramp has shipped with is matrix's last green, at
+ * 2.6 against black; paper, the greys taken out for being unreadable, ended on
+ * 1.6. Nothing may go below 2.5, just under that green. */
+static void test_no_ramp_fades_into_a_black_terminal(void) {
+    static const uint8_t BLACK[3] = {0, 0, 0};
+    for (config.palette = 0; config.palette < PALETTE_COUNT; config.palette++) {
+        /* Learned from the terminal, and kept off its ground by a test of its own. */
+        if (palette_follows_the_theme()) continue;
+        for (int shade = 0; shade < palette()->shades; shade++)
+            assert(contrast_between(palette()->tints[shade], BLACK) >= 2.5);
+    }
+    reset_test_config();
+}
+
 /* The one colour a bird must never be is the colour of the sky behind it. The
  * ramp used to end exactly on the terminal's background: a fifth of the flock was
  * invisible on every scheme, and with three flocks up one whole flock was. */
@@ -3252,6 +3301,8 @@ int main(void) {
     test_the_pointer_moves_the_flock();
     test_the_shade_follows_the_heading();
     test_the_hawk_is_never_the_colour_of_the_flock();
+    test_the_help_names_every_ramp();
+    test_no_ramp_fades_into_a_black_terminal();
     test_the_theme_ramp_never_reaches_the_background();
     test_theme_colours_are_parsed();
     test_each_flock_flies_at_its_own_pace();

@@ -782,6 +782,25 @@ static const uint8_t ACID_TINTS[][3] = {
 static const uint8_t MATRIX_TINTS[][3] = {
     {198, 255, 198}, {120, 246, 120}, {54, 210, 70}, {26, 150, 48}, {12, 92, 30},
 };
+static const uint8_t AURORA_TINTS[][3] = {
+    {206, 255, 222}, {110, 240, 170}, {44, 204, 170}, {60, 140, 210}, {110, 84, 200},
+};
+/* A ramp is read in order, not by brightness: one flock is coloured along it by
+ * heading, a shade at a time as a bird turns, and several flocks from its ends
+ * inwards. So prism goes round the rainbow instead of from light to dark, and
+ * potion is two hues that meet with nothing between them. */
+static const uint8_t PRISM_TINTS[][3] = {
+    {255, 92, 92}, {255, 196, 64}, {96, 220, 110}, {80, 160, 255}, {176, 110, 255},
+};
+static const uint8_t POTION_TINTS[][3] = {
+    {170, 255, 110}, {72, 214, 104}, {206, 160, 255}, {160, 104, 240}, {118, 64, 206},
+};
+static const uint8_t DUSK_TINTS[][3] = {
+    {255, 214, 170}, {255, 148, 120}, {232, 86, 136}, {160, 70, 170}, {92, 64, 168},
+};
+static const uint8_t ASH_TINTS[][3] = {
+    {244, 244, 246}, {206, 208, 214}, {164, 168, 178}, {124, 128, 140}, {88, 92, 104},
+};
 /* What the embedded sprite is actually painted, for the palettes that leave it
  * alone: a hawk still has to stand off that. */
 static const uint8_t SPRITE_OWN_COLOUR[3] = {237, 28, 36};
@@ -793,6 +812,12 @@ static const palette_t PALETTES[] = {
     {"ice", "ice, white through to deep blue", 5, ICE_TINTS, PNG_TINT_REPLACE},
     {"acid", "acid, lime through to teal", 5, ACID_TINTS, PNG_TINT_REPLACE},
     {"matrix", "the green of the film it is named after", 5, MATRIX_TINTS, PNG_TINT_REPLACE},
+    {"aurora", "the northern lights, mint through to violet", 5, AURORA_TINTS, PNG_TINT_REPLACE},
+    {"prism", "light through a prism, red to violet", 5, PRISM_TINTS, PNG_TINT_REPLACE},
+    {"potion", "two potions that will not mix, green and violet", 5, POTION_TINTS,
+     PNG_TINT_REPLACE},
+    {"dusk", "the sky at dusk, peach through to indigo", 5, DUSK_TINTS, PNG_TINT_REPLACE},
+    {"ash", "ash, white through to slate grey", 5, ASH_TINTS, PNG_TINT_REPLACE},
 };
 enum { PALETTE_COUNT = sizeof(PALETTES) / sizeof(*PALETTES) };
 
@@ -838,12 +863,12 @@ static int palette_shades(void) {
  * sky and what nothing looks like against a black terminal: barely a twentieth of
  * a stop above the background, invisible in every recording. Scarlet fixed that
  * everywhere except the warm ramps, where scarlet is just another ember — against
- * ember the contrast was 1.16, which is no contrast at all. So there are two
+ * ember the contrast was 1.16, which is no contrast at all. So there are three
  * colours and the palette picks: whichever of them stands furthest from the
  * nearest thing the flock is wearing. */
 static const uint8_t HAWK_COLOURS[][3] = {
     {255, 60, 72},   /* Scarlet, for every cold or grey ramp. */
-    {255, 246, 210}, /* A hot near-white, against a single dark colour. */
+    {255, 246, 210}, /* A hot near-white, against a dark ramp, or one with red and blue in it. */
     {96, 226, 255},  /* And an electric cyan, for the ramps that are already fire. */
 };
 enum { HAWK_COLOUR_COUNT = sizeof(HAWK_COLOURS) / sizeof(*HAWK_COLOURS) };
@@ -2705,7 +2730,7 @@ static const option_t OPTIONS[] = {
      "Sliders   0 to 12, as the panel shows them", 0},
 
     {'c', "color", "palette", OPTION_ENUM, &config.palette, 0, 0, PALETTE_NAMES, "RAMP",
-     "theme, ember, ice, acid, matrix", "Look", 1},
+     "theme, ember, ice, acid, matrix, aurora, prism, potion, dusk, ash", "Look", 1},
     {0, "shape", NULL, OPTION_ENUM, &config.shape, 0, 0, SHAPE_NAMES, "NAME",
      "bird, arrow, plane, dot", "Look", 1},
     {0, "sprite", NULL, OPTION_STRING, &sprite_path, 0, 0, NULL, "FILE",

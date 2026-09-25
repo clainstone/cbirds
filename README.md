@@ -145,6 +145,7 @@ cbirds --render kitty               sprites, in Kitty or Ghostty
 cbirds --preset murmuration         the starling look
 cbirds --hawks 2 --color ice        something to watch
 cbirds --flocks 3 --color ember     three flocks that keep to their own
+cbirds --color prism                a turn runs a rainbow through the flock
 cbirds --depth --trails             a second sky behind the first
 cbirds --matrix                     it is raining birds
 ```
@@ -225,7 +226,7 @@ Sliders   0 to 12, as the panel shows them
       --avoidance NOTCH         how much flocks keep out of each other's way (default 4)
 
 Look
-  -c, --color RAMP              theme, ember, ice, acid, matrix
+  -c, --color RAMP              theme, ember, ice, acid, matrix, aurora, prism, potion, dusk, ash
       --shape NAME              bird, arrow, plane, dot
       --sprite FILE             a PNG you supply, kept in its own colours
   -e, --trails                  faint tails behind the flock

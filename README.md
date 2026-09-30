@@ -10,6 +10,8 @@ A flock of birds in your terminal.
 <img src="https://img.shields.io/badge/dependencies-none-brightgreen" alt="no dependencies">
 <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey" alt="Linux, macOS">
 <a href="#terminals"><img src="https://img.shields.io/badge/sprites-Kitty%20%7C%20Ghostty-8A2BE2" alt="sprites in Kitty and Ghostty"></a>
+<a href="https://github.com/agarrharr/awesome-cli-apps#screensavers"><img src="https://img.shields.io/badge/mentioned%20in-Awesome%20CLI%20Apps-FC60A8?logo=awesomelists&logoColor=white" alt="mentioned in Awesome CLI Apps"></a>
+<a href="https://github.com/fosslife/awesome-ricing#show-off-scripts"><img src="https://img.shields.io/badge/mentioned%20in-Awesome%20Ricing-FC60A8?logo=awesomelists&logoColor=white" alt="mentioned in Awesome Ricing"></a>
 </p>
 
 <p align="center"><img src="docs/demo.gif" alt="The flock writes BOIDS, lets go, and parts around two scarlet hawks in slow motion"></p>

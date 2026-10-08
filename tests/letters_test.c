@@ -361,7 +361,9 @@ static void test_the_wave_takes_about_a_second_to_cross_a_screenful(void) {
     }
     /* From a corner it crosses the whole screen, from the middle half of it: the
      * brief's second is the full crossing. Measured, so tuning it is a number. */
-    fprintf(stderr, "wave over 80x24: %.2f s mean, %.2f to %.2f s\n", total / runs, best, worst);
+    if (getenv("CBIRDS_TEST_NUMBERS"))
+        fprintf(stderr, "wave over 80x24: %.2f s mean, %.2f to %.2f s\n", total / runs, best,
+                worst);
     assert(worst < 1.8 && best > 0.4);
 }
 

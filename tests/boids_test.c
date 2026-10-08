@@ -3530,7 +3530,8 @@ static void test_a_whole_cycle_puts_every_letter_back_on_its_own_cell(void) {
         }
         assert(the_letters.phase == LETTERS_AT_REST);
         double seconds = homing / (double)FRAME_RATE;
-        fprintf(stderr, "homing at pace notch %2d: %.2f s\n", NOTCHES[n], seconds);
+        if (getenv("CBIRDS_TEST_NUMBERS"))
+            fprintf(stderr, "homing at pace notch %2d: %.2f s\n", NOTCHES[n], seconds);
         assert(seconds <= LETTERS_HOMING_DEADLINE + 0.1);
         assert(world_all_home(&world));
 
@@ -3833,8 +3834,9 @@ static void test_how_the_flock_of_letters_looks_in_the_air(void) {
         speed_total += moved / tracked / 8.0; /* Cells a frame. */
         samples++;
     }
-    fprintf(stderr, "letters in the air at 0.2x: %.0f%% visible, %.2f cells a frame\n",
-            100.0 * visible_total / samples, speed_total / samples);
+    if (getenv("CBIRDS_TEST_NUMBERS"))
+        fprintf(stderr, "letters in the air at 0.2x: %.0f%% visible, %.2f cells a frame\n",
+                100.0 * visible_total / samples, speed_total / samples);
     assert(visible_total / samples > 0.3);
     world_close(&world);
 }
@@ -3890,6 +3892,121 @@ static void test_a_text_recording_is_the_text_flying(void) {
     record_rows = 26;
     render_mode = RENDER_KITTY;
     reset_test_config();
+}
+
+/* The terminal itself, as far as it matters here: the bytes cbirds sends, fed to the
+ * emulator, are what a terminal would be showing. The test of the emitter is not
+ * that it wrote the cells it was given but that a terminal which read all of it
+ * shows them, with every wide glyph whole and nothing left behind by a letter that
+ * moved. */
+static void feed_the_frame(world_t *world, kitty_graphics_t *graphics, vt_t *terminal) {
+    graphics->length = 0;
+    assert(queue_text_frame(graphics, world->birds) == KITTY_GRAPHICS_OK);
+    vt_feed(terminal, graphics->buffer, graphics->length);
+}
+
+static void assert_the_terminal_shows_the_cells(const vt_t *terminal) {
+    for (int row = 0; row < text_cells.rows; row++)
+        for (int col = 0; col < text_cells.cols; col++) {
+            const cell_t *drawn =
+                &text_cells.before[(size_t)row * (size_t)text_cells.cols + (size_t)col];
+            const vt_cell_t *shown = vt_cell(terminal, col, row);
+            assert(shown != NULL);
+            uint32_t want = drawn->glyph == 0 ? ' ' : drawn->glyph;
+            uint32_t have = shown->glyph == 0 ? ' ' : shown->glyph;
+            if (drawn->wide == CELLS_WIDE_TAIL) {
+                assert(shown->width == 0);
+                continue;
+            }
+            assert(have == want);
+            assert(shown->width == (drawn->wide == CELLS_WIDE_HEAD ? 2 : 1));
+            if (want != ' ') {
+                /* A letter's own colour is what the terminal shows, as it was given. */
+                assert(drawn->has_fg == (shown->style.fg.kind != VT_COLOUR_DEFAULT));
+                if (drawn->has_fg && drawn->fg_kind == CELLS_COLOUR_ANSI)
+                    assert(shown->style.fg.kind == VT_COLOUR_ANSI &&
+                           shown->style.fg.value[0] == drawn->fg[0]);
+                if (drawn->has_fg &&
+                    (drawn->fg_kind == CELLS_COLOUR_EXACT || drawn->fg_kind == CELLS_COLOUR_RGB))
+                    assert(shown->style.fg.kind == VT_COLOUR_RGB &&
+                           memcmp(shown->style.fg.value, drawn->fg, 3) == 0);
+                assert((shown->style.attributes & VT_BOLD) ==
+                       ((drawn->attributes & CELLS_BOLD) ? VT_BOLD : 0));
+                assert((shown->style.attributes & VT_UNDERLINE) ==
+                       ((drawn->attributes & CELLS_UNDERLINE) ? VT_UNDERLINE : 0));
+                assert((shown->style.attributes & VT_REVERSE) ==
+                       ((drawn->attributes & CELLS_REVERSE) ? VT_REVERSE : 0));
+            }
+            assert(drawn->has_bg == (shown->style.bg.kind != VT_COLOUR_DEFAULT));
+            if (drawn->has_bg && drawn->bg_kind == CELLS_COLOUR_ANSI)
+                assert(shown->style.bg.kind == VT_COLOUR_ANSI &&
+                       shown->style.bg.value[0] == drawn->bg[0]);
+        }
+}
+
+static void test_a_terminal_that_is_sent_everything_shows_the_text_at_every_frame_and_after_a_cycle(
+    void) {
+    world_t world;
+    world_open(&world, NEOFETCH_LIKE, 60, 12);
+    config.pace_notch = 6;
+    apply_notches();
+    kitty_graphics_t graphics;
+    assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
+    vt_t terminal;
+    assert(vt_init(&terminal, 60, 12) == 0);
+    vt_t original;
+    assert(vt_init(&original, 60, 12) == 0);
+    vt_feed(&original, NEOFETCH_LIKE, strlen(NEOFETCH_LIKE));
+    vt_finish(&original);
+
+    feed_the_frame(&world, &graphics, &terminal);
+    assert_the_terminal_shows_the_cells(&terminal);
+    /* The very first frame is the command's own output, glyph for glyph and colour
+     * for colour, as the emulator reads it. */
+    for (int row = 0; row < 12; row++)
+        for (int col = 0; col < 60; col++) {
+            const vt_cell_t *a = vt_cell(&original, col, row), *b = vt_cell(&terminal, col, row);
+            assert((a->glyph == 0 ? ' ' : a->glyph) == (b->glyph == 0 ? ' ' : b->glyph));
+            assert(a->width == b->width);
+            if (!vt_cell_is_blank(a)) assert(memcmp(&a->style, &b->style, sizeof(vt_style_t)) == 0);
+            assert(memcmp(&a->style.bg, &b->style.bg, sizeof(vt_colour_t)) == 0);
+        }
+
+    feed_input("\r");
+    int frames = 0;
+    while (frames < 60 * 12 && the_letters.phase != LETTERS_IN_FLIGHT) {
+        world_step(&world);
+        feed_the_frame(&world, &graphics, &terminal);
+        assert_the_terminal_shows_the_cells(&terminal);
+        frames++;
+    }
+    for (int frame = 0; frame < 120; frame++) {
+        world_step(&world);
+        feed_the_frame(&world, &graphics, &terminal);
+        if (frame % 7 == 0) assert_the_terminal_shows_the_cells(&terminal);
+    }
+    feed_input("\r");
+    while (frames < 60 * 40 && the_letters.phase != LETTERS_AT_REST) {
+        world_step(&world);
+        feed_the_frame(&world, &graphics, &terminal);
+        assert_the_terminal_shows_the_cells(&terminal);
+        frames++;
+    }
+    assert(the_letters.phase == LETTERS_AT_REST && world_all_home(&world));
+    feed_the_frame(&world, &graphics, &terminal);
+    /* After a whole cycle the terminal shows the command's output again. */
+    for (int row = 0; row < 12; row++)
+        for (int col = 0; col < 60; col++) {
+            const vt_cell_t *a = vt_cell(&original, col, row), *b = vt_cell(&terminal, col, row);
+            assert((a->glyph == 0 ? ' ' : a->glyph) == (b->glyph == 0 ? ' ' : b->glyph));
+            assert(a->width == b->width);
+            if (!vt_cell_is_blank(a)) assert(memcmp(&a->style, &b->style, sizeof(vt_style_t)) == 0);
+            assert(memcmp(&a->style.bg, &b->style.bg, sizeof(vt_colour_t)) == 0);
+        }
+    vt_destroy(&original);
+    vt_destroy(&terminal);
+    kitty_graphics_destroy(&graphics);
+    world_close(&world);
 }
 
 static void test_a_text_recording_as_a_gif_is_painted_with_the_font(void) {
@@ -4223,6 +4340,7 @@ int main(void) {
     test_quitting_flies_the_text_off_the_top();
     test_a_letter_at_home_is_neither_moved_nor_seen_by_the_flock();
     test_how_the_flock_of_letters_looks_in_the_air();
+    test_a_terminal_that_is_sent_everything_shows_the_text_at_every_frame_and_after_a_cycle();
     test_a_text_recording_is_the_text_flying();
     test_a_text_recording_as_a_gif_is_painted_with_the_font();
     test_a_window_that_changes_size_lays_the_text_out_again();

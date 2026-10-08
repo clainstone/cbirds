@@ -98,6 +98,10 @@ typedef struct {
     sky_grid_t grid;
     uint64_t random;
     double clock; /* Seconds flown, for whatever drifts. */
+    /* Where each wave of the air is in its cycle at the start, which is what a seed
+     * changes about the flock's shape: the same air for every seed folded every flock
+     * the same way. */
+    double air_phase[5];
     /* Where the flock is and how big, which is what the camera frames: its middle
      * as it is, and its size eased over seconds, because a flock that breathes
      * should not make the picture lurch. */

@@ -98,8 +98,9 @@ enum {
     DEFAULT_SPEED = 40,
     DEFAULT_BIRD_SIZE = 30,
     /* In three dimensions there are more birds, and they are further off. What
-     * --size means there is the bird at the roost's own distance; the nearest are
-     * half as big again and the farthest little more than half. */
+     * --size means there is the bird at the middle of the flock's depth; the
+     * nearest size is three fifths bigger than that and the farthest a little over
+     * half of it. */
     SKY_BIRDS = 2000,
     SKY_BIRD_SIZE = 8,
     /* Dots are coarser than sprites: a bird that a sprite renders in eight pixels
@@ -983,7 +984,6 @@ static int hawk_draw_offset(void) {
 
 /* In a space a hawk is two and a half times the bird of its size, whichever it is:
  * it has to be the thing the eye goes to among two thousand. */
-static int sky_bin_size(int bin);
 static int hawk_size_in_layer(int layer) {
     int size = sky_bin_size(layer) * 5 / 2;
     return size > 2 * MAX_BIRD_SIZE ? 2 * MAX_BIRD_SIZE : size;
@@ -2519,6 +2519,9 @@ static int bird_placement(const bird_t *bird, kitty_graphics_placement_t *placem
     int row = pixel_y / screen.cell_height;
     if (column >= screen.cols || row >= screen.rows) return 0;
 
+    /* The far layer underneath; in a space each size over the one before it. */
+    int z_index = bird->layer > 0 ? -1 : 0;
+    if (sky_mode) z_index = bird->layer;
     *placement = (kitty_graphics_placement_t){
         .image_id = sprite_image_id(bird),
         .placement_id = 0,
@@ -2526,9 +2529,7 @@ static int bird_placement(const bird_t *bird, kitty_graphics_placement_t *placem
         .column = column,
         .x_offset = pixel_x % screen.cell_width,
         .y_offset = pixel_y % screen.cell_height,
-        .z_index = sky_mode          ? bird->layer
-                   : bird->layer > 0 ? -1
-                                     : 0, /* The far layer underneath. */
+        .z_index = z_index,
     };
     return 1;
 }

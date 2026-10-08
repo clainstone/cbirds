@@ -65,7 +65,7 @@ static const double SEPARATION_RADIUS = 1.1;
  * The wavelength matters more than the strength. At twenty five metres, shorter
  * than the flock is long, the current tore it into streams (a third to a half of
  * the time in more than one piece, and the birds agreeing on a heading at 0.3); at
- * eighty it bends it (one piece four fifths of the time, agreeing at 0.6). */
+ * eighty it bends it (one piece three quarters of the time, agreeing at 0.7). */
 static const double CURRENT_K = 0.08;
 typedef struct {
     int component;
@@ -179,6 +179,8 @@ sky_status_t sky_init(sky_t *sky, int capacity, uint32_t seed) {
     if (sky->random == 0) sky->random = 1;
     for (int i = 0; i < 8; i++) next_bits(sky);
     sky->cell = GRID_CELL;
+    for (size_t i = 0; i < sizeof(sky->air_phase) / sizeof(*sky->air_phase); i++)
+        sky->air_phase[i] = 2 * M_PI * unit_random(sky);
     return sky_reserve(sky, capacity);
 }
 
@@ -477,13 +479,13 @@ int sky_neighbours(const sky_t *sky, int self, int k, double reach, int *index, 
 
 /* --- Flight ------------------------------------------------------------- */
 
-static void current_at(double clock, double x, double y, double z, double out[3]) {
+static void current_at(const sky_t *sky, double x, double y, double z, double out[3]) {
     out[0] = out[1] = out[2] = 0;
     for (size_t i = 0; i < sizeof(CURRENT_WAVES) / sizeof(*CURRENT_WAVES); i++) {
         const wave_t *wave = &CURRENT_WAVES[i];
         double along = wave->direction[0] * x + wave->direction[1] * y + wave->direction[2] * z;
-        out[wave->component] +=
-            wave->weight * sin(CURRENT_K * along - wave->rate * clock + wave->phase);
+        out[wave->component] += wave->weight * sin(CURRENT_K * along - wave->rate * sky->clock +
+                                                   wave->phase + sky->air_phase[i]);
     }
 }
 
@@ -549,7 +551,7 @@ static void fly_one(const sky_t *sky, sky_bird_t *out, int self, const sky_rules
                    clamp((height - ROOST_HEIGHT) / ROOST_HEIGHT, 0, 3);
 
     double flow[3];
-    current_at(sky->clock, me->x, me->y, me->z, flow);
+    current_at(sky, me->x, me->y, me->z, flow);
     for (int axis = 0; axis < 3; axis++)
         want[axis] += rules->current * flow[axis] + rules->wander * out->wander[axis];
 

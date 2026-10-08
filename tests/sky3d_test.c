@@ -886,15 +886,15 @@ static void test_the_camera_makes_room_quickly_and_takes_it_back_slowly(void) {
     sky_populate(&wide, 0, COUNT, 0);
     for (int step = 0; step < 600; step++) sky_step(&wide, COUNT, &rules, NULL, 0.05);
     memcpy(narrow.birds, wide.birds, COUNT * sizeof(*wide.birds));
-    narrow.flock_radius = wide.flock_radius;
+    /* Both cameras have settled on the flock as it is. */
+    double centre[3], radius;
+    sky_measure(&wide, COUNT, centre, &radius);
+    wide.flock_radius = narrow.flock_radius = settled = radius;
     narrow.framed = 1;
-    settled = wide.flock_radius;
     assert(settled > 1);
 
     /* One flock is suddenly twice as big, the other half the size, about the same
      * middle; a second of flight is all they get to show it. */
-    double centre[3], radius;
-    sky_measure(&wide, COUNT, centre, &radius);
     for (int i = 0; i < COUNT; i++) {
         wide.birds[i].x = centre[0] + (wide.birds[i].x - centre[0]) * 2;
         wide.birds[i].y = centre[1] + (wide.birds[i].y - centre[1]) * 2;

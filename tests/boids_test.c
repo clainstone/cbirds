@@ -113,6 +113,14 @@ static void set_test_screen(int width, int height) {
  * change to how the program counts its fifths has to agree with them. */
 static const double PACE_FLOOR = 0.2, PACE_CEILING = 2.6;
 
+/* Nobody is alarmed to begin with, and no pointer has ever been seen. */
+static void reset_the_waves(void) {
+    memset(waves, 0, sizeof(waves));
+    waves_in_flight = 0;
+    wave_task_count = 0;
+    memset(&mouse, 0, sizeof(mouse));
+}
+
 static void reset_test_config(void) {
     frame_seconds = 1.0 / FRAME_RATE;
     config.birds = 800;
@@ -131,6 +139,7 @@ static void reset_test_config(void) {
     matrix_mode = 0;
     unlock_fps = 0;
     apply_notches();
+    reset_the_waves();
 }
 
 /* The panel is drawn with multi byte glyphs, so its width is a count of cells,
@@ -2253,6 +2262,7 @@ static void test_the_sprite_catalogue_has_a_place_for_everything(void) {
     }
     for (int wing = 0; wing < WING_PHASES; wing++) seen[hawk_set(wing)]++;
     for (int step = 0; step < TRAIL_LENGTH; step++) seen[trail_set(step)]++;
+    for (int wing = 0; wing < WING_PHASES; wing++) seen[alarm_set(wing)]++;
     for (int set = 0; set < sprite_set_count(); set++) assert(seen[set] == 1);
     assert(sprite_set_count() <= MAX_SPRITE_SETS);
     /* Ids are one based and run one set after another without a gap. */
@@ -3274,6 +3284,606 @@ static void test_flocks_avoid_each_other_as_much_as_asked(void) {
     assert(small_shun.outside <= small_shipped.outside * 1.5 + 0.005);
 }
 
+/*
+ * Escape waves.
+ */
+
+/* A row of birds standing still, a few pixels apart, with the first of them
+ * alarmed. They are held still because what is measured is the wave: a bird
+ * that flew out of sight of the next would be measuring the flock. */
+enum { LINE_BIRDS = 80 };
+static bird_t line[LINE_BIRDS];
+static spatial_grid_t line_grid;
+static double line_now; /* Seconds of flight since the alarm. */
+
+static void set_the_line(double gap, double frame_rate, int pace_notch) {
+    reset_test_config();
+    reset_the_waves();
+    legend_enabled = 0;
+    apply_screen_size(200, 50, 1600, 800);
+    config.pace_notch = pace_notch;
+    apply_notches();
+    set_frame_seconds(1.0 / frame_rate);
+    config.birds = LINE_BIRDS;
+    for (int i = 0; i < LINE_BIRDS; i++)
+        line[i] = (bird_t){.x = 100 + i * gap, .y = 400, .direction = 0.1 * i};
+    assert(spatial_grid_init(&line_grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&line_grid, screen.width, screen.height, LINE_BIRDS) ==
+           SPATIAL_GRID_OK);
+    assert(spatial_grid_build(&line_grid, LINE_BIRDS, read_bird_position, line) == SPATIAL_GRID_OK);
+    /* Caught, and about to begin: the first step begins it. */
+    assert(wave_catch(&waves[0], SWERVE_ANGLE, 1e-6));
+    waves_in_flight = 1;
+    line_now = 0;
+}
+
+/* Runs the alarm for so many steps. Says how many birds began in them, and
+ * when each did, in seconds of flight since the alarm; a bird that has not has
+ * a negative time. No bird may begin twice in a run. */
+static int run_the_line(int steps, double began[LINE_BIRDS]) {
+    int begun = 0;
+    for (int i = 0; i < LINE_BIRDS; i++) began[i] = -1;
+    for (int step = 0; step < steps; step++) {
+        spread_the_alarm(line, &line_grid);
+        for (int k = 0; k < wave_task_count; k++) {
+            int bird = wave_tasks[k].bird;
+            assert(began[bird] < 0);
+            began[bird] = line_now + wave_tasks[k].at;
+            begun++;
+        }
+        line_now += flight_seconds();
+    }
+    return begun;
+}
+
+static void put_the_line_away(void) {
+    spatial_grid_destroy(&line_grid);
+    reset_the_waves();
+    reset_test_config();
+}
+
+/* A wave runs along a line of birds at the speed it is given, WAVE_PACE times
+ * the speed a bird flies at, less a little, because the farthest bird in sight
+ * is never quite at the edge of it: measured at 7.4 to 7.9 thousand pixels a
+ * second of flight, 3.1 to 3.3 times the birds' 2.4 thousand. */
+static void test_a_wave_crosses_a_line_of_birds_faster_than_they_fly(void) {
+    double began[LINE_BIRDS];
+    static const double gaps[] = {6, 9, 12};
+    for (size_t g = 0; g < sizeof(gaps) / sizeof(*gaps); g++) {
+        set_the_line(gaps[g], 60, DEFAULT_NOTCH);
+        assert(run_the_line(120, began) == LINE_BIRDS);
+        double bird_speed = config.speed / flight_seconds();
+        double front = (LINE_BIRDS - 1) * gaps[g] / (began[LINE_BIRDS - 1] - began[0]);
+        assert(front >= 3.0 * bird_speed);
+        assert(front <= WAVE_PACE * bird_speed * 1.001);
+        /* And it is a front: later is further, bird after bird. */
+        for (int i = 1; i < LINE_BIRDS; i++) assert(began[i] >= began[i - 1] - 1e-12);
+        put_the_line_away();
+    }
+    /* Further than a bird sees it does not go: a gap wider than the sight stops
+     * the wave dead, which is why the sight is wider than the perception. */
+    double sight = WAVE_SIGHT * config.vision_radius;
+    set_the_line(sight + 1, 60, DEFAULT_NOTCH);
+    assert(run_the_line(120, began) == 1);
+    put_the_line_away();
+    set_the_line(sight - 1, 60, DEFAULT_NOTCH);
+    assert(run_the_line(240, began) == LINE_BIRDS);
+    put_the_line_away();
+}
+
+/* The same pixels a second at any frame rate: the moment each bird begins is
+ * the same at thirty frames a second as at sixty, and at twenty five, and at a
+ * hundred and twenty, because the wave is told inside the step and not a hop to
+ * a step, which would take a sixtieth of a second a hop at one rate and a
+ * thirtieth at the other. And at any pace, which scales the flock's time and the
+ * wave's with it: the same moments in seconds of flight. */
+static void test_the_wave_covers_the_same_ground_at_thirty_and_sixty_frames_a_second(void) {
+    double reference[LINE_BIRDS], other[LINE_BIRDS];
+    set_the_line(6, 60, DEFAULT_NOTCH);
+    assert(run_the_line(120, reference) == LINE_BIRDS);
+    put_the_line_away();
+
+    static const double rates[] = {25, 30, 33, 120};
+    for (size_t r = 0; r < sizeof(rates) / sizeof(*rates); r++) {
+        set_the_line(6, rates[r], DEFAULT_NOTCH);
+        assert(run_the_line((int)(rates[r] * 2), other) == LINE_BIRDS);
+        for (int i = 0; i < LINE_BIRDS; i++) assert(fabs(other[i] - reference[i]) < 1e-9);
+        put_the_line_away();
+    }
+    /* Flown at 0.4 of the pace, a step is 0.4 of the flight. */
+    set_the_line(6, 60, 1);
+    assert(fabs(config.pace - 0.4) < 1e-9);
+    assert(run_the_line(300, other) == LINE_BIRDS);
+    for (int i = 0; i < LINE_BIRDS; i++) assert(fabs(other[i] - reference[i]) < 1e-9);
+    put_the_line_away();
+}
+
+/* A bird alarmed by a neighbour swerves the way the neighbour does, not the way
+ * the hawk would have it: copying is what makes it a wave and not a burst. */
+static void test_a_bird_alarmed_by_a_neighbour_copies_its_swerve(void) {
+    enum { COUNT = 5 };
+    bird_t birds[COUNT];
+    spatial_grid_t grid;
+
+    reset_test_config();
+    reset_the_waves();
+    legend_enabled = 0;
+    apply_screen_size(200, 50, 1600, 800);
+    config.birds = COUNT;
+    config.hawks = 1;
+    place_hawks();
+    /* A hawk diving east along y = 400, with an alarm radius of 90. Bird 0 is
+     * under the line and bird 1 over it, both within the radius, so each swerves
+     * from it to the side it is on. Bird 2 is out of the radius, below the line,
+     * and in sight of bird 1 alone: a bird that had worked it out for itself would
+     * swerve the way bird 0 does, and it swerves the way bird 1 does. */
+    assert(ALARM_SHARE * hawk_reach() == 90);
+    hawks[0] = (hawk_t){.x = 400, .y = 400, .direction = 0, .diving = 1};
+    birds[0] = (bird_t){.x = 400, .y = 470, .direction = 1.0}; /* Below the line. */
+    birds[1] = (bird_t){.x = 460, .y = 370, .direction = 2.0}; /* Above it. */
+    birds[2] = (bird_t){.x = 500, .y = 440, .direction = 3.0}; /* Out of the hawk's reach. */
+    birds[3] = (bird_t){.x = 300, .y = 700, .direction = 0.5}; /* Nowhere near anything. */
+    birds[4] = (bird_t){.x = 460, .y = 160, .direction = 5.0}; /* Out of everyone's sight. */
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, COUNT) == SPATIAL_GRID_OK);
+    assert(spatial_grid_build(&grid, COUNT, read_bird_position, birds) == SPATIAL_GRID_OK);
+    for (int frame = 0; frame < 60; frame++) spread_the_alarm(birds, &grid);
+
+    assert(waves[0].swerve == SWERVE_ANGLE);  /* Below the line, so clockwise from it. */
+    assert(waves[1].swerve == -SWERVE_ANGLE); /* Above it, the other way. */
+    assert(waves[2].swerve == waves[1].swerve);
+    assert(waves[2].swerve != swerve_away_from(&birds[2], 400, 400, 0));
+    assert(!wave_busy(&waves[3]) && !wave_busy(&waves[4]));
+    /* The heading is the bird's own, turned by what it copied. */
+    for (int i = 0; i < 3; i++) {
+        double want = fmod(birds[i].direction + waves[i].swerve + 4 * M_PI, 2 * M_PI);
+        assert(fabs(waves[i].heading - want) < 1e-9);
+    }
+    spatial_grid_destroy(&grid);
+    config.hawks = 0;
+    reset_the_waves();
+    reset_test_config();
+}
+
+/* The refractory time holds. A bird that has swerved cannot be alarmed again
+ * until it has rested, whoever tells it, and the wave that has crossed a line
+ * of birds does not come back through it: run_the_line asserts that nobody
+ * begins twice, over the whole of the rest. */
+static void test_the_refractory_time_holds(void) {
+    double began[LINE_BIRDS], again[LINE_BIRDS];
+    set_the_line(6, 60, DEFAULT_NOTCH);
+    double rest = WAVE_REFRACTORY * config.pace;
+    int steps = (int)(rest * 60) - 60; /* A second short of it. */
+    assert(run_the_line(steps, began) == LINE_BIRDS);
+    for (int i = 0; i < LINE_BIRDS; i++) {
+        assert(!wave_catchable(&waves[i]));
+        assert(!wave_catch(&waves[i], -SWERVE_ANGLE, 0.001));
+        assert(waves[i].swerve == SWERVE_ANGLE); /* And what it has is not overwritten. */
+    }
+    /* It is over for the first bird before it is for the last, by as long as the
+     * wave took to reach it, and then they can all be caught again. */
+    assert(run_the_line(240, again) == 0); /* Nothing starts it, so nothing begins. */
+    for (int i = 0; i < LINE_BIRDS; i++) assert(wave_catchable(&waves[i]));
+    assert(wave_catch(&waves[0], -SWERVE_ANGLE, 1e-6));
+    waves_in_flight = 1;
+    assert(run_the_line(120, again) == LINE_BIRDS);
+    assert(waves[LINE_BIRDS - 1].swerve == -SWERVE_ANGLE); /* A second wave, the other way. */
+    put_the_line_away();
+}
+
+/* A dive alarms the birds in its way and nobody else. */
+static void test_a_dive_alarms_the_birds_in_its_way(void) {
+    enum { COUNT = 6 };
+    bird_t birds[COUNT];
+
+    reset_test_config();
+    reset_the_waves();
+    legend_enabled = 0;
+    apply_screen_size(200, 50, 1600, 800);
+    config.birds = COUNT;
+    double radius = ALARM_SHARE * hawk_reach();
+    assert(radius < hawk_reach());
+    birds[0] = (bird_t){.x = 800 + radius * 0.5, .y = 400};             /* Ahead of it, near. */
+    birds[1] = (bird_t){.x = 800 - radius * 0.5, .y = 400};             /* Behind it, near. */
+    birds[2] = (bird_t){.x = 800 + radius * 2.0, .y = 400};             /* Ahead of it, and far. */
+    birds[3] = (bird_t){.x = 800, .y = 400 + radius * 0.5};             /* Beside it. */
+    birds[4] = (bird_t){.x = 800 + radius * 0.5, .y = 400, .layer = 1}; /* In the far sky. */
+    birds[5] = (bird_t){.x = 1500, .y = 100};
+
+    /* Cruising, it alarms what it is heading at and nothing it is not. */
+    wave_task_count = 0;
+    alarm_the_birds_near(birds, 800, 400, 0, 0, radius, 1.0);
+    assert(wave_busy(&waves[0]));
+    assert(!wave_busy(&waves[1]) && !wave_busy(&waves[3]));
+    assert(!wave_busy(&waves[2]) && !wave_busy(&waves[4]) && !wave_busy(&waves[5]));
+
+    /* Diving, everything in the radius, behind it and beside it too, but never
+     * the far sky. The nearer, the sooner. */
+    reset_the_waves();
+    alarm_the_birds_near(birds, 800, 400, 0, 1, radius, 1e-9);
+    assert(wave_busy(&waves[0]) && wave_busy(&waves[1]) && wave_busy(&waves[3]));
+    assert(!wave_busy(&waves[2]) && !wave_busy(&waves[4]) && !wave_busy(&waves[5]));
+    reset_the_waves();
+    alarm_the_birds_near(birds, 800, 400, 0, 1, radius, 1.0);
+    assert(waves[0].left > 0 && waves[3].left > 0); /* Both begin in a second's step... */
+    assert(waves[0].left == waves[3].left); /* ...at the same distance, at the same moment. */
+    assert(reaction_time(0, radius) < reaction_time(radius, radius));
+    assert(reaction_time(radius, radius) * 2 * WAVE_PACE * flight_pixels_per_second == 2 * radius);
+    reset_the_waves();
+    reset_test_config();
+}
+
+/* Nothing is alarmed without a hawk: a flock flown for a long while without
+ * one never has anything in its alarm state. */
+static void test_nothing_is_alarmed_without_hawks(void) {
+    enum { COUNT = 120 };
+    static bird_t birds[COUNT], snapshot[COUNT];
+    spatial_grid_t grid;
+
+    reset_test_config();
+    reset_the_waves();
+    legend_enabled = 0;
+    apply_screen_size(100, 30, 800, 480);
+    config.birds = COUNT;
+    config.hawks = 0;
+    seed_random(11);
+    for (int i = 0; i < COUNT; i++) place_one_bird(&birds[i], i);
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, COUNT) == SPATIAL_GRID_OK);
+    for (int frame = 0; frame < 300; frame++) {
+        memcpy(snapshot, birds, sizeof(birds));
+        assert(spatial_grid_build(&grid, COUNT, read_bird_position, snapshot) == SPATIAL_GRID_OK);
+        fly(birds, snapshot, &grid);
+        assert(!waves_in_flight);
+        for (int i = 0; i < COUNT; i++) assert(!birds[i].alarmed);
+    }
+    static const wave_t still;
+    for (int i = 0; i < COUNT; i++) assert(memcmp(&waves[i], &still, sizeof(still)) == 0);
+    spatial_grid_destroy(&grid);
+    reset_the_waves();
+    reset_test_config();
+}
+
+/* With hawks it is the other way round: in a flock flown for a few seconds with
+ * two of them, waves run, and one crosses most of the flock at once. */
+static void test_a_strike_sends_a_wave_across_the_flock(void) {
+    enum { COUNT = 300 };
+    static bird_t birds[COUNT], snapshot[COUNT];
+    spatial_grid_t grid;
+
+    reset_test_config();
+    reset_the_waves();
+    legend_enabled = 0;
+    apply_screen_size(96, 32, 768, 512);
+    config.birds = COUNT;
+    config.bird_size = 14;
+    config.hawks = 2;
+    config.pace_notch = 0;
+    apply_notches();
+    set_frame_seconds(1.0 / 50);
+    seed_random(33);
+    for (int i = 0; i < COUNT; i++) place_one_bird(&birds[i], i);
+    place_hawks();
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, COUNT) == SPATIAL_GRID_OK);
+    int was_lit[COUNT] = {0}, begun = 0, peak = 0;
+    for (int frame = 0; frame < 600; frame++) {
+        memcpy(snapshot, birds, sizeof(birds));
+        assert(spatial_grid_build(&grid, COUNT, read_bird_position, snapshot) == SPATIAL_GRID_OK);
+        fly(birds, snapshot, &grid);
+        int lit = 0;
+        for (int i = 0; i < COUNT; i++) {
+            if (birds[i].alarmed) lit++;
+            if (birds[i].alarmed && !was_lit[i]) begun++;
+            was_lit[i] = birds[i].alarmed;
+        }
+        if (lit > peak) peak = lit;
+    }
+    spatial_grid_destroy(&grid);
+    assert(begun > COUNT);          /* Waves, more than one of them... */
+    assert(peak * 10 >= COUNT * 6); /* ...of which one lit most of the flock at once. */
+    config.hawks = 0;
+    reset_the_waves();
+    reset_test_config();
+}
+
+/* A swerve is a turn the banking would not allow: with the banking turned right
+ * down a bird that is swerving turns further in a step than it ever banks, but
+ * not further than three times as far, and only while it swerves. */
+static void test_a_swerve_is_sharper_than_the_banking(void) {
+    bird_t birds[2], snapshot[2];
+    spatial_grid_t grid;
+
+    reset_test_config();
+    reset_the_waves();
+    legend_enabled = 0;
+    apply_screen_size(200, 50, 1600, 800);
+    config.birds = 2;
+    config.turning_notch = 0;
+    double limit = turn_limit();
+    assert(limit < SWERVE_ANGLE); /* Banking alone could not make it in a step. */
+    birds[0] = (bird_t){.x = 600, .y = 400, .direction = 0};
+    birds[1] = (bird_t){.x = 1000, .y = 400, .direction = 0};
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, 2) == SPATIAL_GRID_OK);
+    assert(wave_catch(&waves[0], SWERVE_ANGLE, 1e-6));
+    waves_in_flight = 1;
+    memcpy(snapshot, birds, sizeof(birds));
+    assert(spatial_grid_build(&grid, 2, read_bird_position, snapshot) == SPATIAL_GRID_OK);
+    spread_the_alarm(snapshot, &grid);
+    assert(waves[0].left > 0);
+    update_birds(birds, snapshot, &grid);
+    double turned = angle_difference(birds[0].direction, 0);
+    assert(turned > limit + 1e-6);                /* Sharper than it would bank... */
+    assert(turned <= limit * SWERVE_TURN + 1e-9); /* ...and only so much sharper. */
+    assert(turned > 0.5 * SWERVE_ANGLE);          /* And it is the swerve it was told. */
+    assert(birds[0].alarmed && !birds[1].alarmed);
+    assert(angle_difference(birds[1].direction, 0) < 1e-9);
+    spatial_grid_destroy(&grid);
+    reset_the_waves();
+    reset_test_config();
+}
+
+/* The far sky is never alarmed: a hawk dives through a crowd of far birds and
+ * the near birds among them, and the near ones swerve and the far ones fly on as
+ * if nothing had happened. */
+static void test_far_birds_are_never_alarmed(void) {
+    enum { COUNT = 120 };
+    static bird_t birds[COUNT], snapshot[COUNT];
+    spatial_grid_t grid;
+
+    reset_test_config();
+    reset_the_waves();
+    legend_enabled = 0;
+    apply_screen_size(100, 30, 800, 480);
+    config.birds = COUNT;
+    config.hawks = 1;
+    for (int i = 0; i < COUNT; i++) {
+        birds[i] = (bird_t){.x = 300 + (i % 12) * 16.0,
+                            .y = 150 + (i / 12) * 16.0,
+                            .direction = 0.4 * i,
+                            .layer = i % 2};
+        birds[i].frame = direction_frame(birds[i].direction);
+    }
+    place_hawks();
+    hawks[0].x = 390;
+    hawks[0].y = 220;
+    hawks[0].direction = 0;
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, COUNT) == SPATIAL_GRID_OK);
+    int near_lit = 0;
+    for (int frame = 0; frame < 20; frame++) {
+        hawks[0].diving = 1;
+        memcpy(snapshot, birds, sizeof(birds));
+        assert(spatial_grid_build(&grid, COUNT, read_bird_position, snapshot) == SPATIAL_GRID_OK);
+        spread_the_alarm(snapshot, &grid);
+        update_birds(birds, snapshot, &grid);
+        for (int i = 0; i < COUNT; i++) {
+            if (birds[i].layer > 0) {
+                assert(!birds[i].alarmed);
+                assert(!wave_busy(&waves[i]));
+            } else if (birds[i].alarmed) {
+                near_lit++;
+            }
+        }
+    }
+    assert(near_lit > 20); /* The near sky was alarmed, so the far one's silence is a rule. */
+    spatial_grid_destroy(&grid);
+    config.hawks = 0;
+    reset_the_waves();
+    reset_test_config();
+}
+
+/* The letters of the intro are never alarmed. */
+static void test_the_letters_are_never_alarmed(void) {
+    enum { COUNT = 200 };
+    static bird_t birds[COUNT], snapshot[COUNT];
+    spatial_grid_t grid;
+
+    reset_test_config();
+    reset_the_waves();
+    legend_enabled = 0;
+    apply_screen_size(100, 30, 800, 480);
+    config.birds = COUNT;
+    config.hawks = 2;
+    seed_random(3);
+    for (int i = 0; i < COUNT; i++) place_one_bird(&birds[i], i);
+    place_hawks();
+    begin_the_intro();
+    assert(formation.writing);
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, COUNT) == SPATIAL_GRID_OK);
+    for (int frame = 0; frame < 240; frame++) {
+        for (int h = 0; h < config.hawks; h++) { /* The hawks among the letters, diving. */
+            hawks[h].x = formation.x[(frame * 7 + h * 31) % formation.count];
+            hawks[h].y = formation.y[(frame * 7 + h * 31) % formation.count];
+            hawks[h].diving = 1;
+        }
+        memcpy(snapshot, birds, sizeof(birds));
+        assert(spatial_grid_build(&grid, COUNT, read_bird_position, snapshot) == SPATIAL_GRID_OK);
+        spread_the_alarm(snapshot, &grid);
+        update_birds(birds, snapshot, &grid);
+        for (int i = 0; i < COUNT; i++) assert(!birds[i].alarmed);
+        assert(!waves_in_flight);
+    }
+    formation_clear();
+    spatial_grid_destroy(&grid);
+    config.hawks = 0;
+    reset_the_waves();
+    reset_test_config();
+}
+
+/* Birds of another flock are watched as far as they are kin. */
+static void test_a_wave_stays_in_its_flock_unless_the_flocks_are_kin(void) {
+    enum { COUNT = 40 };
+    static bird_t birds[COUNT];
+    spatial_grid_t grid;
+
+    reset_test_config();
+    reset_the_waves();
+    legend_enabled = 0;
+    apply_screen_size(200, 50, 1600, 800);
+    config.birds = COUNT;
+    config.flocks = 2;
+    for (int i = 0; i < COUNT; i++)
+        birds[i] = (bird_t){.x = 300 + i * 10.0, .y = 400, .flock = i % 2};
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, COUNT) == SPATIAL_GRID_OK);
+    assert(spatial_grid_build(&grid, COUNT, read_bird_position, birds) == SPATIAL_GRID_OK);
+
+    for (int notch = DEFAULT_NOTCH; notch >= 0; notch -= DEFAULT_NOTCH) {
+        reset_the_waves();
+        config.avoid_notch = notch;
+        apply_notches();
+        assert(wave_catch(&waves[0], SWERVE_ANGLE, 1e-6));
+        waves_in_flight = 1;
+        for (int frame = 0; frame < 60; frame++) spread_the_alarm(birds, &grid);
+        int own = 0, strangers = 0;
+        for (int i = 0; i < COUNT; i++) {
+            if (!wave_busy(&waves[i])) continue;
+            if (birds[i].flock == 0)
+                own++;
+            else
+                strangers++;
+        }
+        assert(own == COUNT / 2);
+        /* Keeping to their own at the default; one flock of two colours below it. */
+        assert(strangers == (notch == DEFAULT_NOTCH ? 0 : COUNT / 2));
+    }
+    spatial_grid_destroy(&grid);
+    reset_the_waves();
+    reset_test_config();
+}
+
+/* The light of a wave stands clear of the ramp, of the hawk and of the ground,
+ * for every ramp, the terminal's own among them, on a dark ground and a light
+ * one, and on artwork of somebody's own. */
+static void test_the_light_of_a_wave_stands_clear_of_everything(void) {
+    static const uint8_t ACCENT[3] = {205, 40, 40}, DARK[3] = {18, 18, 24},
+                         LIGHT[3] = {246, 246, 240};
+    reset_test_config();
+    for (config.palette = 0; config.palette < PALETTE_COUNT; config.palette++) {
+        for (int light_ground = 0; light_ground < 2; light_ground++) {
+            /* Only the terminal's own ramp is ever on a ground that is not the picture's. */
+            if (light_ground && !palette_follows_the_theme()) continue;
+            if (palette_follows_the_theme()) ramp_between(ACCENT, light_ground ? LIGHT : DARK);
+            memcpy(theme_ground, light_ground ? LIGHT : DARK, 3);
+            const uint8_t *light = highlight_colour();
+            assert(contrast_between(light, theme_ground) >= HIGHLIGHT_CONTRAST);
+            assert(colour_distance(light, hawk_colour()) >= 100);
+            for (int shade = 0; shade < palette()->shades; shade++)
+                assert(colour_distance(light, palette()->tints[shade]) >= 100);
+
+            /* And it is what the sprite is painted in. */
+            png_image_t feather = {0, 0, NULL};
+            assert(png_image_alloc(&feather, 1, 1) == PNG_OK);
+            feather.pixels[3] = 255;
+            highlight_tint(&feather);
+            assert(memcmp(feather.pixels, light, 3) == 0 && feather.pixels[3] == 255);
+            png_image_free(&feather);
+        }
+    }
+    memcpy(theme_ground, PICTURE_GROUND, 3);
+    config.palette = palette_named("ember");
+    sprite_path = "somebody's.png";
+    assert(colour_distance(highlight_colour(), hawk_colour()) >= 100);
+    sprite_path = NULL;
+    reset_test_config();
+}
+
+/* The lit bird is in the catalogue and every renderer draws it: the same
+ * silhouette as the bird it was, in the light and not in the ramp, over the rest
+ * of the flock, in the sprites, in the cells and in a picture. */
+static void test_a_bird_in_a_wave_is_lit_in_every_renderer(void) {
+    static png_image_t frames[ROTATION_FRAMES * MAX_SPRITE_SETS];
+    kitty_graphics_t graphics;
+    bird_t birds[2];
+    char want[64];
+
+    reset_test_config();
+    legend_enabled = 0;
+    config.palette = palette_named("ice");
+    config.birds = 2;
+    config.hawks = 0;
+    apply_screen_size(60, 20, 480, 320);
+    assert(alarm_set(0) == trail_set(TRAIL_LENGTH)); /* After everything that was already there. */
+    assert(sprite_set_count() == alarm_set(WING_PHASES));
+    assert(sprite_set_count() <= MAX_SPRITE_SETS);
+
+    /* Every set is built, so every one is uploaded; the lit ones in the light. */
+    assert(rasterise_sprites(frames) == PNG_OK);
+    const uint8_t *light = highlight_colour();
+    for (int wing = 0; wing < WING_PHASES; wing++) {
+        for (int frame = 0; frame < ROTATION_FRAMES; frame++) {
+            const png_image_t *lit = &frames[alarm_set(wing) * ROTATION_FRAMES + frame];
+            const png_image_t *unlit = &frames[flock_set(0, wing, 0) * ROTATION_FRAMES + frame];
+            assert(lit->pixels != NULL);
+            assert(lit->width == unlit->width && lit->height == unlit->height);
+            for (int i = 0; i < lit->width * lit->height; i++) {
+                assert(lit->pixels[i * 4 + 3] == unlit->pixels[i * 4 + 3]);
+                if (lit->pixels[i * 4 + 3] != 0) assert(memcmp(lit->pixels + i * 4, light, 3) == 0);
+            }
+        }
+    }
+
+    /* Kitty: a placement of an image in the set, and the others as they were, each
+     * placed once, and the lit bird after the rest of the flock, which is over it. */
+    birds[0] = (bird_t){.x = 100, .y = 100, .direction = 0.5, .frame = 5, .alarmed = 1};
+    birds[1] = (bird_t){.x = 200, .y = 200, .direction = 0.5, .frame = 5};
+    assert(sprite_image_id(&birds[0]) == set_image_id(alarm_set(WING_SEQUENCE[0]), 5));
+    assert(sprite_image_id(&birds[1]) == set_image_id(flock_set(0, WING_SEQUENCE[0], 0), 5));
+    render_mode = RENDER_KITTY;
+    assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
+    assert(queue_render_frame(&graphics, birds) == KITTY_GRAPHICS_OK);
+    snprintf(want, sizeof(want), "a=p,I=%u,", (unsigned)sprite_image_id(&birds[0]));
+    const char *lit_at = strstr(graphics.buffer, want);
+    snprintf(want, sizeof(want), "a=p,I=%u,", (unsigned)sprite_image_id(&birds[1]));
+    const char *plain_at = strstr(graphics.buffer, want);
+    assert(lit_at != NULL && plain_at != NULL && plain_at < lit_at);
+    int placements = 0;
+    for (const char *at = graphics.buffer; (at = strstr(at, "a=p,")) != NULL; at++) placements++;
+    assert(placements == 2);
+    kitty_graphics_destroy(&graphics);
+
+    /* A picture, and a GIF and a snapshot of one: a lit bird over an unlit one in
+     * the same place and the same shape leaves nothing of the one it covers. */
+    birds[0].x = birds[1].x = 150;
+    birds[0].y = birds[1].y = 150;
+    static png_image_t canvas;
+    png_image_free(&canvas);
+    assert(png_image_alloc(&canvas, screen.width, screen.height) == PNG_OK);
+    compose_onto(&canvas, frames, birds, 1);
+    int in_light = 0, in_ramp = 0;
+    for (size_t px = 0; px < (size_t)canvas.width * (size_t)canvas.height; px++) {
+        if (memcmp(&canvas.pixels[px * 4], light, 3) == 0) in_light++;
+        if (memcmp(&canvas.pixels[px * 4], palette()->tints[0], 3) == 0) in_ramp++;
+    }
+    assert(in_light > 0 && in_ramp == 0);
+    png_image_free(&canvas);
+
+    /* And cells: the canvas they are read from keeps the first thing that is in a
+     * pixel, so the lit bird goes down first, or the colour that fills most of a
+     * cell the two share would be the unlit one. */
+    render_mode = RENDER_BRAILLE;
+    assert(prepare_text_renderer());
+    assert(text_renderer_fits_the_screen());
+    compose_onto(&text_canvas, text_sprites, birds, 0);
+    in_light = in_ramp = 0;
+    for (size_t px = 0; px < (size_t)text_canvas.width * (size_t)text_canvas.height; px++) {
+        const uint8_t *pixel = &text_canvas.pixels[px * 4];
+        if (pixel[3] == 0) continue;
+        if (memcmp(pixel, light, 3) == 0) in_light++;
+        if (memcmp(pixel, palette()->tints[0], 3) == 0) in_ramp++;
+    }
+    assert(in_light > 0 && in_ramp == 0);
+    cells_destroy(&text_cells);
+    png_image_free(&text_canvas);
+    free_sprites(text_sprites);
+    free_sprites(frames);
+    render_mode = RENDER_KITTY;
+    reset_test_config();
+}
+
 int main(void) {
     make_scratch();
     trig_lookup_init();
@@ -3342,6 +3952,19 @@ int main(void) {
     test_the_avoidance_slider_needs_two_flocks();
     test_the_avoidance_is_a_flag();
     test_flocks_avoid_each_other_as_much_as_asked();
+    test_a_wave_crosses_a_line_of_birds_faster_than_they_fly();
+    test_the_wave_covers_the_same_ground_at_thirty_and_sixty_frames_a_second();
+    test_a_bird_alarmed_by_a_neighbour_copies_its_swerve();
+    test_the_refractory_time_holds();
+    test_a_dive_alarms_the_birds_in_its_way();
+    test_nothing_is_alarmed_without_hawks();
+    test_a_strike_sends_a_wave_across_the_flock();
+    test_a_swerve_is_sharper_than_the_banking();
+    test_far_birds_are_never_alarmed();
+    test_the_letters_are_never_alarmed();
+    test_a_wave_stays_in_its_flock_unless_the_flocks_are_kin();
+    test_the_light_of_a_wave_stands_clear_of_everything();
+    test_a_bird_in_a_wave_is_lit_in_every_renderer();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);
     return 0;

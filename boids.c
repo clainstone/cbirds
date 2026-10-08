@@ -1361,6 +1361,10 @@ static const double SIGN_BREATH_LIFT = 0.5;
 static const double POINTER_MOVING_SECONDS = 0.6;
 static const double SCATTER_SECONDS = 1.2;
 static const double SCATTER_STAGGER = 1.0;
+/* A hawk scatters the places it is within this share of the way to where the
+ * flock starts to flee it, for a shorter time than the pointer does. */
+static const double HAWK_SCATTER = 0.35;
+static const double HAWK_SCATTER_SECONDS = 0.4, HAWK_SCATTER_STAGGER = 0.6;
 /* A lock command is started by the key that is about to be pressed: input in the
  * first half second is whatever started it. */
 static const double SCREENSAVER_GRACE = 0.5;
@@ -1677,25 +1681,6 @@ static vector_t sign_keep_out_vector(const bird_t *bird) {
     if (band < formation.band) band = formation.band;
     sign_box_push(&formation.box, band, bird->x, bird->y, &push.x, &push.y);
     return push;
-}
-
-static int pointer_is_moving(void) {
-    return mouse.present && clock_state.seconds - mouse.moved_at < POINTER_MOVING_SECONDS;
-}
-
-/* How long a bird of a sign has still to stay away: the pointer, while it moves,
- * scatters every bird whose place it reaches, and they come home when it has
- * gone. */
-static double sign_scatter_left(const bird_t *was, int index) {
-    if (!formation.writing) return 0;
-    double left = was->scattered - frame_seconds;
-    if (left < 0) left = 0;
-    int target = index >= 0 && index < MAX_BIRDS ? formation.slot[index] : -1;
-    if (target < 0 || !pointer_is_moving()) return left;
-    double dx = formation.x[target] - mouse.x, dy = formation.y[target] - mouse.y;
-    if (dx * dx + dy * dy >= (double)MOUSE_REACH * MOUSE_REACH) return left;
-    double staying = SCATTER_SECONDS + SCATTER_STAGGER * sign_unit((unsigned)index);
-    return staying > left ? staying : left;
 }
 
 /* It opens by writing its name, in the middle, for a moment; then the flock
@@ -2670,6 +2655,45 @@ static void beat_wings(bird_t *bird) {
             bird->gliding = seconds;
         }
     }
+}
+
+static int pointer_is_moving(void) {
+    return mouse.present && clock_state.seconds - mouse.moved_at < POINTER_MOVING_SECONDS;
+}
+
+/* Whether the place is under a hawk: nearer than most of the way to where the
+ * flock starts to flee it. */
+static int a_hawk_is_over(double x, double y) {
+    double reach = HAWK_SCATTER * hawk_reach();
+    for (int i = 0; i < config.hawks; i++) {
+        double dx = hawks[i].x - x, dy = hawks[i].y - y;
+        if (dx * dx + dy * dy < reach * reach) return 1;
+    }
+    return 0;
+}
+
+/* How long a bird of a sign has still to stay away: the pointer, while it moves,
+ * and a hawk, while it is over, scatter every bird whose place they reach, and
+ * the birds come home when they have gone. A hawk that flew through a sign and
+ * moved nothing would look like a fault. */
+static double sign_scatter_left(const bird_t *was, int index) {
+    if (!formation.writing) return 0;
+    double left = was->scattered - frame_seconds;
+    if (left < 0) left = 0;
+    int target = index >= 0 && index < MAX_BIRDS ? formation.slot[index] : -1;
+    if (target < 0) return left;
+    double staying = 0;
+    if (pointer_is_moving()) {
+        double dx = formation.x[target] - mouse.x, dy = formation.y[target] - mouse.y;
+        if (dx * dx + dy * dy < (double)MOUSE_REACH * MOUSE_REACH)
+            staying = SCATTER_SECONDS + SCATTER_STAGGER * sign_unit((unsigned)index);
+    }
+    /* A hawk is over in a moment and a long way off, and the places it passes are
+     * back in a moment too: a hawk that left the sign in pieces for as long as the
+     * pointer does left it in pieces for most of a minute with two hawks up. */
+    if (staying == 0 && a_hawk_is_over(formation.x[target], formation.y[target]))
+        staying = HAWK_SCATTER_SECONDS + HAWK_SCATTER_STAGGER * sign_unit((unsigned)index);
+    return staying > left ? staying : left;
 }
 
 static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_grid_t *grid) {

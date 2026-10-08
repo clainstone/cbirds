@@ -207,7 +207,8 @@ capitals and characters the font lacks are left out. Text too long for one line
 wraps at its spaces onto two or three, as large as fits, and a text the flock
 has too few birds to write is said so on stderr and left unwritten. A key does
 not end a sign. Move the pointer through it and the birds it reaches scatter,
-and come back when it has gone.
+and come back when it has gone. A hawk does the same to the places it flies
+over, for less time.
 
 `--clock` writes the time, HH:MM, in local time, and follows the locale for the
 hour: twelve hours, with no AM or PM, if `LC_TIME` has a time format that shows

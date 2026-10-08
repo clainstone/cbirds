@@ -2302,6 +2302,56 @@ static void test_the_pointer_scatters_a_sign_and_it_comes_back(void) {
     reset_sign_state();
 }
 
+static void test_a_hawk_over_a_sign_scatters_the_places_it_is_over(void) {
+    reset_sign_state();
+    apply_screen_size(200, 50, 1600, 800);
+    world_t world;
+    ask_for_a_sign("HI");
+    begin_the_intro();
+    open_the_world(&world, 300, 7);
+    fly_the_world(&world, 0, 4, 60);
+
+    /* No hawks, nobody is scattered, whatever hawks[] has in it. */
+    hawks[0].x = formation.x[0];
+    hawks[0].y = formation.y[0];
+    config.hawks = 0;
+    for (int i = 0; i < config.birds; i++)
+        if (formation.slot[i] >= 0) assert(sign_scatter_left(&world.birds[i], i) == 0);
+
+    /* A hawk over the first place scatters the birds whose places are near it, and
+     * not the others, and the ones it scatters stay away for a while. */
+    config.hawks = 1;
+    double reach = HAWK_SCATTER * hawk_reach();
+    int near = 0, far = 0;
+    for (int i = 0; i < config.birds; i++) {
+        int target = formation.slot[i];
+        if (target < 0) continue;
+        double away = hypot(formation.x[target] - hawks[0].x, formation.y[target] - hawks[0].y);
+        double left = sign_scatter_left(&world.birds[i], i);
+        if (away < reach) {
+            assert(left >= HAWK_SCATTER_SECONDS && left < SCATTER_SECONDS);
+            near++;
+        } else {
+            assert(left == 0);
+            far++;
+        }
+    }
+    assert(near >= 4 && far >= 4);
+
+    /* And the bird that was scattered comes home after the hawk has gone. */
+    int scattered_bird = -1;
+    for (int i = 0; i < config.birds && scattered_bird < 0; i++)
+        if (formation.slot[i] == 0) scattered_bird = i;
+    assert(scattered_bird >= 0);
+    world.birds[scattered_bird].scattered = sign_scatter_left(&world.birds[scattered_bird], scattered_bird);
+    config.hawks = 0;
+    fly_the_world(&world, 4, 12, 60);
+    assert(world.birds[scattered_bird].scattered == 0);
+    assert(home_distance(&world, scattered_bird) <= formation.hover + 1e-6);
+    close_the_world(&world);
+    reset_sign_state();
+}
+
 static void test_the_intro_birds_are_never_scattered(void) {
     reset_sign_state();
     apply_screen_size(200, 50, 1600, 800);
@@ -4436,6 +4486,7 @@ int main(void) {
     test_the_clock_tells_the_time_and_lets_go_at_each_minute();
     test_the_colon_lifts_with_the_seconds();
     test_the_pointer_scatters_a_sign_and_it_comes_back();
+    test_a_hawk_over_a_sign_scatters_the_places_it_is_over();
     test_the_intro_birds_are_never_scattered();
     test_a_screensaver_quits_at_the_first_sign_of_anybody();
     test_the_options_that_make_a_sign();

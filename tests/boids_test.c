@@ -2187,6 +2187,49 @@ static void test_the_clock_tells_the_time_and_lets_go_at_each_minute(void) {
     reset_sign_state();
 }
 
+/* The time is the local time, wherever the program is: the same instant is one
+ * time in one zone and another in the next. A POSIX zone written out, so that no
+ * zone database has to be there. */
+static void test_the_clock_tells_local_time(void) {
+    const char *was = getenv("TZ");
+    char kept[128] = "";
+    if (was != NULL) snprintf(kept, sizeof(kept), "%s", was);
+
+    reset_sign_state();
+    the_sign.kind = SIGN_CLOCK;
+    the_sign.virtual_clock = 1;
+    the_sign.origin = 12 * 3600 + 34 * 60; /* 12:34 on the first of January 1970, UTC. */
+    char text[SIGN_TEXT_MAX];
+
+    setenv("TZ", "UTC0", 1);
+    tzset();
+    sign_text_now(text, sizeof(text));
+    assert(strcmp(text, "12:34") == 0);
+    setenv("TZ", "AHEAD-5", 1); /* Five hours ahead of UTC, in POSIX's backwards way. */
+    tzset();
+    sign_text_now(text, sizeof(text));
+    assert(strcmp(text, "17:34") == 0);
+    setenv("TZ", "BEHIND5", 1);
+    tzset();
+    sign_text_now(text, sizeof(text));
+    assert(strcmp(text, "07:34") == 0);
+    the_sign.twelve_hours = 1;
+    sign_text_now(text, sizeof(text));
+    assert(strcmp(text, "7:34") == 0);
+    /* And the run's own clock moves it on, a second at a time. */
+    clock_state.seconds = 66.0;
+    the_sign.twelve_hours = 0;
+    sign_text_now(text, sizeof(text));
+    assert(strcmp(text, "07:35") == 0);
+
+    if (was != NULL)
+        setenv("TZ", kept, 1);
+    else
+        unsetenv("TZ");
+    tzset();
+    reset_sign_state();
+}
+
 static void test_the_colon_lifts_with_the_seconds(void) {
     reset_sign_state();
     apply_screen_size(200, 50, 1600, 800);
@@ -4484,6 +4527,7 @@ int main(void) {
     test_the_sign_comes_back_after_its_flight();
     test_a_pause_holds_a_sign_too();
     test_the_clock_tells_the_time_and_lets_go_at_each_minute();
+    test_the_clock_tells_local_time();
     test_the_colon_lifts_with_the_seconds();
     test_the_pointer_scatters_a_sign_and_it_comes_back();
     test_a_hawk_over_a_sign_scatters_the_places_it_is_over();

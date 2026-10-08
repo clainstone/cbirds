@@ -36,15 +36,20 @@ const double LETTERS_HOMING_RELAX = 2.0;
 const double LETTERS_WAVE_DEADLINE = 3.0;
 
 enum {
-    /* Birds on a wire leave when the bird beside them does. Beside means a few cells
-     * along the line and a couple of lines either way; with the reaction delay below
-     * that is a front moving at a screenful a second, measured on a full 80 by 24
-     * screen in the tests. */
-    WAVE_REACH_COLS = 3,
-    WAVE_REACH_ROWS = 2,
+    /* Birds on a wire leave when the bird beside them does. Beside is a good many
+     * cells along the line and a few lines either way, because a letter is not
+     * startled by the one touching it alone: it is startled by whatever near it has
+     * moved, and the nearer the sooner. */
+    WAVE_REACH_COLS = 12,
+    WAVE_REACH_ROWS = 4,
     READ_CHUNK = 65536
 };
-static const double WAVE_DELAY_LEAST = 0.02, WAVE_DELAY_MOST = 0.07;
+/* How long a letter takes to react to one that has left: a moment of its own, a
+ * little more for each cell between them, and a random part, so that the front is a
+ * ripple and not a ruler. At these numbers the front moves at about eighty cells a
+ * second through dense text, which is a screenful in the second the brief asks for;
+ * measured on full 80 by 24 screens and on the samples, in the tests. */
+static const double WAVE_REACTION = 0.02, WAVE_PER_CELL = 0.012, WAVE_JITTER = 0.03;
 /* A letter that was scattered stays up at least this long, so that being touched
  * is seen to do something even when the pointer has already gone. */
 static const double SOLO_STAY = 0.9;
@@ -98,6 +103,16 @@ void letters_cell_from_vt(const vt_cell_t *source, cell_t *out) {
     set_colour(&source->style.bg, &out->bg_kind, out->bg, &out->has_bg);
     out->attributes = attributes_of(&source->style);
     out->wide = source->width == 2 ? CELLS_WIDE_HEAD : (source->width == 0 ? CELLS_WIDE_TAIL : 0);
+    /* A blank shows its background, an underline in the colour of its text, and a
+     * reversed one as a block of that colour; its text colour and its boldness show
+     * nothing. They are left off, so that a line of spaces that a command wrote in
+     * bold red is as quiet to send as a line of spaces. */
+    if (out->glyph == 0 && !(out->attributes & (CELLS_UNDERLINE | CELLS_REVERSE))) {
+        out->has_fg = 0;
+        out->fg_kind = 0;
+        memset(out->fg, 0, 3);
+        out->attributes = 0;
+    }
 }
 
 /* What stays behind when a letter leaves: the background it sat on and nothing
@@ -135,7 +150,7 @@ int letters_build(letters_t *letters, const vt_t *vt, int cell_width, int cell_h
     letters->cell_width = cell_width;
     letters->cell_height = cell_height;
     letters->random = random;
-    letters->last_touched = letters->origin = -1;
+    letters->last_touched = letters->origin = letters->last_left = -1;
     letters->grid = malloc(cells * sizeof(*letters->grid));
     letters->at = malloc(cells * sizeof(*letters->at));
     letters->claim = malloc(cells * sizeof(*letters->claim));
@@ -239,6 +254,13 @@ static void launch(letters_t *letters, int index, double fear_x, double fear_y, 
         heading_away(letters, fear_x, fear_y, letter->home_x, letter->home_y);
     letters->perched--;
     letters->launched[letters->launched_count++] = index;
+    if (!solo) letters->last_left = index;
+}
+
+/* The time a letter takes to react to one `cells` away (in cell widths) that left at
+ * `left_at`. */
+static double reaction_time(const letters_t *letters, double left_at, double cells) {
+    return left_at + WAVE_REACTION + WAVE_PER_CELL * cells + WAVE_JITTER * unit(letters);
 }
 
 static void startle_neighbours(letters_t *letters, int index) {
@@ -252,11 +274,37 @@ static void startle_neighbours(letters_t *letters, int index) {
             int other = letters->at[(size_t)row * (size_t)letters->cols + (size_t)col];
             if (other < 0 || other == index || letters->letter[other].state != LETTER_PERCHED)
                 continue;
+            double across = (letters->letter[other].home_x - from->home_x) / letters->cell_width;
+            double down = (letters->letter[other].home_y - from->home_y) / letters->cell_width;
             startle(letters, other,
-                    from->wake_at + WAVE_DELAY_LEAST +
-                        (WAVE_DELAY_MOST - WAVE_DELAY_LEAST) * unit(letters));
+                    reaction_time(letters, from->wake_at, sqrt(across * across + down * down)));
         }
     }
+}
+
+/* A wave that has run out of letters near enough to startle, with some still at
+ * home: a gap wider than any reach, between the logo and the text beside it or
+ * between two columns of a table. The nearest to the last that left is startled,
+ * and it takes as long as it takes sound to cross the gap. */
+static int startle_across_a_gap(letters_t *letters) {
+    if (letters->last_left < 0) return 0;
+    const letter_t *from = &letters->letter[letters->last_left];
+    int best = -1;
+    double best_squared = 0;
+    for (int i = 0; i < letters->count; i++) {
+        const letter_t *letter = &letters->letter[i];
+        if (letter->state != LETTER_PERCHED) continue;
+        double dx = letter->home_x - from->home_x, dy = letter->home_y - from->home_y;
+        double squared = dx * dx + dy * dy;
+        if (best < 0 || squared < best_squared) {
+            best = i;
+            best_squared = squared;
+        }
+    }
+    if (best < 0) return 0;
+    startle(letters, best,
+            reaction_time(letters, from->wake_at, sqrt(best_squared) / letters->cell_width));
+    return 1;
 }
 
 static void begin_wave(letters_t *letters) {
@@ -264,7 +312,7 @@ static void begin_wave(letters_t *letters) {
     letters->wave_began = letters->clock;
     letters->cycles++;
     letters->launched_count = 0;
-    letters->origin = -1;
+    letters->origin = letters->last_left = -1;
     /* Whatever was scattered joins the cycle: a letter on its way back from the
      * pointer turns round, and is part of the flock for the flight. */
     for (int i = 0; i < letters->count; i++) {
@@ -316,6 +364,9 @@ static void run_wave(letters_t *letters) {
             startle_neighbours(letters, index);
             progressed = 1;
         }
+        /* Nobody left to startle and the wave not over: it crosses the gap. */
+        if (letters->pending_count == 0 && letters->perched > 0 && startle_across_a_gap(letters))
+            progressed = 1;
     } while (progressed);
 }
 
@@ -438,6 +489,16 @@ void letters_advance(letters_t *letters, double seconds, const letters_disturban
             }
             break;
     }
+}
+
+void letters_release(letters_t *letters, int index) {
+    if (letters == NULL || index < 0 || index >= letters->count) return;
+    letter_t *letter = &letters->letter[index];
+    if (letter_is_airborne(letter)) return;
+    letter->state = LETTER_FLYING;
+    letter->airborne = 0;
+    letter->solo = 0;
+    letters->perched--;
 }
 
 void letters_land(letters_t *letters, int index) {

@@ -74,6 +74,7 @@ typedef struct {
     int perched;      /* Letters that are PERCHED or STARTLED. */
     int last_touched; /* The letter a pointer or a hawk last scattered, or -1. */
     int origin;       /* The letter the wave started from, or -1. */
+    int last_left;    /* The letter the wave sent off last, or -1: where a gap is crossed from. */
 
     int *pending; /* STARTLED letters, in no order. */
     int pending_count;
@@ -133,6 +134,9 @@ void letters_advance(letters_t *letters, double seconds, const letters_disturban
 
 /* A letter that has reached home. */
 void letters_land(letters_t *letters, int index);
+
+/* A letter sent off at once, whatever it was doing: the way out at the end. */
+void letters_release(letters_t *letters, int index);
 
 /* Whether the simulation moves it: it is in the air. */
 static inline int letter_is_airborne(const letter_t *letter) {

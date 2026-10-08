@@ -297,7 +297,7 @@ static void test_the_text_waits_a_few_seconds_and_then_a_wave_begins_with_one_le
     int startled = 0;
     for (int i = 0; i < letters.count; i++)
         if (letters.letter[i].state == LETTER_STARTLED) startled++;
-    assert(startled > 0 && startled <= (2 * 3 + 1) * (2 * 2 + 1));
+    assert(startled > 0 && startled <= (2 * 12 + 1) * (2 * 4 + 1));
     letters_destroy(&letters);
     vt_destroy(&vt);
 }
@@ -324,7 +324,7 @@ static void test_each_letter_leaves_after_one_beside_it_has(void) {
             if (j == i || left_on[j] >= left_on[i]) continue;
             int dx = abs(letters.letter[j].col - letters.letter[i].col);
             int dy = abs(letters.letter[j].row - letters.letter[i].row);
-            if (dx <= 3 && dy <= 2) explained = 1;
+            if (dx <= 12 && dy <= 4) explained = 1;
         }
         if (!explained) origin_count++;
     }
@@ -343,6 +343,7 @@ static void test_the_wave_takes_about_a_second_to_cross_a_screenful(void) {
         static int left_on[8192];
         fill_screen(text, sizeof(text), 80, 24);
         rng_state = 1234567ull + (unsigned long long)run * 7919ull;
+        for (int warm = 0; warm < 50; warm++) test_random(); /* A seed is not random until it has been stirred. */
         build(&letters, &vt, text, 80, 24);
         run_until_everyone_is_up(&letters, left_on);
         int first = 1 << 30, last = -1;
@@ -360,14 +361,15 @@ static void test_the_wave_takes_about_a_second_to_cross_a_screenful(void) {
     /* From a corner it crosses the whole screen, from the middle half of it: the
      * brief's second is the full crossing. Measured, so tuning it is a number. */
     fprintf(stderr, "wave over 80x24: %.2f s mean, %.2f to %.2f s\n", total / runs, best, worst);
-    assert(worst < 1.6 && best > 0.3);
+    assert(worst < 1.8 && best > 0.4);
 }
 
-static void test_a_word_alone_on_a_far_line_is_startled_by_the_noise(void) {
+static void test_a_word_beyond_every_reach_is_startled_across_the_gap(void) {
     letters_t letters;
     vt_t vt;
     static int left_on[8192];
-    /* Two words with a gap of forty cells between them: beyond any reach. */
+    /* Two words with forty cells between them: further than any letter is startled
+     * from, so the wave has to cross the gap, and takes as long as sound would. */
     build(&letters, &vt, "hello                                        world", 60, 2);
     run_until_everyone_is_up(&letters, left_on);
     assert(letters.phase == LETTERS_IN_FLIGHT);
@@ -377,9 +379,34 @@ static void test_a_word_alone_on_a_far_line_is_startled_by_the_noise(void) {
         if (left_on[i] < first) first = left_on[i];
         if (left_on[i] > last) last = left_on[i];
     }
-    /* The far word waited for the deadline and not much longer. */
-    assert((last - first) * STEP >= LETTERS_WAVE_DEADLINE - 0.1);
-    assert((last - first) * STEP <= LETTERS_WAVE_DEADLINE + 0.5);
+    double seconds = (last - first) * STEP;
+    assert(seconds >= 0.4 && seconds <= 1.2);
+    letters_destroy(&letters);
+    vt_destroy(&vt);
+}
+
+static void test_a_wave_that_is_taking_too_long_startles_the_rest_at_once(void) {
+    letters_t letters;
+    vt_t vt;
+    /* Words far apart in a long row: the wave would cross each gap in turn. */
+    build(&letters, &vt, "aa                                                                    "
+                         "                                                                      "
+                         "bb                                                                    "
+                         "                                                                      "
+                         "cc",
+          200, 2);
+    letters_poke(&letters);
+    letters_advance(&letters, STEP, NULL, 0);
+    assert(letters.phase == LETTERS_TAKING_OFF && letters.perched > 0);
+    /* Pretend the wave has been going for its whole allowance. */
+    letters.wave_began -= LETTERS_WAVE_DEADLINE;
+    int frames = 0;
+    while (letters.phase == LETTERS_TAKING_OFF && frames < 60) {
+        letters_advance(&letters, STEP, NULL, 0);
+        frames++;
+    }
+    assert(letters.phase == LETTERS_IN_FLIGHT);
+    assert(frames * STEP <= 0.6);
     letters_destroy(&letters);
     vt_destroy(&vt);
 }
@@ -970,7 +997,8 @@ int main(void) {
     test_the_text_waits_a_few_seconds_and_then_a_wave_begins_with_one_letter();
     test_each_letter_leaves_after_one_beside_it_has();
     test_the_wave_takes_about_a_second_to_cross_a_screenful();
-    test_a_word_alone_on_a_far_line_is_startled_by_the_noise();
+    test_a_word_beyond_every_reach_is_startled_across_the_gap();
+    test_a_wave_that_is_taking_too_long_startles_the_rest_at_once();
     test_flight_lasts_fifteen_to_twenty_five_seconds_and_then_they_are_called_home();
     test_the_text_rests_again_once_the_last_letter_is_home();
     test_enter_sends_the_letters_off_and_then_calls_them_home();

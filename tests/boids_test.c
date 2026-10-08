@@ -3274,6 +3274,789 @@ static void test_flocks_avoid_each_other_as_much_as_asked(void) {
     assert(small_shun.outside <= small_shipped.outside * 1.5 + 0.005);
 }
 
+/* --- Text as the flock ---------------------------------------------------------- */
+
+/* A world of letters, built the way main builds one: the text goes through a file
+ * and take_the_text, so that the whole path from bytes to birds is the one run. */
+typedef struct {
+    bird_t *birds, *snapshot;
+    spatial_grid_t grid;
+    int cols, rows;
+} world_t;
+
+static void world_write(const char *path, const char *text) {
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fwrite(text, 1, strlen(text), file) == strlen(text));
+    assert(fclose(file) == 0);
+}
+
+static void world_open(world_t *world, const char *text, int cols, int rows) {
+    char path[600];
+    scratch_file(path, sizeof(path), "letters.txt");
+    world_write(path, text);
+    reset_test_config();
+    legend_enabled = 0;
+    config.palette = palette_named("ember");
+    config.pace_notch = DEFAULT_PACE_NOTCH;
+    apply_notches();
+    apply_screen_size(cols, rows, cols * 8, rows * 16);
+    text_path = path;
+    assert(take_the_text(cols, rows, 0) == 1);
+    text_path = NULL;
+    remove(path);
+    world->cols = cols;
+    world->rows = rows;
+    apply_screen_size(cols, rows, 0, 0); /* A cell is eight by sixteen in letters mode. */
+    seed_random(7);
+    set_frame_seconds(1.0 / FRAME_RATE);
+    assert(spatial_grid_init(&world->grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&world->grid, screen.width, screen.height, config.birds) ==
+           SPATIAL_GRID_OK);
+    world->birds = calloc((size_t)config.birds, sizeof(*world->birds));
+    world->snapshot = calloc((size_t)config.birds, sizeof(*world->snapshot));
+    assert(world->birds && world->snapshot);
+    initialize_birds(world->birds);
+    place_hawks();
+    assert(cells_init(&text_cells, 1) == CELLS_OK);
+    assert(text_renderer_fits_the_screen());
+}
+
+static void world_close(world_t *world) {
+    free(world->birds);
+    free(world->snapshot);
+    spatial_grid_destroy(&world->grid);
+    cells_destroy(&text_cells);
+    letters_destroy(&the_letters);
+    letters_mode = 0;
+    legend_enabled = 1;
+    config.hawks = 0;
+    mouse.present = 0;
+    paused = 0;
+    render_mode = RENDER_KITTY;
+    reset_test_config();
+}
+
+static void world_step(world_t *world) {
+    memcpy(world->snapshot, world->birds, sizeof(*world->birds) * (size_t)config.birds);
+    assert(spatial_grid_build(&world->grid, config.birds, read_bird_position, world->snapshot) ==
+           SPATIAL_GRID_OK);
+    fly(world->birds, world->snapshot, &world->grid);
+}
+
+static cell_t *world_picture(world_t *world, int *count) {
+    paint_the_letters(world->birds);
+    *count = text_cells.cols * text_cells.rows;
+    cell_t *copy = malloc((size_t)*count * sizeof(*copy));
+    assert(copy != NULL);
+    memcpy(copy, text_cells.now, (size_t)*count * sizeof(*copy));
+    return copy;
+}
+
+static int world_all_home(const world_t *world) {
+    for (int i = 0; i < config.birds; i++) {
+        const letter_t *letter = &the_letters.letter[i];
+        if (letter->state != LETTER_PERCHED || !world->birds[i].perched ||
+            world->birds[i].x != letter->home_x || world->birds[i].y != letter->home_y)
+            return 0;
+    }
+    return 1;
+}
+
+static const char NEOFETCH_LIKE[] =
+    "\033[?25l\033[?7l"
+    "\033[1;31m   .-/+oo+/-.   \033[0m\n"
+    "\033[1;31m .+sssssssssss+. \033[0m\n"
+    "\033[1;31m/sssssdMMMsssss/ \033[0m\n"
+    "\033[1;31m+ssssNMMMNssssss+\033[0m\n"
+    "\033[1;31m/sssssdMMMsssss/ \033[0m\n"
+    "\033[1;31m .+sssssssssss+. \033[0m\n"
+    "\033[1;31m   .-/+oo+/-.   \033[0m\n"
+    "\033[7A\033[9999999D"
+    "\033[20C\033[1;31muser\033[0m@\033[1;31mhost\033[0m\n"
+    "\033[20C-----------\n"
+    "\033[20C\033[1;31mOS\033[0m: Linux x86_64\n"
+    "\033[20C\033[1;31mShell\033[0m: sh\n"
+    "\033[20C\033[38;2;255;128;0mCPU\033[0m: a fast one\n"
+    "\033[20C\033[4munderlined\033[0m \033[7mreversed\033[0m\n"
+    "\033[20C\033[41m   \033[42m   \033[43m   \033[0m\xE4\xB8\xAD\xE6\x96\x87\n"
+    "\033[?25h\033[?7h";
+
+static void test_text_piped_in_becomes_the_flock(void) {
+    world_t world;
+    world_open(&world, NEOFETCH_LIKE, 60, 12);
+    assert(letters_mode);
+    assert(config.birds == the_letters.count && config.birds > 60);
+    /* One flock on one plane, drawn as text whatever else was asked. */
+    assert(config.flocks == 1 && !deep_look && !config.trails && !the_rain_is_falling);
+    assert(live_render_mode() == RENDER_BRAILLE);
+    /* Every letter is at home, perched, and nothing has been drawn yet. */
+    assert(world_all_home(&world));
+    assert(the_letters.phase == LETTERS_AT_REST);
+    assert(formation.count == 0 && !formation.writing);
+    begin_the_intro();
+    assert(!formation.writing); /* The text is the intro. */
+    world_close(&world);
+}
+
+static void test_a_flock_of_letters_is_slower_than_a_flock_of_birds_unless_asked(void) {
+    char path[600];
+    scratch_file(path, sizeof(path), "pace.txt");
+    world_write(path, "some text\nmore text");
+    reset_test_config();
+    config.pace_notch = DEFAULT_PACE_NOTCH;
+    apply_notches();
+    text_path = path;
+    assert(take_the_text(40, 10, 0) == 1);
+    assert(config.pace_notch == LETTERS_PACE_NOTCH &&
+           config.pace == PACE_STEP * (LETTERS_PACE_NOTCH + 1));
+    apply_preset_defaults();
+    assert(config.pace_notch == LETTERS_PACE_NOTCH); /* 0 puts it back to its own default. */
+    letters_destroy(&the_letters);
+    letters_mode = 0;
+    /* A speed that was asked for stays. */
+    reset_test_config();
+    config.pace_notch = 7;
+    apply_notches();
+    assert(take_the_text(40, 10, 0) == 1);
+    assert(config.pace_notch == 7);
+    letters_destroy(&the_letters);
+    letters_mode = 0;
+    text_path = NULL;
+    remove(path);
+    reset_test_config();
+}
+
+static void test_nothing_to_see_leaves_the_flock_as_it_was(void) {
+    char path[600];
+    scratch_file(path, sizeof(path), "blank.txt");
+    reset_test_config();
+    int birds = config.birds;
+    const char *empty[] = {"", "\n\n   \n", "\033[41m    \033[0m\n"};
+    int saved = dup(STDERR_FILENO);
+    int quiet = open("/dev/null", O_WRONLY);
+    assert(saved >= 0 && quiet >= 0 && dup2(quiet, STDERR_FILENO) == STDERR_FILENO);
+    close(quiet);
+    for (size_t i = 0; i < sizeof(empty) / sizeof(*empty); i++) {
+        world_write(path, empty[i]);
+        text_path = path;
+        assert(take_the_text(40, 10, 0) == 0);
+        assert(!letters_mode && config.birds == birds);
+    }
+    text_path = NULL;
+    dup2(saved, STDERR_FILENO);
+    close(saved);
+    remove(path);
+    reset_test_config();
+}
+
+static void test_the_text_at_rest_is_the_text(void) {
+    world_t world;
+    world_open(&world, NEOFETCH_LIKE, 60, 12);
+    int count;
+    cell_t *picture = world_picture(&world, &count);
+    assert(count == 60 * 12);
+    /* The first row: the logo in bold red, as the command gave it, and blanks. */
+    assert(picture[3].glyph == '.' && picture[3].has_fg &&
+           picture[3].fg_kind == CELLS_COLOUR_ANSI && picture[3].fg[0] == 1 &&
+           (picture[3].attributes & CELLS_BOLD));
+    assert(picture[0].glyph == 0 && !picture[0].has_fg);
+    /* The information beside it, in its own places, and the colour blocks kept as
+     * scenery: a blank with a background. */
+    assert(picture[20].glyph == 'u' && picture[20].fg[0] == 1);
+    assert(picture[24].glyph == '@' && !picture[24].has_fg);
+    cell_t *cpu = &picture[4 * 60 + 20];
+    assert(cpu->glyph == 'C' && cpu->fg_kind == CELLS_COLOUR_EXACT && cpu->fg[0] == 255);
+    cell_t *block = &picture[6 * 60 + 20];
+    assert(block->glyph == 0 && block->has_bg && block->bg[0] == 1 &&
+           block->bg_kind == CELLS_COLOUR_ANSI);
+    cell_t *wide = &picture[6 * 60 + 29];
+    assert(wide->glyph == 0x4E2D && wide->wide == CELLS_WIDE_HEAD);
+    assert(wide[1].wide == CELLS_WIDE_TAIL);
+    /* And what a terminal is sent for it is each of those, once. */
+    kitty_graphics_t graphics;
+    assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
+    assert(queue_text_frame(&graphics, world.birds) == KITTY_GRAPHICS_OK);
+    assert(strstr(graphics.buffer, "\033[1m\033[31m") != NULL ||
+           strstr(graphics.buffer, "\033[1;31m") != NULL ||
+           strstr(graphics.buffer, "\033[1m") != NULL);
+    assert(strstr(graphics.buffer, "\033[31m") != NULL);
+    assert(strstr(graphics.buffer, "\033[38;2;255;128;0m") != NULL);
+    assert(strstr(graphics.buffer, "\xE4\xB8\xAD\xE6\x96\x87") != NULL);
+    assert(strstr(graphics.buffer, "\033[4m") != NULL &&
+           strstr(graphics.buffer, "\033[7m") != NULL);
+    /* The same again, nothing: it is at rest. */
+    size_t first = graphics.length;
+    graphics.length = 0;
+    assert(queue_text_frame(&graphics, world.birds) == KITTY_GRAPHICS_OK);
+    assert(graphics.length < first / 8);
+    kitty_graphics_destroy(&graphics);
+    free(picture);
+    world_close(&world);
+}
+
+/* Runs a world until a condition, a frame at a time, and says how many frames it
+ * took, or -1. */
+static int world_run_until(world_t *world, letters_phase_t phase, int frames) {
+    for (int frame = 0; frame < frames; frame++) {
+        if (the_letters.phase == phase) return frame;
+        world_step(world);
+    }
+    return the_letters.phase == phase ? frames : -1;
+}
+
+static void test_a_whole_cycle_puts_every_letter_back_on_its_own_cell(void) {
+    static const int NOTCHES[] = {0, 1, 4, 12};
+    for (size_t n = 0; n < sizeof(NOTCHES) / sizeof(*NOTCHES); n++) {
+        world_t world;
+        world_open(&world, NEOFETCH_LIKE, 60, 12);
+        config.pace_notch = NOTCHES[n];
+        apply_notches();
+        int count_before, count_after;
+        cell_t *before = world_picture(&world, &count_before);
+
+        /* The rest, the wave, and then they are all up. */
+        assert(world_run_until(&world, LETTERS_TAKING_OFF, 60 * 6) > 0);
+        assert(world_run_until(&world, LETTERS_IN_FLIGHT, 60 * 6) > 0);
+        assert(!world_all_home(&world));
+        /* Then the flight, and the call home, and landing. The brief's guarantee is
+         * that all of it is done within about four seconds of the call. */
+        assert(world_run_until(&world, LETTERS_COMING_HOME, 60 * 30) > 0);
+        int homing = 0;
+        while (the_letters.phase == LETTERS_COMING_HOME && homing < 60 * 8) {
+            world_step(&world);
+            homing++;
+        }
+        assert(the_letters.phase == LETTERS_AT_REST);
+        double seconds = homing / (double)FRAME_RATE;
+        fprintf(stderr, "homing at pace notch %2d: %.2f s\n", NOTCHES[n], seconds);
+        assert(seconds <= LETTERS_HOMING_DEADLINE + 0.1);
+        assert(world_all_home(&world));
+
+        /* The grid on the screen is exactly the input's grid again. */
+        cell_t *after = world_picture(&world, &count_after);
+        assert(count_before == count_after);
+        assert(memcmp(before, after, (size_t)count_before * sizeof(cell_t)) == 0);
+        free(before);
+        free(after);
+
+        /* And it goes round again. */
+        assert(world_run_until(&world, LETTERS_TAKING_OFF, 60 * 10) > 0);
+        assert(the_letters.cycles == 2);
+        world_close(&world);
+    }
+}
+
+static void test_enter_brings_them_home_in_four_seconds_whatever_they_were_doing(void) {
+    static const double MOMENTS[] = {0.0, 0.3, 0.7, 1.5, 4.0, 9.0};
+    for (size_t m = 0; m < sizeof(MOMENTS) / sizeof(*MOMENTS); m++) {
+        world_t world;
+        world_open(&world, NEOFETCH_LIKE, 60, 12);
+        config.pace_notch = m % 2 ? 0 : 6;
+        apply_notches();
+        assert(feed_input("\r") == 1); /* Enter at rest: the wave, now. */
+        assert(the_letters.phase == LETTERS_TAKING_OFF);
+        for (int frame = 0; frame < (int)(MOMENTS[m] * FRAME_RATE); frame++) world_step(&world);
+        assert(feed_input("\n") == 1); /* And Enter again: home, at once. */
+        assert(the_letters.phase == LETTERS_COMING_HOME);
+        int frames = 0;
+        while (the_letters.phase != LETTERS_AT_REST && frames < 60 * 8) {
+            world_step(&world);
+            frames++;
+        }
+        assert(the_letters.phase == LETTERS_AT_REST);
+        assert(frames / (double)FRAME_RATE <= LETTERS_HOMING_DEADLINE + 0.1);
+        assert(world_all_home(&world));
+        world_close(&world);
+    }
+}
+
+static void test_a_straggler_is_home_by_the_deadline_however_far_it_is(void) {
+    world_t world;
+    world_open(&world, "ab", 20, 2);
+    config.pace_notch = 0;
+    apply_notches();
+    feed_input("\r");
+    world_run_until(&world, LETTERS_IN_FLIGHT, 60 * 5);
+    feed_input("\r");
+    /* One of them a very long way off, and facing away, at the slowest pace. */
+    world.birds[1].x = 4000;
+    world.birds[1].y = -3000;
+    world.birds[1].direction = 1.0;
+    int frames = 0;
+    while (the_letters.phase != LETTERS_AT_REST && frames < 60 * 8) {
+        world_step(&world);
+        frames++;
+    }
+    assert(the_letters.phase == LETTERS_AT_REST);
+    assert(frames / (double)FRAME_RATE <= LETTERS_HOMING_DEADLINE + 0.1);
+    assert(world_all_home(&world));
+    world_close(&world);
+}
+
+static void test_a_letter_lands_exactly_and_does_not_circle_its_cell(void) {
+    world_t world;
+    world_open(&world, "x", 20, 2);
+    config.pace_notch = 12;
+    apply_notches();
+    config.turning_notch = 0; /* The laziest turn there is: a bird that banks cannot land. */
+    feed_input("\r");
+    world_run_until(&world, LETTERS_IN_FLIGHT, 60 * 5);
+    feed_input("\r");
+    int frames = 0;
+    double furthest_after_near = 0;
+    int was_near = 0;
+    while (the_letters.phase != LETTERS_AT_REST && frames < 60 * 8) {
+        world_step(&world);
+        frames++;
+        double dx = world.birds[0].x - the_letters.letter[0].home_x;
+        double dy = world.birds[0].y - the_letters.letter[0].home_y;
+        double distance = sqrt(dx * dx + dy * dy);
+        if (distance < 20) was_near = 1;
+        /* Once it is within a couple of cells it only gets nearer. */
+        if (was_near && distance > furthest_after_near && distance > 20)
+            furthest_after_near = distance;
+    }
+    assert(the_letters.phase == LETTERS_AT_REST);
+    assert(world.birds[0].x == the_letters.letter[0].home_x &&
+           world.birds[0].y == the_letters.letter[0].home_y);
+    assert(furthest_after_near == 0);
+    world_close(&world);
+}
+
+static void test_the_pointer_scatters_what_it_touches_and_they_find_their_way_back(void) {
+    world_t world;
+    world_open(&world, NEOFETCH_LIKE, 60, 12);
+    int count_before;
+    cell_t *before = world_picture(&world, &count_before);
+    mouse.present = 1;
+    mouse.x = 30.5 * 8;
+    mouse.y = 3.5 * 16;
+    world_step(&world);
+    int up = 0;
+    for (int i = 0; i < config.birds; i++)
+        if (!world.birds[i].perched) up++;
+    assert(up > 3 && up < config.birds / 3);
+    assert(the_letters.phase == LETTERS_AT_REST);
+    /* They fly, and none strays far from where it started in a moment, but they
+     * are gone from home: the cells they left are blank. */
+    for (int frame = 0; frame < 30; frame++) world_step(&world);
+    int count_now;
+    cell_t *now = world_picture(&world, &count_now);
+    assert(memcmp(before, now, (size_t)count_before * sizeof(cell_t)) != 0);
+    free(now);
+    /* The pointer goes away, off the text; they come down, each on its own cell. */
+    mouse.x = -500;
+    mouse.y = -500;
+    int frames = 0;
+    while (!world_all_home(&world) && the_letters.phase == LETTERS_AT_REST && frames < 60 * 6) {
+        world_step(&world);
+        frames++;
+    }
+    assert(world_all_home(&world));
+    int count_after;
+    cell_t *after = world_picture(&world, &count_after);
+    assert(memcmp(before, after, (size_t)count_before * sizeof(cell_t)) == 0);
+    free(before);
+    free(after);
+    world_close(&world);
+}
+
+static void test_a_hawk_over_the_text_is_an_arrow_and_scatters_it(void) {
+    world_t world;
+    world_open(&world, NEOFETCH_LIKE, 60, 12);
+    config.hawks = 1;
+    place_hawks();
+    hawks[0].x = 30 * 8;
+    hawks[0].y = 3.5 * 16;
+    hawks[0].direction = 0;
+    for (int frame = 0; frame < 20; frame++) world_step(&world);
+    int up = 0;
+    for (int i = 0; i < config.birds; i++)
+        if (!world.birds[i].perched) up++;
+    assert(up > 0);
+    int count;
+    cell_t *picture = world_picture(&world, &count);
+    int arrows = 0;
+    for (int i = 0; i < count; i++)
+        if (picture[i].glyph >= 0x2190 && picture[i].glyph <= 0x2199 && picture[i].has_fg) arrows++;
+    assert(arrows == 1);
+    free(picture);
+    world_close(&world);
+}
+
+static void test_the_panel_lies_over_the_text_and_the_letters_under_it_still_land(void) {
+    world_t world;
+    world_open(&world, NEOFETCH_LIKE, 80, 24);
+    legend_enabled = 1;
+    measure_legend();
+    update_turn_distances();
+    assert(screen.legend_width > 0);
+    assert(!legend_turn_zone(10, 10)); /* No wall: it is a window laid on the text. */
+    int count_before;
+    cell_t *before = world_picture(&world, &count_before);
+    feed_input("\r");
+    assert(world_run_until(&world, LETTERS_IN_FLIGHT, 60 * 6) > 0);
+    feed_input("\r");
+    int frames = 0;
+    while (the_letters.phase != LETTERS_AT_REST && frames < 60 * 8) {
+        world_step(&world);
+        frames++;
+    }
+    assert(the_letters.phase == LETTERS_AT_REST && world_all_home(&world));
+    int count_after;
+    cell_t *after = world_picture(&world, &count_after);
+    assert(memcmp(before, after, (size_t)count_before * sizeof(cell_t)) == 0);
+    free(before);
+    free(after);
+    world_close(&world);
+}
+
+static void test_pausing_stops_the_cycle_and_the_text_is_not_drawn_twice(void) {
+    world_t world;
+    world_open(&world, NEOFETCH_LIKE, 60, 12);
+    kitty_graphics_t graphics;
+    assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
+    paused = 1;
+    double clock_before = the_letters.clock;
+    for (int frame = 0; frame < 60 * 10; frame++) {
+        graphics.length = 0;
+        assert(render_frame(&graphics, world.birds, world.snapshot, &world.grid) ==
+               KITTY_GRAPHICS_OK);
+    }
+    /* Ten seconds paused is no time at all to the text: still the first rest. */
+    assert(the_letters.clock == clock_before && the_letters.phase == LETTERS_AT_REST);
+    paused = 0;
+    step_once = 0;
+    kitty_graphics_destroy(&graphics);
+    world_close(&world);
+}
+
+static void test_the_keys_that_change_the_population_do_nothing_to_text(void) {
+    world_t world;
+    world_open(&world, NEOFETCH_LIKE, 60, 12);
+    int birds = config.birds;
+    assert(feed_input("+") == 1 && feed_input("-") == 1 && feed_input("e") == 1);
+    assert(config.birds == birds && !population_changed && !config.trails);
+    assert(feed_input("q") == 0); /* q quits, as it always did. */
+    world_close(&world);
+}
+
+static void test_quitting_flies_the_text_off_the_top(void) {
+    world_t world;
+    world_open(&world, NEOFETCH_LIKE, 60, 12);
+    for (int frame = 0; frame < OUTRO_FRAMES_AT_SIXTY; frame++) {
+        fly_away(world.birds);
+        for (int i = 0; i < config.birds; i++) assert(!world.birds[i].perched);
+    }
+    int still_here = 0;
+    for (int i = 0; i < config.birds; i++)
+        if (world.birds[i].y >= 0) still_here++;
+    assert(still_here == 0);
+    /* And what is drawn on the way is sound: nothing off the screen is written. */
+    int count;
+    cell_t *picture = world_picture(&world, &count);
+    int glyphs = 0;
+    for (int i = 0; i < count; i++)
+        if (picture[i].glyph != 0) glyphs++;
+    assert(glyphs == 0);
+    free(picture);
+    world_close(&world);
+}
+
+static void test_a_letter_at_home_is_neither_moved_nor_seen_by_the_flock(void) {
+    world_t world;
+    world_open(&world, "abc\ndef", 20, 4);
+    /* Launch one letter by hand and put it among the perched. Alone it has nothing
+     * to flock with: the same as a bird by itself. */
+    letters_poke(&the_letters);
+    world_step(&world);
+    int flying = -1;
+    for (int i = 0; i < config.birds; i++)
+        if (!world.birds[i].perched) flying = i;
+    assert(flying >= 0);
+    bird_t alone = world.birds[flying];
+    alone.perched = 0;
+    memcpy(world.snapshot, world.birds, sizeof(*world.birds) * (size_t)config.birds);
+    assert(spatial_grid_build(&world.grid, config.birds, read_bird_position, world.snapshot) ==
+           SPATIAL_GRID_OK);
+    double with_company = flock_direction(world.snapshot, &world.grid, flying);
+    /* Without any other letters in the grid at all. */
+    bird_t lonely[1] = {alone};
+    spatial_grid_t one;
+    assert(spatial_grid_init(&one, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&one, screen.width, screen.height, 1) == SPATIAL_GRID_OK);
+    assert(spatial_grid_build(&one, 1, read_bird_position, lonely) == SPATIAL_GRID_OK);
+    int saved = config.birds;
+    config.birds = 1;
+    double without = flock_direction(lonely, &one, 0);
+    config.birds = saved;
+    assert(with_company == without);
+    spatial_grid_destroy(&one);
+    /* And a perched one stays exactly where it is while the others fly. */
+    bird_t before[6];
+    memcpy(before, world.birds, sizeof(before));
+    for (int frame = 0; frame < 20; frame++) world_step(&world);
+    for (int i = 0; i < config.birds; i++)
+        if (before[i].perched && world.birds[i].perched) {
+            assert(world.birds[i].x == before[i].x && world.birds[i].y == before[i].y);
+        }
+    world_close(&world);
+}
+
+static void test_how_the_flock_of_letters_looks_in_the_air(void) {
+    world_t world;
+    world_open(&world, NEOFETCH_LIKE, 80, 24);
+    config.pace_notch = LETTERS_PACE_NOTCH;
+    apply_notches();
+    feed_input("\r");
+    assert(world_run_until(&world, LETTERS_IN_FLIGHT, 60 * 6) > 0);
+    double visible_total = 0, speed_total = 0;
+    int samples = 0;
+    for (int frame = 0; frame < 60 * 12; frame++) {
+        bird_t before[1024];
+        int tracked = config.birds < 1024 ? config.birds : 1024;
+        memcpy(before, world.birds, sizeof(*before) * (size_t)tracked);
+        world_step(&world);
+        if (frame % 30 != 0) continue;
+        int count;
+        cell_t *picture = world_picture(&world, &count);
+        int glyphs = 0;
+        for (int i = 0; i < count; i++)
+            if (picture[i].glyph != 0 && picture[i].has_fg) glyphs++;
+        free(picture);
+        visible_total += (double)glyphs / config.birds;
+        double moved = 0;
+        for (int i = 0; i < tracked; i++)
+            moved += hypot(world.birds[i].x - before[i].x, world.birds[i].y - before[i].y);
+        speed_total += moved / tracked / 8.0; /* Cells a frame. */
+        samples++;
+    }
+    fprintf(stderr, "letters in the air at 0.2x: %.0f%% visible, %.2f cells a frame\n",
+            100.0 * visible_total / samples, speed_total / samples);
+    assert(visible_total / samples > 0.3);
+    world_close(&world);
+}
+
+static void test_a_text_recording_is_the_text_flying(void) {
+    char path[600], text_file[600];
+    scratch_file(path, sizeof(path), "letters.cast");
+    scratch_file(text_file, sizeof(text_file), "rec.txt");
+    world_write(text_file, NEOFETCH_LIKE);
+    reset_test_config();
+    config.palette = palette_named("ember");
+    text_path = text_file;
+    record_path = path;
+    record_fps = 20;
+    record_seconds = 8;
+    record_columns = 60;
+    record_rows = 12;
+    assert(take_the_text(record_columns, record_rows, 1) == 1);
+    fflush(stdout);
+    int saved = dup(STDOUT_FILENO);
+    assert(freopen("/dev/null", "w", stdout) != NULL);
+    int status = run_recording();
+    fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+    clearerr(stdout);
+    assert(status == EXIT_SUCCESS);
+    letters_mode = 0;
+    text_path = NULL;
+    remove(text_file);
+
+    FILE *file = fopen(path, "r");
+    assert(file != NULL);
+    static char line[1 << 16];
+    assert(fgets(line, sizeof(line), file) != NULL);
+    assert(strstr(line, "\"width\": 60, \"height\": 12") != NULL);
+    assert(fgets(line, sizeof(line), file) != NULL); /* The opening. */
+    assert(fgets(line, sizeof(line), file) != NULL); /* The first frame: the text. */
+    assert(strstr(line, "user") != NULL || strstr(line, "u") != NULL);
+    assert(strstr(line, "\\u001b[1m\\u001b[31m") != NULL || strstr(line, "\\u001b[1;31m") != NULL ||
+           strstr(line, "\\u001b[31m") != NULL);
+    assert(strstr(line, "\xE4\xB8\xAD") != NULL);
+    assert(strstr(line, "\\u001b[38;2;255;128;0m") != NULL);
+    int events = 1;
+    while (fgets(line, sizeof(line), file) != NULL) events++;
+    fclose(file);
+    remove(path);
+    assert(events == 20 * 8 + 1);
+    record_path = NULL;
+    record_fps = 25;
+    record_seconds = 6;
+    record_columns = 96;
+    record_rows = 26;
+    render_mode = RENDER_KITTY;
+    reset_test_config();
+}
+
+static void test_a_text_recording_as_a_gif_is_painted_with_the_font(void) {
+    char path[600], text_file[600];
+    scratch_file(path, sizeof(path), "letters.gif");
+    scratch_file(text_file, sizeof(text_file), "rec.txt");
+    world_write(text_file, NEOFETCH_LIKE);
+    reset_test_config();
+    config.palette = palette_named("ember");
+    text_path = text_file;
+    record_path = path;
+    record_fps = 10;
+    record_seconds = 2;
+    record_columns = 60;
+    record_rows = 12;
+    assert(take_the_text(record_columns, record_rows, 1) == 1);
+    fflush(stdout);
+    int saved = dup(STDOUT_FILENO);
+    assert(freopen("/dev/null", "w", stdout) != NULL);
+    int status = run_recording();
+    fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+    clearerr(stdout);
+    assert(status == EXIT_SUCCESS);
+    letters_mode = 0;
+    text_path = NULL;
+    remove(text_file);
+
+    FILE *file = fopen(path, "rb");
+    assert(file != NULL);
+    uint8_t header[10];
+    assert(fread(header, 1, sizeof(header), file) == sizeof(header));
+    assert(memcmp(header, "GIF89a", 6) == 0);
+    assert((header[6] | header[7] << 8) == 60 * LETTER_PICTURE_WIDTH);
+    assert((header[8] | header[9] << 8) == 12 * LETTER_PICTURE_HEIGHT);
+    int descriptors = 0, c;
+    while ((c = fgetc(file)) != EOF)
+        if (c == 0x2C) descriptors++;
+    fclose(file);
+    remove(path);
+    assert(descriptors >= 20);
+    record_path = NULL;
+    record_fps = 25;
+    record_seconds = 6;
+    record_columns = 96;
+    record_rows = 26;
+    render_mode = RENDER_KITTY;
+    reset_test_config();
+}
+
+static void test_a_benchmark_of_text_flies_it_from_the_first_frame(void) {
+    char text_file[600];
+    scratch_file(text_file, sizeof(text_file), "bench.txt");
+    world_write(text_file, NEOFETCH_LIKE);
+    reset_test_config();
+    text_path = text_file;
+    bench_frames = 30;
+    assert(take_the_text(200, 50, 0) == 1);
+    fflush(stdout);
+    int saved = dup(STDOUT_FILENO);
+    int capture[2];
+    assert(pipe(capture) == 0);
+    assert(dup2(capture[1], STDOUT_FILENO) == STDOUT_FILENO);
+    close(capture[1]);
+    int status = run_benchmark();
+    fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+    assert(status == EXIT_SUCCESS);
+    static char out[4096];
+    ssize_t got = read(capture[0], out, sizeof(out) - 1);
+    close(capture[0]);
+    assert(got > 0);
+    out[got] = '\0';
+    assert(strstr(out, "letters ") != NULL);
+    assert(strstr(out, "render       braille") != NULL);
+    letters_mode = 0;
+    text_path = NULL;
+    bench_frames = 0;
+    remove(text_file);
+    render_mode = RENDER_KITTY;
+    reset_test_config();
+}
+
+/* --- The keys come from the terminal, whatever standard input is ------------------ */
+
+static void test_standard_input_that_is_not_a_terminal_leaves_the_keys_to_the_tty(void) {
+    int master = posix_openpt(O_RDWR | O_NOCTTY);
+    assert(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0);
+    const char *name = ptsname(master);
+    assert(name != NULL);
+    int pipes[2];
+    assert(pipe(pipes) == 0);
+    fflush(NULL);
+
+    /* With a controlling terminal: the keys are read from it, not from the pipe. */
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        alarm(20);
+        close(pipes[1]);
+        if (setsid() < 0) _exit(90);
+        int terminal = open(name, O_RDWR);
+        if (terminal < 0 || ioctl(terminal, TIOCSCTTY, 0) < 0) _exit(91);
+        if (dup2(pipes[0], STDIN_FILENO) < 0) _exit(92);
+        input_fd = STDIN_FILENO;
+        open_the_keys();
+        _exit(input_fd != STDIN_FILENO && isatty(input_fd) ? 0 : 1);
+    }
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+    /* Without one it says so and stops, in words. */
+    int errors[2];
+    assert(pipe(errors) == 0);
+    child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        alarm(20);
+        close(pipes[1]);
+        close(errors[0]);
+        if (setsid() < 0) _exit(90);
+        if (dup2(pipes[0], STDIN_FILENO) < 0 || dup2(errors[1], STDERR_FILENO) < 0) _exit(92);
+        input_fd = STDIN_FILENO;
+        open_the_keys();
+        _exit(0);
+    }
+    close(errors[1]);
+    static char message[512];
+    ssize_t got = read(errors[0], message, sizeof(message) - 1);
+    assert(got > 0);
+    message[got] = '\0';
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_FAILURE);
+    assert(strstr(message, "needs a terminal") != NULL && strstr(message, "/dev/tty") != NULL);
+    close(errors[0]);
+    close(pipes[0]);
+    close(pipes[1]);
+    close(master);
+}
+
+static void test_keys_and_colour_questions_use_the_descriptor_that_was_chosen(void) {
+    int keys[2];
+    assert(pipe(keys) == 0);
+    int saved = input_fd;
+    input_fd = keys[0];
+    const char *report = "\033[<35;10;5M";
+    assert(write(keys[1], report, strlen(report)) == (ssize_t)strlen(report));
+    reset_test_config();
+    apply_screen_size(80, 24, 80 * 8, 24 * 16);
+    mouse.present = 0;
+    assert(handle_input() == 1); /* Read from it, not from standard input. */
+    assert(mouse.present && mouse.x == 9.5 * screen.cell_width);
+    mouse.present = 0;
+    /* A colour question is answered through it as well: the reply arrives there. */
+    const char *answer = "\033]11;rgb:0000/0000/0000\033\\";
+    assert(write(keys[1], answer, strlen(answer)) == (ssize_t)strlen(answer));
+    uint8_t rgb[3] = {1, 1, 1};
+    char reply[64];
+    size_t length = terminal_query("", 0, reply, sizeof(reply), 200);
+    assert(length > 0 && parse_osc_colour(reply, rgb) && rgb[0] == 0);
+    input_fd = saved;
+    close(keys[0]);
+    close(keys[1]);
+}
+
 int main(void) {
     make_scratch();
     trig_lookup_init();
@@ -3342,6 +4125,27 @@ int main(void) {
     test_the_avoidance_slider_needs_two_flocks();
     test_the_avoidance_is_a_flag();
     test_flocks_avoid_each_other_as_much_as_asked();
+    test_text_piped_in_becomes_the_flock();
+    test_a_flock_of_letters_is_slower_than_a_flock_of_birds_unless_asked();
+    test_nothing_to_see_leaves_the_flock_as_it_was();
+    test_the_text_at_rest_is_the_text();
+    test_a_whole_cycle_puts_every_letter_back_on_its_own_cell();
+    test_enter_brings_them_home_in_four_seconds_whatever_they_were_doing();
+    test_a_straggler_is_home_by_the_deadline_however_far_it_is();
+    test_a_letter_lands_exactly_and_does_not_circle_its_cell();
+    test_the_pointer_scatters_what_it_touches_and_they_find_their_way_back();
+    test_a_hawk_over_the_text_is_an_arrow_and_scatters_it();
+    test_the_panel_lies_over_the_text_and_the_letters_under_it_still_land();
+    test_pausing_stops_the_cycle_and_the_text_is_not_drawn_twice();
+    test_the_keys_that_change_the_population_do_nothing_to_text();
+    test_quitting_flies_the_text_off_the_top();
+    test_a_letter_at_home_is_neither_moved_nor_seen_by_the_flock();
+    test_how_the_flock_of_letters_looks_in_the_air();
+    test_a_text_recording_is_the_text_flying();
+    test_a_text_recording_as_a_gif_is_painted_with_the_font();
+    test_a_benchmark_of_text_flies_it_from_the_first_frame();
+    test_standard_input_that_is_not_a_terminal_leaves_the_keys_to_the_tty();
+    test_keys_and_colour_questions_use_the_descriptor_that_was_chosen();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);
     return 0;

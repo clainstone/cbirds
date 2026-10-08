@@ -130,6 +130,8 @@ static void reset_test_config(void) {
     config.hawks = 0;
     matrix_mode = 0;
     unlock_fps = 0;
+    fireflies_mode = 0;
+    fireflies_destroy(&night);
     apply_notches();
 }
 
@@ -3274,6 +3276,888 @@ static void test_flocks_avoid_each_other_as_much_as_asked(void) {
     assert(small_shun.outside <= small_shipped.outside * 1.5 + 0.005);
 }
 
+/* ---- Fireflies --------------------------------------------------------------- */
+
+/* A night to run, headless, a frame at a time: what main does each frame, without
+ * a terminal. */
+typedef struct {
+    bird_t *birds, *snapshot;
+    spatial_grid_t grid;
+} night_t;
+
+static void begin_the_night(night_t *run, int columns, int rows, double fps, int seed) {
+    reset_test_config();
+    fireflies_mode = 1;
+    config.birds = FIREFLY_COUNT;
+    config.palette = palette_named("firefly");
+    config.shape = shape_named("dot");
+    config.bird_size = 0;
+    config.pace_notch = DEFAULT_PACE_NOTCH; /* As shipped; the other tests run it faster. */
+    apply_notches();
+    settle_the_bird_size();
+    legend_enabled = 0;
+    mouse.present = 0;
+    apply_screen_size(columns, rows, columns * DEFAULT_CELL_WIDTH, rows * DEFAULT_CELL_HEIGHT);
+    set_frame_seconds(1.0 / fps);
+    run->birds = calloc((size_t)config.birds, sizeof(*run->birds));
+    run->snapshot = malloc(sizeof(*run->snapshot) * (size_t)config.birds);
+    assert(run->birds != NULL && run->snapshot != NULL);
+    assert(spatial_grid_init(&run->grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&run->grid, screen.width, screen.height, config.birds) ==
+           SPATIAL_GRID_OK);
+    seed_random((unsigned)seed);
+    initialize_birds(run->birds);
+}
+
+static void one_night_frame(night_t *run) {
+    memcpy(run->snapshot, run->birds, sizeof(*run->birds) * (size_t)config.birds);
+    assert(spatial_grid_build(&run->grid, config.birds, read_bird_position, run->snapshot) ==
+           SPATIAL_GRID_OK);
+    fly(run->birds, run->snapshot, &run->grid);
+}
+
+static void end_the_night(night_t *run) {
+    spatial_grid_destroy(&run->grid);
+    free(run->snapshot);
+    free(run->birds);
+    mouse.present = 0;
+    legend_enabled = 1;
+    reset_test_config();
+}
+
+/* Seconds until the swarm's order passes 0.95, or -1; and what it started at. */
+static double night_time_to_unison(int seed, double fps, double *start) {
+    night_t run;
+    begin_the_night(&run, 96, 26, fps, seed);
+    one_night_frame(&run);
+    *start = fireflies_order(&night);
+    double when = -1;
+    for (int frame = 1; frame < 90 * fps && when < 0; frame++) {
+        one_night_frame(&run);
+        if (fireflies_order(&night) > 0.95) when = (frame + 1) / fps;
+    }
+    end_the_night(&run);
+    return when;
+}
+
+static void redirect_stderr_to(const char *path, int *saved) {
+    fflush(stderr);
+    *saved = dup(STDERR_FILENO);
+    int file = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    assert(*saved >= 0 && file >= 0);
+    assert(dup2(file, STDERR_FILENO) == STDERR_FILENO);
+    close(file);
+}
+
+static void restore_stderr(int saved) {
+    fflush(stderr);
+    assert(dup2(saved, STDERR_FILENO) == STDERR_FILENO);
+    close(saved);
+}
+
+static void read_text_file(const char *path, char *text, size_t size) {
+    FILE *file = fopen(path, "r");
+    assert(file != NULL);
+    size_t length = fread(text, 1, size - 1, file);
+    text[length] = '\0';
+    fclose(file);
+}
+
+/* --fireflies is a switch in the Oddities, and it changes what a night wants for a
+ * default and nothing else: the count, the size, the shape and the ramp, each only
+ * if it was not asked for, and the ramp list has the same ten in the same order
+ * with the new one after them. */
+static void test_fireflies_change_the_defaults_and_nothing_else(void) {
+    int saved_preset = requested_preset;
+    char *plain[] = {"cbirds", NULL};
+    char *night_only[] = {"cbirds", "--fireflies", NULL};
+    char *asked[] = {"cbirds",  "--fireflies", "-n",      "800",   "-s", "30",
+                     "--shape", "bird",        "--color", "theme", NULL};
+
+    reset_test_config();
+    config.bird_size = 0;
+    config.shape = 0;
+    config.palette = 0;
+    read_options(1, plain);
+    assert(!fireflies_mode && config.birds == 800 && config.shape == 0 && config.palette == 0);
+    settle_the_bird_size();
+    assert(config.bird_size == DEFAULT_BIRD_SIZE);
+
+    reset_test_config();
+    config.bird_size = 0;
+    config.shape = 0;
+    config.palette = 0;
+    read_options(2, night_only);
+    assert(fireflies_mode && config.birds == FIREFLY_COUNT);
+    assert(config.shape == shape_named("dot") && strcmp(SHAPES[config.shape].name, "dot") == 0);
+    assert(config.palette == palette_named("firefly"));
+    settle_the_bird_size();
+    assert(config.bird_size == FIREFLY_SIZE);
+    /* Smaller than a bird: ten to fourteen pixels. */
+    assert(FIREFLY_SIZE >= 10 && FIREFLY_SIZE <= 14 && (int)FIREFLY_SIZE < (int)DEFAULT_BIRD_SIZE);
+
+    /* What was asked for wins, even when it is the very thing a flock ships with. */
+    reset_test_config();
+    config.bird_size = 0;
+    config.shape = 0;
+    config.palette = 0;
+    read_options(10, asked);
+    assert(fireflies_mode && config.birds == 800 && config.bird_size == 30);
+    assert(config.shape == 0 && config.palette == 0);
+
+    /* The ten ramps that were there are where they were, and the new one is last. */
+    static const char *const OLD[] = {"theme",  "ember", "ice",    "acid", "matrix",
+                                      "aurora", "prism", "potion", "dusk", "ash"};
+    assert(PALETTE_COUNT == 11);
+    for (int i = 0; i < 10; i++) assert(strcmp(PALETTES[i].name, OLD[i]) == 0);
+    assert(strcmp(PALETTES[10].name, "firefly") == 0 && palette_named("firefly") == 10);
+    /* Five shades, the brightest first, and none of them lost on a dark ground. */
+    assert(PALETTES[10].shades == 5);
+    static const uint8_t BLACK[3] = {0, 0, 0};
+    for (int shade = 0; shade < 5; shade++) {
+        assert(contrast_between(PALETTES[10].tints[shade], BLACK) >= 2.5);
+        if (shade > 0)
+            assert(luminance_of(PALETTES[10].tints[shade]) <
+                   luminance_of(PALETTES[10].tints[shade - 1]));
+    }
+    /* Pale yellow to yellow green to dark green: red and green fall, in that order. */
+    assert(PALETTES[10].tints[0][2] > 150 && PALETTES[10].tints[0][0] > 230);
+    assert(PALETTES[10].tints[4][1] > PALETTES[10].tints[4][0] && PALETTES[10].tints[4][1] < 120);
+
+    const option_t *option = NULL;
+    for (int i = 0; i < OPTION_COUNT; i++)
+        if (strcmp(OPTIONS[i].name, "fireflies") == 0) option = &OPTIONS[i];
+    assert(option != NULL && option->kind == OPTION_FLAG && !option->essential);
+    assert(strcmp(option->group, "Oddities") == 0);
+    assert(strstr(option->help, "summer night") != NULL);
+
+    requested_preset = saved_preset;
+    reset_test_config();
+}
+
+/* Hawks do nothing in this mode, and say so; the same for the other switches that
+ * are a flock's and not a swarm's, on the line and on the keyboard. */
+static void test_a_night_leaves_the_flocks_switches_with_nothing_to_do(void) {
+    char path[600], text[1024];
+    int saved_preset = requested_preset;
+    char *argv[] = {"cbirds",   "--fireflies", "--hawks", "2",        "--flocks", "3",
+                    "--trails", "--preset",    "storm",   "--matrix", NULL};
+
+    scratch_file(path, sizeof(path), "night_notes.txt");
+    reset_test_config();
+    int saved_stderr;
+    redirect_stderr_to(path, &saved_stderr);
+    read_options(10, argv);
+    restore_stderr(saved_stderr);
+    read_text_file(path, text, sizeof(text));
+    remove(path);
+
+    assert(fireflies_mode && config.hawks == 0 && config.flocks == 1 && !config.trails);
+    assert(requested_preset == -1 && !matrix_mode && !the_rain_is_falling);
+    assert(strstr(text, "--hawks does nothing with --fireflies") != NULL);
+    assert(strstr(text, "--flocks does nothing with --fireflies") != NULL);
+    assert(strstr(text, "--trails does nothing with --fireflies") != NULL);
+    assert(strstr(text, "--preset does nothing with --fireflies") != NULL);
+    assert(strstr(text, "--matrix does nothing with --fireflies") != NULL);
+    /* Said once each, and nothing else said. */
+    assert(strchr(strchr(text, '\n') + 1, '\n') != NULL);
+    int lines = 0;
+    for (const char *c = text; *c; c++) lines += *c == '\n';
+    assert(lines == 5);
+
+    /* Without them, silence. */
+    char *quiet[] = {"cbirds", "--fireflies", NULL};
+    reset_test_config();
+    redirect_stderr_to(path, &saved_stderr);
+    read_options(2, quiet);
+    restore_stderr(saved_stderr);
+    read_text_file(path, text, sizeof(text));
+    remove(path);
+    assert(text[0] == '\0');
+
+    /* k does nothing, nor K, nor Tab, nor e, nor the code. */
+    legend_enabled = 1;
+    apply_screen_size(200, 50, 1600, 800);
+    hawk_sets_built = 1;
+    config.hawks = 0;
+    assert(feed_input("kkK") == 1);
+    assert(config.hawks == 0);
+    config.trails = 0;
+    assert(feed_input("e") == 1 && config.trails == 0);
+    int boundary = config.boundary_notch, alignment = config.alignment_notch;
+    int perception = config.vision_notch;
+    assert(feed_input("\t") == 1);
+    assert(config.boundary_notch == boundary && config.alignment_notch == alignment &&
+           config.vision_notch == perception);
+    konami_at = 0;
+    memset(konami_seen, 0, sizeof(konami_seen));
+    for (const char *c = "AABBDCDCba"; *c; c++) konami_note(*c);
+    assert(config.hawks == 0);
+    hawk_sets_built = 0;
+    konami_at = 0;
+    memset(konami_seen, 0, sizeof(konami_seen));
+
+    /* Out of a night, they are what they were: the key brings a hawk. */
+    fireflies_mode = 0;
+    hawk_sets_built = 1;
+    assert(feed_input("k") == 1 && config.hawks == 1);
+    hawk_sets_built = 0;
+    config.hawks = 0;
+    requested_preset = saved_preset;
+    reset_test_config();
+}
+
+/* The point of it: nothing in charge, and the swarm still falls into step. From a
+ * random start the order is about a tenth or less, and it passes 0.95 within the
+ * minute, over several seeds, with the fireflies drifting and the shipped push.
+ * Measured over eight seeds at 96 by 26 cells: 17.0 to 37.7 seconds, 26.3 on
+ * average, at 30 frames a second; 16.9 to 38.0, 25.6 on average, at 60. */
+static void test_the_swarm_falls_into_step_with_nothing_in_charge(void) {
+    double sum = 0;
+    for (int seed = 1; seed <= 5; seed++) {
+        double start;
+        double when = night_time_to_unison(seed, 30, &start);
+        assert(start < 0.15);
+        assert(when > 5 && when < 60); /* Not at once, and within the minute. */
+        sum += when / 5;
+    }
+    assert(sum > 12 && sum < 40); /* About half a minute. */
+
+    /* And it is a climb, not a snap: a few seconds in, it is still disorder. */
+    night_t run;
+    begin_the_night(&run, 96, 26, 30, 1);
+    for (int frame = 0; frame < 3 * 30; frame++) one_night_frame(&run);
+    assert(fireflies_order(&night) < 0.6);
+    /* Held once it is there: no dip below 0.9 over the next twenty seconds. */
+    int frame = 3 * 30;
+    while (fireflies_order(&night) < 0.97 && frame < 90 * 30) {
+        one_night_frame(&run);
+        frame++;
+    }
+    assert(fireflies_order(&night) >= 0.97);
+    double least = 1;
+    for (int i = 0; i < 20 * 30; i++) {
+        one_night_frame(&run);
+        double order = fireflies_order(&night);
+        if (order < least) least = order;
+    }
+    assert(least > 0.9);
+    end_the_night(&run);
+}
+
+/* The phases advance per second: the swarm that is the same at 30 frames a second
+ * and at 60 reaches unison in the same time, to the scatter of a different step
+ * each; and what moves the clocks is the clock and not the frame. */
+static void test_the_swarm_keeps_time_in_seconds_not_frames(void) {
+    double mean30 = 0, mean60 = 0;
+    for (int seed = 1; seed <= 4; seed++) {
+        double start;
+        double a = night_time_to_unison(seed, 30, &start);
+        double b = night_time_to_unison(seed, 60, &start);
+        assert(a > 0 && b > 0);
+        mean30 += a / 4;
+        mean60 += b / 4;
+    }
+    assert(mean60 > mean30 * 0.7 && mean60 < mean30 * 1.43);
+
+    /* With nobody to see, a firefly's phase is the time it has had over its
+     * period, whatever the frame rate. */
+    static const int RATES[] = {30, 60, 120};
+    double phase[3];
+    for (int r = 0; r < 3; r++) {
+        night_t run;
+        begin_the_night(&run, 96, 26, RATES[r], 2);
+        config.alignment_notch = 0;
+        apply_notches();
+        one_night_frame(&run);
+        double before = night.fly[7].phase;
+        double period = night.fly[7].period;
+        for (int frame = 1; frame < RATES[r] * 0.6; frame++) one_night_frame(&run);
+        double seconds = (RATES[r] * 0.6 - 1) / RATES[r];
+        /* With the coupling at its floor a flash is a nudge of a thousandth, and a
+         * clock that saw none is a clock alone. */
+        phase[r] = night.fly[7].phase - before - seconds / period;
+        end_the_night(&run);
+    }
+    for (int r = 1; r < 3; r++) assert(fabs(phase[r] - phase[0]) < 0.05);
+}
+
+/* The pointer is a lantern: the fireflies it is held over are startled and their
+ * clocks thrown, so the swarm round it falls out of step, and when it is taken
+ * away the synchrony heals. */
+static void test_the_lantern_scatters_the_phases_and_the_swarm_heals(void) {
+    night_t run;
+    begin_the_night(&run, 120, 34, 30, 3);
+    one_night_frame(&run);
+    /* Start in unison, so what is seen is what the lantern did. */
+    for (int i = 0; i < config.birds; i++) {
+        night.fly[i].phase = 0.5 + 0.002 * (i % 5);
+        night.fly[i].age = night.fly[i].phase * night.fly[i].period;
+    }
+    assert(fireflies_order(&night) > 0.99);
+
+    /* A run with no pointer holds. */
+    for (int frame = 0; frame < 5 * 30; frame++) one_night_frame(&run);
+    assert(fireflies_order(&night) > 0.95);
+
+    /* Held over the middle of the screen for ten seconds. */
+    mouse.present = 1;
+    mouse.x = screen.width / 2.0;
+    mouse.y = screen.height / 2.0;
+    for (int frame = 0; frame < 10 * 30; frame++) one_night_frame(&run);
+    double cx = 0, cy = 0, fx = 0, fy = 0;
+    int under = 0, away = 0;
+    for (int i = 0; i < config.birds; i++) {
+        double dx = run.birds[i].x - mouse.x, dy = run.birds[i].y - mouse.y;
+        double angle = 2 * M_PI * night.fly[i].phase;
+        double reach = FIREFLY_LANTERN * firefly_spacing();
+        if (dx * dx + dy * dy < reach * reach) {
+            cx += cos(angle), cy += sin(angle);
+            under++;
+        } else if (dx * dx + dy * dy > 2.0 * reach * reach) {
+            fx += cos(angle), fy += sin(angle);
+            away++;
+        }
+    }
+    assert(under > 0 && away > 0);
+    assert(hypot(cx, cy) / under < 0.5);                  /* Under it: thrown. */
+    assert(fireflies_order(&night) < 0.95);               /* So the swarm is out of step. */
+    assert(hypot(fx, fy) / away > hypot(cx, cy) / under); /* And the rest less so. */
+
+    /* The pointer goes, and the swarm falls into step again. */
+    mouse.present = 0;
+    double heal = -1;
+    for (int frame = 0; frame < 90 * 30 && heal < 0; frame++) {
+        one_night_frame(&run);
+        if (fireflies_order(&night) > 0.95) heal = (frame + 1) / 30.0;
+    }
+    assert(heal > 0 && heal < 60);
+    end_the_night(&run);
+}
+
+/* They drift: slowly, at a pace that follows the speed slider and the screen's
+ * spacing, with no hawks, no leash and no alignment; they keep to the screen and
+ * out of the panel, and lean towards the lower two thirds of the sky. */
+static void test_the_fireflies_drift_slowly_and_keep_to_the_meadow(void) {
+    night_t run;
+    begin_the_night(&run, 120, 34, 30, 4);
+    legend_enabled = 1;
+    apply_screen_size(120, 34, 120 * 8, 34 * 16);
+    assert(screen.legend_width > 0);
+    initialize_birds(run.birds); /* Placed with the panel up, as a live run places them. */
+    for (int i = 0; i < config.birds; i++)
+        assert(!sprite_overlaps_legend(run.birds[i].x, run.birds[i].y));
+
+    double spacing = firefly_spacing();
+    double step = FIREFLY_DRIFT * spacing * (config.pace / DEFAULT_PACE) / 30.0;
+    /* The same distance every frame, whichever way each is going. */
+    one_night_frame(&run);
+    bird_t before[FIREFLY_COUNT];
+    memcpy(before, run.birds, sizeof(before));
+    one_night_frame(&run);
+    for (int i = 0; i < config.birds; i++) {
+        double moved = hypot(run.birds[i].x - before[i].x, run.birds[i].y - before[i].y);
+        assert(fabs(moved - step) < 1e-6);
+    }
+    /* Slow: about a spacing a second, which is a screen in half a minute. */
+    assert(step * 30 < 1.5 * spacing && step * 30 > 0.5 * spacing);
+
+    long outside = 0, low = 0, counted = 0;
+    for (int frame = 0; frame < 40 * 30; frame++) {
+        one_night_frame(&run);
+        if (frame < 10 * 30) continue;
+        for (int i = 0; i < config.birds; i++) {
+            counted++;
+            if (run.birds[i].x < 0 || run.birds[i].y < 0 || run.birds[i].x >= screen.width ||
+                run.birds[i].y >= screen.height)
+                outside++;
+            if (run.birds[i].y > screen.height / 3.0) low++;
+            assert(!sprite_overlaps_legend(run.birds[i].x, run.birds[i].y));
+        }
+    }
+    assert(outside * 100 < counted); /* Under one in a hundred is off the screen. */
+    /* A third of the area is the top third, and a uniform swarm would have two
+     * thirds below it; the lean makes it more. */
+    assert(low * 100 > counted * 70);
+
+    /* A faster pace flies the same fireflies faster, in the same steps of time. */
+    config.pace_notch = 7;
+    apply_notches();
+    step = FIREFLY_DRIFT * spacing * (config.pace / DEFAULT_PACE) / 30.0;
+    memcpy(before, run.birds, sizeof(before));
+    one_night_frame(&run);
+    double moved = 0;
+    for (int i = 0; i < config.birds; i++)
+        moved += hypot(run.birds[i].x - before[i].x, run.birds[i].y - before[i].y) / config.birds;
+    assert(fabs(moved - step) < step * 0.01);
+    end_the_night(&run);
+}
+
+/* A firefly that is dark is a faint body and not nothing and not a bird: the one
+ * that is lit has a shade of the ramp, and the picture shows both. */
+static void test_a_dark_firefly_is_a_faint_body(void) {
+    night_t run;
+    static png_image_t frames[ROTATION_FRAMES * MAX_SPRITE_SETS];
+    png_image_t canvas = {0, 0, NULL};
+
+    begin_the_night(&run, 96, 26, 30, 5);
+    one_night_frame(&run);
+    int lit = -1, dark = -1;
+    for (int i = 0; i < config.birds; i++) {
+        if (run.birds[i].shade == 0 && lit < 0) lit = i; /* The flash itself. */
+        if (run.birds[i].shade < 0 && dark < 0) dark = i;
+    }
+    assert(lit >= 0 && dark >= 0);
+    /* Every shade of the ramp is on the screen in the very first frame, which is
+     * what the colour table of a recording is built from. */
+    int seen[5] = {0};
+    for (int i = 0; i < config.birds; i++)
+        if (run.birds[i].shade >= 0) seen[run.birds[i].shade]++;
+    for (int shade = 0; shade < 5; shade++) assert(seen[shade] > 5);
+
+    assert(rasterise_sprites(frames) == PNG_OK);
+    assert(png_image_alloc(&canvas, screen.width, screen.height) == PNG_OK);
+    compose_onto(&canvas, frames, run.birds, 1);
+    /* A dark one's own pixels are not the ground and not the brightest. */
+    const bird_t *body = &run.birds[dark];
+    int inset = firefly_body_inset();
+    int cx = (int)body->x + inset + trail_sprite_size() / 2;
+    int cy = (int)body->y + inset + trail_sprite_size() / 2;
+    assert(cx < screen.width && cy < screen.height);
+    const uint8_t *pixel = canvas.pixels + ((size_t)cy * (size_t)canvas.width + (size_t)cx) * 4;
+    int brightness = pixel[0] + pixel[1] + pixel[2];
+    assert(brightness > 18 + 18 + 24); /* Something is there. */
+    assert(brightness < 3 * 100);      /* And it is faint. */
+    /* And its middle is greener than red: it is the ramp's last shade, faded. */
+    assert(pixel[1] >= pixel[0]);
+    /* The body is smaller than the dot of a flash. */
+    assert(frames[trail_set(0) * ROTATION_FRAMES].width < config.bird_size);
+
+    /* A lit one is bright at its middle. */
+    const bird_t *glow = &run.birds[lit];
+    cx = (int)glow->x + config.bird_size / 2;
+    cy = (int)glow->y + config.bird_size / 2;
+    if (cx < screen.width && cy < screen.height) {
+        pixel = canvas.pixels + ((size_t)cy * (size_t)canvas.width + (size_t)cx) * 4;
+        assert(pixel[0] + pixel[1] + pixel[2] > 3 * 90);
+    }
+    png_image_free(&canvas);
+    free_sprites(frames);
+    end_the_night(&run);
+}
+
+/* The panel says what its rows do here, and does it: alignment is coupling and
+ * perception is sight, each does what it says, and there is a row that reads out
+ * how much of the swarm is in step. Every row is as wide as the panel. */
+static void test_the_panel_says_what_a_night_does(void) {
+    char lines[LEGEND_MAX_ROWS][LEGEND_LINE_MAX];
+    night_t run;
+
+    begin_the_night(&run, 200, 50, 60, 6);
+    legend_enabled = 1;
+    apply_screen_size(200, 50, 1600, 800);
+    assert(legend_rows() == LEGEND_MAX_ROWS &&
+           screen.legend_height == LEGEND_MAX_ROWS * screen.cell_height);
+    one_night_frame(&run);
+    build_legend(lines);
+    for (int row = 0; row < LEGEND_MAX_ROWS; row++)
+        assert(legend_cells(lines[row]) == LEGEND_COLUMNS);
+    assert(strstr(lines[1], "boundary") != NULL && strstr(lines[2], "separation") != NULL);
+    assert(strstr(lines[3], "coupling") != NULL && strstr(lines[3], "a/A") != NULL);
+    assert(strstr(lines[3], "alignment") == NULL);
+    assert(strstr(lines[4], "turning") != NULL);
+    assert(strstr(lines[5], "sight") != NULL && strstr(lines[5], "p/P") != NULL);
+    assert(strstr(lines[5], "perception") == NULL);
+    assert(strstr(lines[6], "speed") != NULL);
+    assert(strstr(lines[7], "sync") != NULL);
+    assert(strstr(lines[7], "/") == NULL); /* A reading has no keys. */
+    assert(strstr(lines[8], "frame") != NULL && strstr(lines[9], "quit") != NULL);
+    assert(strstr(lines[3], "1.0×") != NULL);
+    char shown[16];
+    snprintf(shown, sizeof(shown), "%.0fpx", firefly_law().sight);
+    assert(strstr(lines[5], shown) != NULL);
+
+    /* The sync row is the order parameter, as a bar and as a number. */
+    double order = fireflies_order(&night);
+    snprintf(shown, sizeof(shown), "%.2f", order);
+    assert(strstr(lines[7], shown) != NULL);
+    assert(filled_cells(lines[7]) == (int)(order * LEGEND_BAR_CELLS + 0.5));
+    for (int i = 0; i < config.birds; i++) night.fly[i].phase = 0.3;
+    build_legend(lines);
+    assert(filled_cells(lines[7]) == LEGEND_BAR_CELLS && strstr(lines[7], "1.00") != NULL);
+
+    /* A row does what it says: coupling is the push of a flash, sight is how far one
+     * is seen, and each moves with its keys, a notch at a time, to both ends. */
+    double push_at[LEGEND_BAR_CELLS + 1], sight_at[LEGEND_BAR_CELLS + 1];
+    for (int notch = 0; notch <= LEGEND_BAR_CELLS; notch++) {
+        config.alignment_notch = config.vision_notch = notch;
+        apply_notches();
+        push_at[notch] = firefly_law().push;
+        sight_at[notch] = firefly_law().sight;
+        build_legend(lines);
+        assert(filled_cells(lines[3]) == notch && filled_cells(lines[5]) == notch);
+        for (int row = 0; row < LEGEND_MAX_ROWS; row++)
+            assert(legend_cells(lines[row]) == LEGEND_COLUMNS);
+    }
+    for (int notch = 1; notch <= LEGEND_BAR_CELLS; notch++) {
+        assert(push_at[notch] > push_at[notch - 1] && sight_at[notch] > sight_at[notch - 1]);
+    }
+    /* At the default notches, the shipped push and three spacings and a bit of sight. */
+    assert(fabs(push_at[DEFAULT_NOTCH] - FIREFLY_PUSH) < 1e-12);
+    assert(fabs(sight_at[DEFAULT_VISION_NOTCH] - FIREFLY_SIGHT * firefly_spacing()) < 1e-9);
+    assert(push_at[0] <
+           0.1 * FIREFLY_PUSH); /* The floor of the bar is no coupling worth the name. */
+    config.alignment_notch = DEFAULT_NOTCH;
+    config.vision_notch = DEFAULT_VISION_NOTCH;
+    apply_notches();
+
+    /* The rows without a meaning here are not on it: there is no avoidance row to
+     * move, and g and G do nothing with one swarm. */
+    int avoid = config.avoid_notch;
+    assert(feed_input("gG") == 1 && config.avoid_notch == avoid);
+    /* And the keys really are the ones on the panel. */
+    int notch = config.alignment_notch;
+    assert(feed_input("A") == 1 && config.alignment_notch == notch + 1);
+    notch = config.vision_notch;
+    assert(feed_input("p") == 1 && config.vision_notch == notch - 1);
+
+    /* On a very large screen the sight is in thousands of pixels, and still fits. */
+    config.vision_notch = LEGEND_BAR_CELLS;
+    apply_notches();
+    apply_screen_size(1000, 250, 8000, 4000);
+    build_legend(lines);
+    assert(firefly_law().sight > 1000);
+    for (int row = 0; row < LEGEND_MAX_ROWS; row++)
+        assert(legend_cells(lines[row]) == LEGEND_COLUMNS);
+    assert(strstr(lines[5], "k") != NULL);
+    end_the_night(&run);
+
+    /* And a flock's panel is the one it was: alignment, perception, avoidance. */
+    reset_test_config();
+    legend_enabled = 1;
+    apply_screen_size(200, 50, 1600, 800);
+    assert(legend_rows() == LEGEND_ROWS);
+    build_legend(lines);
+    assert(strstr(lines[3], "alignment") != NULL && strstr(lines[5], "perception") != NULL);
+    assert(strstr(lines[7], "sync") == NULL);
+}
+
+/* The sight and the pace are measured in spacings, so the same swarm falls into step
+ * in the same time on a small screen and a large one: with the sight in pixels it
+ * was a second and a half at 768 by 416 and never at 3000 by 1900. */
+static void test_the_swarm_is_the_same_swarm_on_any_screen(void) {
+    static const int SIZES[3][2] = {{80, 24}, {200, 50}, {320, 100}};
+    for (int s = 0; s < 3; s++) {
+        night_t run;
+        begin_the_night(&run, SIZES[s][0], SIZES[s][1], 30, 1);
+        double reached = -1;
+        for (int frame = 0; frame < 75 * 30 && reached < 0; frame++) {
+            one_night_frame(&run);
+            if (fireflies_order(&night) > 0.95) reached = (frame + 1) / 30.0;
+        }
+        assert(reached > 5 && reached < 75);
+        /* A flash is in sight of about thirty of the others, whatever the screen. */
+        double sight = firefly_law().sight;
+        double neighbours =
+            M_PI * sight * sight / ((double)screen.width * screen.height / config.birds);
+        assert(neighbours > 28 && neighbours < 36);
+        end_the_night(&run);
+    }
+}
+
+/* A night records, in a GIF and in a cast, and the GIF's colour table is built
+ * from its first frame: the first frame holds every shade of the ramp, so the
+ * flashes come out in their own colours and not in the nearest the first frame
+ * could spare. */
+static void test_a_night_records_with_the_whole_ramp_in_its_colour_table(void) {
+    char path[600];
+    scratch_file(path, sizeof(path), "night.gif");
+    reset_test_config();
+    fireflies_mode = 1;
+    config.birds = FIREFLY_COUNT;
+    config.palette = palette_named("firefly");
+    config.shape = shape_named("dot");
+    config.bird_size = 0;
+    record_path = path;
+    record_fps = 25;
+    record_seconds = 2;
+    record_columns = 96;
+    record_rows = 26;
+    requested_seed = 7;
+    fflush(stdout);
+    int saved = dup(STDOUT_FILENO);
+    assert(freopen("/dev/null", "w", stdout) != NULL);
+    int status = run_recording();
+    fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+    clearerr(stdout);
+    assert(status == EXIT_SUCCESS);
+
+    FILE *file = fopen(path, "rb");
+    assert(file != NULL);
+    uint8_t header[13 + 768];
+    assert(fread(header, 1, sizeof(header), file) == sizeof(header));
+    assert(memcmp(header, "GIF89a", 6) == 0);
+    assert((header[6] | header[7] << 8) == 96 * DEFAULT_CELL_WIDTH);
+    int descriptors = 0, c;
+    while ((c = fgetc(file)) != EOF)
+        if (c == 0x2C) descriptors++;
+    fclose(file);
+    remove(path);
+    assert(descriptors >= 50);
+    const uint8_t(*table)[3] = (const uint8_t(*)[3])(header + 13);
+    for (int shade = 0; shade < PALETTES[10].shades; shade++) {
+        double nearest = 1e9;
+        for (int entry = 0; entry < 256; entry++) {
+            double gap = sqrt(pow(table[entry][0] - (int)PALETTES[10].tints[shade][0], 2) +
+                              pow(table[entry][1] - (int)PALETTES[10].tints[shade][1], 2) +
+                              pow(table[entry][2] - (int)PALETTES[10].tints[shade][2], 2));
+            if (gap < nearest) nearest = gap;
+        }
+        assert(nearest < 12); /* Within what five bits a channel can hold apart. */
+    }
+
+    /* A cast of a night is braille, with something lit in it. */
+    scratch_file(path, sizeof(path), "night.cast");
+    reset_test_config();
+    fireflies_mode = 1;
+    config.birds = FIREFLY_COUNT;
+    config.palette = palette_named("firefly");
+    config.shape = shape_named("dot");
+    config.bird_size = 0;
+    record_path = path;
+    record_fps = 20;
+    record_seconds = 1;
+    record_columns = 60;
+    record_rows = 20;
+    fflush(stdout);
+    saved = dup(STDOUT_FILENO);
+    assert(freopen("/dev/null", "w", stdout) != NULL);
+    status = run_recording();
+    fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+    clearerr(stdout);
+    assert(status == EXIT_SUCCESS);
+    file = fopen(path, "r");
+    assert(file != NULL);
+    static char line[1 << 16];
+    int events = 0, braille = 0;
+    assert(fgets(line, sizeof(line), file) != NULL);
+    while (fgets(line, sizeof(line), file) != NULL) {
+        events++;
+        for (const char *p = line; *p; p++)
+            if ((unsigned char)p[0] == 0xE2 && ((unsigned char)p[1] & 0xFC) == 0xA0) braille++;
+    }
+    fclose(file);
+    remove(path);
+    assert(events == 20 + 2 && braille > 100);
+
+    record_path = NULL;
+    record_fps = 25;
+    record_seconds = 6;
+    record_columns = 96;
+    record_rows = 26;
+    requested_seed = -1;
+    reset_test_config();
+}
+
+/* And it benchmarks, headless, and says how in step it got. */
+static void test_a_night_benchmarks_and_reports_its_sync(void) {
+    char path[600], text[2048];
+    scratch_file(path, sizeof(path), "night_bench.txt");
+    reset_test_config();
+    fireflies_mode = 1;
+    config.birds = FIREFLY_COUNT;
+    config.palette = palette_named("firefly");
+    config.shape = shape_named("dot");
+    config.bird_size = 0;
+    bench_frames = 60;
+    render_mode = RENDER_UNSET;
+    fflush(stdout);
+    int saved = dup(STDOUT_FILENO);
+    assert(freopen(path, "w", stdout) != NULL);
+    int status = run_benchmark();
+    fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+    clearerr(stdout);
+    assert(status == EXIT_SUCCESS);
+    read_text_file(path, text, sizeof(text));
+    remove(path);
+    assert(strstr(text, "birds        400") != NULL);
+    assert(strstr(text, "sync         0.") != NULL);
+    /* The flock's bench says nothing about sync. */
+    bench_frames = 0;
+    render_mode = RENDER_KITTY;
+    reset_test_config();
+}
+
+/* The second sky: with --depth the far fireflies are a swarm of their own, smaller
+ * and dimmer, and neither sees the other's flashes. */
+static void test_a_far_swarm_flashes_to_itself(void) {
+    night_t run;
+    deep_look = 0;
+    begin_the_night(&run, 96, 26, 30, 8);
+    deep_look = 1;
+    for (int i = 0; i < config.birds; i++) place_one_firefly(&run.birds[i]);
+    int far = 0;
+    for (int i = 0; i < config.birds; i++) far += run.birds[i].layer;
+    assert(far > 80 && far < 200); /* About a third of 400. */
+    one_night_frame(&run);
+    for (int i = 0; i < config.birds; i++) assert(night.fly[i].sky == run.birds[i].layer);
+    deep_look = 0;
+    end_the_night(&run);
+}
+
+/* Left alone for a minute a flock starts moving its sliders by itself; a night does
+ * not, because its coupling is the thing on show. And leaving, with q, the
+ * fireflies go up still flashing. */
+static void test_a_night_is_left_alone_and_flies_off_still_flashing(void) {
+    night_t run;
+    begin_the_night(&run, 96, 26, 30, 9);
+    one_night_frame(&run);
+
+    int before[4] = {config.boundary_notch, config.separation_notch, config.alignment_notch,
+                     config.vision_notch};
+    last_key_at = 0;
+    last_drift_at = 0;
+    clock_state.seconds = 10 * IDLE_SECONDS;
+    for (int i = 0; i < 20; i++) {
+        clock_state.seconds += AUTOPILOT_PERIOD;
+        maybe_drift();
+    }
+    assert(before[0] == config.boundary_notch && before[1] == config.separation_notch &&
+           before[2] == config.alignment_notch && before[3] == config.vision_notch);
+    fireflies_mode = 0; /* A flock, in the same minute, does move them. */
+    last_drift_at = 0;
+    for (int i = 0; i < 20; i++) {
+        clock_state.seconds += AUTOPILOT_PERIOD;
+        maybe_drift();
+    }
+    assert(before[0] != config.boundary_notch || before[1] != config.separation_notch ||
+           before[2] != config.alignment_notch || before[3] != config.vision_notch);
+    fireflies_mode = 1;
+    config.boundary_notch = before[0];
+    config.separation_notch = before[1];
+    config.alignment_notch = before[2];
+    config.vision_notch = before[3];
+    apply_notches();
+    clock_state.seconds = 0;
+
+    double phase = night.fly[3].phase, y = run.birds[3].y;
+    fly_away(run.birds);
+    assert(run.birds[3].y < y);
+    assert(night.fly[3].phase != phase);
+    end_the_night(&run);
+}
+
+/* Under Kitty a lit firefly is a placement of its shade of the ramp, a dark one a
+ * placement of its body, set in by half the difference of their sizes, and none is
+ * left out. */
+static void test_the_sprites_of_a_night_are_placed_lit_or_as_bodies(void) {
+    kitty_graphics_t graphics;
+    bird_t birds[3] = {{.x = 100, .y = 50, .shade = 2, .frame = 5},
+                       {.x = 200, .y = 100, .shade = -1, .frame = 5},
+                       {.x = 300, .y = 150, .shade = 0, .frame = 7}};
+    char expected[96];
+
+    reset_test_config();
+    fireflies_mode = 1;
+    config.birds = 3;
+    config.palette = palette_named("firefly");
+    config.bird_size = 0;
+    settle_the_bird_size();
+    apply_screen_size(80, 24, 640, 384);
+    legend_drawn = 0;
+    assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
+    assert(queue_render_frame(&graphics, birds) == KITTY_GRAPHICS_OK);
+
+    snprintf(expected, sizeof(expected), "a=p,I=%u,q=2,X=4,Y=2,C=1",
+             set_image_id(flock_set(2, 0, 0), 5));
+    assert(strstr(graphics.buffer, expected) != NULL);
+    int inset = firefly_body_inset();
+    assert(inset > 0 && trail_sprite_size() < config.bird_size);
+    snprintf(expected, sizeof(expected), "a=p,I=%u,q=2,X=%d,Y=%d,C=1",
+             set_image_id(trail_set(0), 5), (200 + inset) % 8, (100 + inset) % 16);
+    assert(strstr(graphics.buffer, expected) != NULL);
+    snprintf(expected, sizeof(expected), "a=p,I=%u,q=2,", set_image_id(flock_set(0, 0, 0), 7));
+    assert(strstr(graphics.buffer, expected) != NULL);
+    /* Three fireflies, three placements, and the dark one is not a bird of any shade. */
+    int placements = 0;
+    for (const char *at = graphics.buffer; (at = strstr(at, "a=p,")) != NULL; at++) placements++;
+    assert(placements == 3);
+
+    kitty_graphics_destroy(&graphics);
+    reset_test_config();
+}
+
+/* What a night shows of three sliders, over forty seconds with the others at their
+ * defaults: the share of the swarm within a few pixels of an edge, how far a
+ * firefly is from its nearest neighbour, and how much it turns a second. */
+typedef struct {
+    double near_edge, nearest, turned;
+} night_look_t;
+
+static night_look_t look_at_a_night(int boundary, int separation, int turning) {
+    night_t run;
+    night_look_t look = {0, 0, 0};
+    long samples = 0;
+
+    begin_the_night(&run, 96, 26, 30, 3);
+    config.boundary_notch = boundary;
+    config.separation_notch = separation;
+    config.turning_notch = turning;
+    apply_notches();
+    for (int frame = 0; frame < 40 * 30; frame++) {
+        one_night_frame(&run);
+        for (int i = 0; i < config.birds; i++) {
+            double change = run.birds[i].direction - run.snapshot[i].direction;
+            look.turned += fabs(atan2(sin(change), cos(change))) / config.birds / 40;
+        }
+        if (frame < 10 * 30 || frame % 30) continue;
+        for (int i = 0; i < config.birds; i++) {
+            const bird_t *a = &run.birds[i];
+            double least = 1e18;
+            for (int j = 0; j < config.birds; j++) {
+                if (j == i) continue;
+                double dx = a->x - run.birds[j].x, dy = a->y - run.birds[j].y;
+                if (dx * dx + dy * dy < least) least = dx * dx + dy * dy;
+            }
+            double edge = fmin(fmin(a->x, screen.width - a->x), fmin(a->y, screen.height - a->y));
+            look.near_edge += edge < 0.03 * screen.height;
+            look.nearest += sqrt(least);
+            samples++;
+        }
+    }
+    look.near_edge /= samples;
+    look.nearest /= samples;
+    end_the_night(&run);
+    return look;
+}
+
+/* A row does what it says: boundary keeps them off the edges, separation keeps them
+ * apart, turning is how much they wander. The other three are in the panel test:
+ * coupling and sight are the law, and the speed is the step. Measured: 2.9% of the
+ * swarm at an edge with the boundary at nothing and none at the top; the nearest
+ * neighbour 12.3 pixels off at nothing and 17.2 at the top; 2.3 radians of turning
+ * a second and 5.6. */
+static void test_every_slider_does_what_it_says_to_a_night(void) {
+    night_look_t no_boundary = look_at_a_night(0, DEFAULT_NOTCH, DEFAULT_TURNING_NOTCH);
+    night_look_t full_boundary =
+        look_at_a_night(LEGEND_BAR_CELLS, DEFAULT_NOTCH, DEFAULT_TURNING_NOTCH);
+    assert(no_boundary.near_edge > full_boundary.near_edge + 0.01);
+
+    night_look_t no_room = look_at_a_night(DEFAULT_NOTCH, 0, DEFAULT_TURNING_NOTCH);
+    night_look_t all_room = look_at_a_night(DEFAULT_NOTCH, LEGEND_BAR_CELLS, DEFAULT_TURNING_NOTCH);
+    assert(all_room.nearest > no_room.nearest * 1.2);
+
+    night_look_t lazy = look_at_a_night(DEFAULT_NOTCH, DEFAULT_NOTCH, 0);
+    night_look_t sharp = look_at_a_night(DEFAULT_NOTCH, DEFAULT_NOTCH, LEGEND_BAR_CELLS);
+    assert(sharp.turned > lazy.turned * 1.5);
+}
+
 int main(void) {
     make_scratch();
     trig_lookup_init();
@@ -3342,6 +4226,21 @@ int main(void) {
     test_the_avoidance_slider_needs_two_flocks();
     test_the_avoidance_is_a_flag();
     test_flocks_avoid_each_other_as_much_as_asked();
+    test_fireflies_change_the_defaults_and_nothing_else();
+    test_a_night_leaves_the_flocks_switches_with_nothing_to_do();
+    test_the_swarm_falls_into_step_with_nothing_in_charge();
+    test_the_swarm_keeps_time_in_seconds_not_frames();
+    test_the_lantern_scatters_the_phases_and_the_swarm_heals();
+    test_the_fireflies_drift_slowly_and_keep_to_the_meadow();
+    test_a_dark_firefly_is_a_faint_body();
+    test_the_panel_says_what_a_night_does();
+    test_the_swarm_is_the_same_swarm_on_any_screen();
+    test_a_night_records_with_the_whole_ramp_in_its_colour_table();
+    test_a_night_benchmarks_and_reports_its_sync();
+    test_a_far_swarm_flashes_to_itself();
+    test_a_night_is_left_alone_and_flies_off_still_flashing();
+    test_the_sprites_of_a_night_are_placed_lit_or_as_bodies();
+    test_every_slider_does_what_it_says_to_a_night();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);
     return 0;

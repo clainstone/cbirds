@@ -3561,6 +3561,30 @@ static void test_birds_come_in_by_the_facing_edge_at_the_same_height(void) {
     assert(config.birds == 1 && live == 1);
     assert(fabs(birds[0].x - (900 - 30 - 15)) < 1e-9 && fabs(birds[0].y - 100) < 1e-9);
 
+    /* Kitty draws only what fits the window, so there it comes in wholly: the
+     * text renderers clip, and draw it as far in as it is. */
+    render_mode = RENDER_KITTY;
+    post.reach = 4;
+    assert(link_send(&beside, LINK_LEFT, &post, 1) == 1);
+    sky_take_in(birds, &live);
+    assert(birds[1].x == 900 - config.bird_size);
+    render_mode = RENDER_UNSET;
+    link_traveller_t from_the_left = post;
+    from_the_left.reach = 4;
+    leave_the_sky();
+    join_the_sky(0);
+    render_mode = RENDER_KITTY;
+    assert(link_send(&beside, LINK_RIGHT, &from_the_left, 1) == 1);
+    config.birds = 0;
+    live = 0;
+    sky_take_in(birds, &live);
+    assert(birds[0].x == 0);
+    render_mode = RENDER_UNSET;
+    leave_the_sky();
+    join_the_sky(1);
+    config.birds = 1;
+    live = 1;
+
     /* Never so far in as to be across the window, whatever it says. */
     post.reach = 9000;
     assert(link_send(&beside, LINK_LEFT, &post, 1) == 1);

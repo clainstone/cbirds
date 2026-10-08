@@ -2663,6 +2663,16 @@ static void land_a_bird(bird_t *bird, const link_traveller_t *traveller) {
     bird->x = traveller->enters == LINK_LEFT ? landing_reach(traveller) - half
                                              : screen.width - landing_reach(traveller) - half;
     bird->y = landing_height(traveller);
+    /* Kitty places a sprite by its corner and does not place one that begins
+     * left of the window or does not fit it, so a bird half in at the edge would
+     * not be drawn for the frame or two it takes to be wholly in. It comes in
+     * wholly, which is at most half a sprite further than the middle said. The
+     * text renderers clip, and draw it as far in as it is. */
+    if (render_mode == RENDER_KITTY) {
+        double last = screen.width - (double)config.bird_size;
+        if (bird->x > last) bird->x = last;
+        if (bird->x < 0) bird->x = 0;
+    }
     /* The panel is a rectangle no bird enters; one that would come in behind it
      * comes in beneath it instead. */
     if (legend_turn_zone(bird->x, bird->y)) bird->y = screen.legend_height + config.speed + 1;
@@ -2681,6 +2691,11 @@ static void land_a_hawk(hawk_t *hawk, const link_traveller_t *traveller) {
     hawk->x = traveller->enters == LINK_LEFT ? landing_reach(traveller)
                                              : screen.width - landing_reach(traveller);
     hawk->y = landing_height(traveller);
+    if (render_mode == RENDER_KITTY) { /* As the walls keep it, wholly on the screen. */
+        double margin = hawk_draw_offset(), last = screen.width - 1 - margin;
+        if (hawk->x > last) hawk->x = last;
+        if (hawk->x < margin) hawk->x = margin;
+    }
     hawk->direction = traveller->direction < 2 * M_PI ? traveller->direction : 0;
     hawk->frame = direction_frame(hawk->direction);
     hawk->prey = -1; /* It looks for its own, among this sky's birds. */

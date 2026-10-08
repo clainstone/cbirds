@@ -331,7 +331,8 @@ A flash is seen a long way, but not everywhere, which is why synchrony grows in
 patches and not all at once. The reach is counted in the distance between
 fireflies, so a small window and a large screen tell the same story. The pointer
 is a lantern: the fireflies it is held over are startled and their clocks
-thrown, and the swarm heals when it moves on.
+thrown, and the swarm heals when it moves on. Whipped through the swarm it starts
+no wave of light; that is for a flock under a hawk.
 
 The panel keeps working. `alignment` becomes `coupling`, how far a flash moves a
 clock, and `perception` becomes `sight`, how far a flash is seen; `--alignment`

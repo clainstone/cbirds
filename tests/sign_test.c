@@ -18,7 +18,9 @@ static void test_the_text_is_cleaned_down_to_what_the_font_can_draw(void) {
 
     /* Characters the font lacks are skipped, not turned into spaces: a word with
      * an accent in it is a word with a letter missing and no more. */
-    assert(sign_clean("caf\xc3\xa9 \xe2\x82\xac" "5", out, sizeof(out)) == 4);
+    assert(sign_clean("caf\xc3\xa9 \xe2\x82\xac"
+                      "5",
+                      out, sizeof(out)) == 4);
     assert(strcmp(out, "CAF 5") == 0);
     assert(sign_clean("a~b", out, sizeof(out)) == 2);
     assert(strcmp(out, "AB") == 0);
@@ -100,7 +102,8 @@ static void test_a_long_text_wraps_at_its_spaces_as_large_as_fits(void) {
             for (int l = 0; l < line_total; l++) {
                 int letters = 0;
                 for (int w = start; w < breaks[l]; w++) letters += word_length[w] + (w > start);
-                if (letters * FONT_ADVANCE - 1 > widest_line) widest_line = letters * FONT_ADVANCE - 1;
+                if (letters * FONT_ADVANCE - 1 > widest_line)
+                    widest_line = letters * FONT_ADVANCE - 1;
                 start = breaks[l];
             }
             double size = 600.0 / widest_line;

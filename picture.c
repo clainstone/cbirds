@@ -110,8 +110,7 @@ static void pick(const sampling_t *sampling, const int *cells, int count, int pi
      * and at a seventh they are a half of it, while no point is further from its
      * nearest neighbour than a spacing and a twentieth. */
     double aim_x = sum_x / count + (unit_of(hash) - 0.5) * 0.3 * (high_x - low_x + 1);
-    double aim_y =
-        sum_y / count + (unit_of(mix(hash + 1u)) - 0.5) * 0.3 * (high_y - low_y + 1);
+    double aim_y = sum_y / count + (unit_of(mix(hash + 1u)) - 0.5) * 0.3 * (high_y - low_y + 1);
     int best = cells[0];
     double best_gap = 1e300;
     for (int i = 0; i < count; i++) {
@@ -334,8 +333,7 @@ int picture_quantise(const png_image_t *image, int most, uint8_t colours[][3]) {
     free(boxes);
     /* Lightest first, which is the way every ramp in the program runs. */
     for (int i = 1; i < made; i++)
-        for (int j = i; j > 0 &&
-                        picture_luminance(colours[j]) > picture_luminance(colours[j - 1]);
+        for (int j = i; j > 0 && picture_luminance(colours[j]) > picture_luminance(colours[j - 1]);
              j--) {
             for (int c = 0; c < 3; c++) {
                 uint8_t swap = colours[j][c];
@@ -355,7 +353,8 @@ int picture_nearest(const uint8_t colours[][3], int count, const uint8_t rgb[3])
         double mean_red = (colours[i][0] + rgb[0]) / 2.0;
         double dr = (double)colours[i][0] - rgb[0], dg = (double)colours[i][1] - rgb[1];
         double db = (double)colours[i][2] - rgb[2];
-        double gap = (2 + mean_red / 256) * dr * dr + 4 * dg * dg + (2 + (255 - mean_red) / 256) * db * db;
+        double gap =
+            (2 + mean_red / 256) * dr * dr + 4 * dg * dg + (2 + (255 - mean_red) / 256) * db * db;
         if (gap < best_gap) {
             best_gap = gap;
             best = i;

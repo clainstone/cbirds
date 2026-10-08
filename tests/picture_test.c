@@ -192,7 +192,8 @@ static void test_more_birds_than_ink_share_it_out(void) {
     assert(picture_sample(&image, &fit, COUNT, 2, points) == COUNT);
     for (int i = 0; i < COUNT; i++) {
         assert(points[i].x >= 0 && points[i].x <= 40 && points[i].y >= 0 && points[i].y <= 40);
-        for (int j = 0; j < i; j++) assert(points[i].x != points[j].x || points[i].y != points[j].y);
+        for (int j = 0; j < i; j++)
+            assert(points[i].x != points[j].x || points[i].y != points[j].y);
     }
     /* One bird, and a thousand. */
     assert(picture_sample(&image, &fit, 1, 2, points) == 1);
@@ -206,8 +207,8 @@ static void test_more_birds_than_ink_share_it_out(void) {
     fit = picture_fit(&big, 0, 0, 1500, 900);
     assert(picture_sample(&big, &fit, 4096, 9, many) == 4096);
     for (int i = 0; i < 4096; i++)
-        assert(many[i].x >= fit.left && many[i].x <= fit.left + fit.width &&
-               many[i].y >= fit.top && many[i].y <= fit.top + fit.height);
+        assert(many[i].x >= fit.left && many[i].x <= fit.left + fit.width && many[i].y >= fit.top &&
+               many[i].y <= fit.top + fit.height);
     png_image_free(&big);
 }
 
@@ -240,7 +241,8 @@ static void test_a_picture_is_cut_down_to_a_few_colours(void) {
     for (int y = 0; y < 4; y++)
         for (int x = 0; x < 256; x++) set_pixel(&image, x, y, x, x, x, 255);
     assert(picture_quantise(&image, 8, colours) == 8);
-    for (int i = 1; i < 8; i++) assert(picture_luminance(colours[i - 1]) > picture_luminance(colours[i]));
+    for (int i = 1; i < 8; i++)
+        assert(picture_luminance(colours[i - 1]) > picture_luminance(colours[i]));
     assert(colours[0][0] > 200 && colours[7][0] < 55);
     png_image_free(&image);
 

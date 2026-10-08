@@ -44,8 +44,8 @@ int sign_columns(const char *line);
  * in columns, when it is wider than the text, sizes the cell instead, so that a
  * clock does not change size between 1:09 and 10:09. Lines are centred on each
  * other by the caller. */
-int sign_fit(const char *clean, int reference_columns, double width, double height,
-             double largest, sign_lines_t *out, double *cell);
+int sign_fit(const char *clean, int reference_columns, double width, double height, double largest,
+             sign_lines_t *out, double *cell);
 
 /* 12 hour or 24: whether a strftime format, as nl_langinfo(T_FMT) gives it, shows
  * the hour on a 12 hour clock (%I, %l or %r). */

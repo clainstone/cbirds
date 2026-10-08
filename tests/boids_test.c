@@ -2315,7 +2315,7 @@ static void test_the_pointer_scatters_a_sign_and_it_comes_back(void) {
         }
     }
     assert(scattered >= 8 && scattered < writers); /* The letters it reaches, not all of them. */
-    assert(most_away > 3 * formation.hover); /* They are gone from their places. */
+    assert(most_away > 3 * formation.hover);       /* They are gone from their places. */
 
     /* The pointer stops and the birds come back to their own places. */
     fly_the_world(&world, 6, 14, 60);
@@ -2386,7 +2386,8 @@ static void test_a_hawk_over_a_sign_scatters_the_places_it_is_over(void) {
     for (int i = 0; i < config.birds && scattered_bird < 0; i++)
         if (formation.slot[i] == 0) scattered_bird = i;
     assert(scattered_bird >= 0);
-    world.birds[scattered_bird].scattered = sign_scatter_left(&world.birds[scattered_bird], scattered_bird);
+    world.birds[scattered_bird].scattered =
+        sign_scatter_left(&world.birds[scattered_bird], scattered_bird);
     config.hawks = 0;
     fly_the_world(&world, 4, 12, 60);
     assert(world.birds[scattered_bird].scattered == 0);
@@ -2704,7 +2705,8 @@ static void test_a_picture_in_black_is_not_a_picture_of_nothing(void) {
     png_image_t image = {0, 0, NULL};
     assert(png_image_alloc(&image, 20, 20) == PNG_OK);
     for (int i = 0; i < 400; i++) {
-        image.pixels[i * 4 + 0] = image.pixels[i * 4 + 1] = image.pixels[i * 4 + 2] = i < 200 ? 0 : 240;
+        image.pixels[i * 4 + 0] = image.pixels[i * 4 + 1] = image.pixels[i * 4 + 2] =
+            i < 200 ? 0 : 240;
         image.pixels[i * 4 + 3] = 255;
     }
     uint8_t *encoded = NULL;
@@ -2859,9 +2861,20 @@ static void test_a_sign_records_in_a_gif_and_a_cast(void) {
             int quiet = open("/dev/null", O_WRONLY);
             if (quiet < 0 || dup2(quiet, STDOUT_FILENO) < 0 || dup2(quiet, STDERR_FILENO) < 0)
                 _exit(99);
-            char *argv[] = {"cbirds",   "--record", (char *)runs[which].file, "--record-seconds",
-                            "2",        "--record-size", "64x18", "-n", "200", "--seed", "3",
-                            (char *)runs[which].option, (char *)runs[which].value, NULL};
+            char *argv[] = {"cbirds",
+                            "--record",
+                            (char *)runs[which].file,
+                            "--record-seconds",
+                            "2",
+                            "--record-size",
+                            "64x18",
+                            "-n",
+                            "200",
+                            "--seed",
+                            "3",
+                            (char *)runs[which].option,
+                            (char *)runs[which].value,
+                            NULL};
             alarm(60);
             _exit(cbirds_application_main(13, argv));
         }

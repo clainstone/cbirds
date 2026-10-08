@@ -94,8 +94,8 @@ static int wrap_at(const words_t *words, int limit, int most, sign_lines_t *line
     return count;
 }
 
-int sign_fit(const char *clean, int reference_columns, double width, double height,
-             double largest, sign_lines_t *out, double *cell) {
+int sign_fit(const char *clean, int reference_columns, double width, double height, double largest,
+             sign_lines_t *out, double *cell) {
     words_t words;
     int best_count = 0;
     double best_cell = 0;

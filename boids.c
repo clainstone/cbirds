@@ -18,6 +18,7 @@
 #include <unistd.h>
 
 #include "cells.h"
+#include "fireflies.h"
 #include "font.h"
 #include "gif.h"
 #include "kitty_graphics.h"
@@ -215,6 +216,44 @@ static const double LEASH_WEIGHT = 2.5;
  * it off: at the top notch it is about a third of the alignment weight. */
 static const double WIND_WEIGHT = 0.5;
 
+/*
+ * Fireflies (--fireflies).
+ *
+ * A swarm does not flock; it drifts and flashes, and the interest is in the
+ * clocks (see fireflies.h). Everything here that is a distance is measured in
+ * spacings, the distance between neighbours if the swarm were laid out evenly
+ * on the screen: the same swarm on a small recording and on a large display has
+ * the same number of fireflies in sight of each other, and so the same story.
+ * A sight of 180 pixels that syncs four hundred fireflies in half a minute on a
+ * 1600 by 800 screen syncs them in a second and a half at 768 by 416, where every
+ * firefly sees a third of the swarm, and never on a 3000 by 1900 screen, where
+ * each sees five.
+ */
+enum { FIREFLY_COUNT = 400, FIREFLY_SIZE = 12 };
+static const double FIREFLY_PERIOD = 1.0;      /* Seconds a cycle, before the spread. */
+static const double FIREFLY_SPREAD = 0.04;     /* How far off each is: four percent. */
+static const double FIREFLY_PUSH = 0.0075;     /* How far a flash moves a clock, at the default. */
+static const double FIREFLY_BEND = 3.0;        /* How concave the clock is. */
+static const double FIREFLY_REFRACTORY = 0.15; /* Cycle after a flash that is not looking. */
+static const double FIREFLY_SIGHT = 3.2;       /* Spacings a flash is seen, at the default. */
+static const double FIREFLY_DRIFT = 1.0;       /* Spacings a second, at the default pace. */
+static const double FIREFLY_ROOM = 0.8;        /* Spacings of personal space. */
+static const double FIREFLY_WANDER = 1.0;      /* Radians the heading wanders by, per root second. */
+static const double FIREFLY_EDGE = 0.10;       /* Share of the screen at each edge that pushes back. */
+static const double FIREFLY_MEADOW = 0.35;     /* How hard the top third leans them down. */
+/* Between flashes a firefly is not quite dark: a small dot, the ramp's last shade
+ * most of the way back to the ground, so that the swarm can be felt in the dark
+ * and the dark is still dark. With nothing drawn at all, the quiet between two
+ * synchronised flashes was an empty screen, and a swarm that had lost its
+ * fireflies; with the last shade of the ramp it was a lawn, and the flash was a
+ * brightening of it and not a light in the night. */
+static const double FIREFLY_BODY_SIZE = 0.55;  /* Of the firefly's size. */
+static const double FIREFLY_BODY_FADE = 0.60;  /* How far from the last shade to the ground. */
+static const double FIREFLY_PUSH_APART = 1.0;
+static const double FIREFLY_PULL_TOGETHER = 0.01;
+static const double FIREFLY_LANTERN = 4.0; /* Spacings the pointer reaches: a lantern, not a finger. */
+static const double FIREFLY_STARTLE = 4.0; /* Times a second a firefly in the lantern is thrown. */
+
 /* Needed in the config initializer, so macros rather than constants. */
 #define DEFAULT_SEPARATION_W 0.005
 #define DEFAULT_ALIGNMENT_W 1.5
@@ -405,6 +444,10 @@ static const char *const RENDER_NAMES[] = {"kitty", "braille", "sextants", "bloc
 static int render_mode = RENDER_UNSET;
 /* --depth: a second plane of birds further off. The default is the one. */
 static int deep_look;
+/* --fireflies: a summer night. The birds become fireflies that drift and flash
+ * instead of a flock, and the program says so in the places that differ. */
+static int fireflies_mode;
+static fireflies_t night;
 
 static int drawing_with_text(void) {
     return render_mode == RENDER_BRAILLE || render_mode == RENDER_SEXTANTS ||
@@ -606,7 +649,9 @@ static void update_turn_distances(void) {
  * panel and the full height beside it, and is kept out of the corner by a force
  * instead of by a bound. */
 static int legend_rows(void) {
-    return config.flocks > 1 ? LEGEND_MAX_ROWS : LEGEND_ROWS;
+    /* A night has no flocks to avoid each other, and the row is for how much of the
+     * swarm is flashing together instead. */
+    return config.flocks > 1 || fireflies_mode ? LEGEND_MAX_ROWS : LEGEND_ROWS;
 }
 
 static void measure_legend(void) {
@@ -801,6 +846,13 @@ static const uint8_t DUSK_TINTS[][3] = {
 static const uint8_t ASH_TINTS[][3] = {
     {244, 244, 246}, {206, 208, 214}, {164, 168, 178}, {124, 128, 140}, {88, 92, 104},
 };
+/* Read as a flash dying: the pale yellow of the instant it lights, through the
+ * yellow green of a firefly's own light, to the dark green it fades into. Shade
+ * zero is the brightest, which is the opposite way round from most ramps, because
+ * here the shade is not a colour a bird wears but how long ago it flashed. */
+static const uint8_t FIREFLY_TINTS[][3] = {
+    {255, 250, 190}, {236, 238, 84}, {176, 216, 56}, {98, 170, 52}, {48, 106, 50},
+};
 /* What the embedded sprite is actually painted, for the palettes that leave it
  * alone: a hawk still has to stand off that. */
 static const uint8_t SPRITE_OWN_COLOUR[3] = {237, 28, 36};
@@ -818,6 +870,8 @@ static const palette_t PALETTES[] = {
      PNG_TINT_REPLACE},
     {"dusk", "the sky at dusk, peach through to indigo", 5, DUSK_TINTS, PNG_TINT_REPLACE},
     {"ash", "ash, white through to slate grey", 5, ASH_TINTS, PNG_TINT_REPLACE},
+    {"firefly", "a flash dying, pale yellow through to dark green", 5, FIREFLY_TINTS,
+     PNG_TINT_REPLACE},
 };
 enum { PALETTE_COUNT = sizeof(PALETTES) / sizeof(*PALETTES) };
 
@@ -978,6 +1032,12 @@ static const char *SHAPE_NAMES[SHAPE_COUNT + 1];
 static void name_the_shapes(void) {
     for (int i = 0; i < SHAPE_COUNT; i++) SHAPE_NAMES[i] = SHAPES[i].name;
     SHAPE_NAMES[SHAPE_COUNT] = NULL;
+}
+
+static int shape_named(const char *name) {
+    for (int i = 0; i < SHAPE_COUNT; i++)
+        if (strcmp(SHAPES[i].name, name) == 0) return i;
+    return 0;
 }
 
 static int inside_triangle(const triangle_t *t, double x, double y) {
@@ -1233,6 +1293,7 @@ static int formation_target_of(int index, double *x, double *y) {
  * watch. A keypress ends it early, and a screen too small for the word simply
  * starts flocking. */
 static void begin_the_intro(void) {
+    if (fireflies_mode) return; /* A night does not open by writing its name. */
     if (formation_layout("BOIDS")) formation.until = INTRO_SECONDS;
 }
 
@@ -1373,6 +1434,17 @@ static uint32_t set_image_id(int set, int frame) {
 static uint32_t sprite_image_id(const bird_t *bird) {
     return set_image_id(flock_set(bird->shade, WING_SEQUENCE[bird->wing % WING_CYCLE], bird->layer),
                         bird->frame);
+}
+
+/* A tail's ghost, or on a night a firefly's body: smaller than the bird, and drawn
+ * from its top left like it, so it is set in by half the difference. */
+static int trail_sprite_size(void) {
+    int size = (int)(config.bird_size * (fireflies_mode ? FIREFLY_BODY_SIZE : TRAIL_SIZE) + 0.5);
+    return size < MIN_BIRD_SIZE ? MIN_BIRD_SIZE : size;
+}
+
+static int firefly_body_inset(void) {
+    return (config.bird_size - trail_sprite_size()) / 2;
 }
 
 static uint32_t hawk_image_id(const hawk_t *hawk) {
@@ -1753,12 +1825,49 @@ static int shade_for_flock(int flock) {
     return spread >= shades ? shades - 1 : spread;
 }
 
+/* The distance between neighbours if the swarm were laid out evenly: the unit
+ * every distance of the fireflies is counted in. */
+static double firefly_spacing(void) {
+    double area = (double)screen.width * (double)screen.height;
+    return config.birds > 0 && area > 0 ? sqrt(area / config.birds) : 1.0;
+}
+
+/* One firefly, anywhere in the meadow. They drift slowly, so unlike a flock they
+ * cannot be left to find their own way out of the middle of the screen: they
+ * start spread over all of it, a margin in from the edges. Dark until their
+ * clocks say otherwise. */
+static void place_one_firefly(bird_t *bird) {
+    double pad = firefly_spacing() / 2;
+    double min_x = pad, max_x = screen.width - pad;
+    double min_y = pad, max_y = screen.height - pad;
+    if (max_x <= min_x) min_x = max_x = screen.width / 2.0;
+    if (max_y <= min_y) min_y = max_y = screen.height / 2.0;
+    for (int attempt = 0;; attempt++) {
+        bird->x = min_x + (max_x - min_x) * random_unit();
+        bird->y = min_y + (max_y - min_y) * random_unit();
+        if (!legend_turn_zone(bird->x, bird->y)) break;
+        if (attempt + 1 >= SPAWN_ATTEMPTS) {
+            bird->y = screen.legend_height + config.speed + 1;
+            if (bird->y > max_y) bird->x = screen.legend_width + config.speed + 1;
+            break;
+        }
+    }
+    bird->direction = 2 * M_PI * random_unit();
+    bird->frame = direction_frame(bird->direction);
+    bird->layer = deep_look && random_unit() < FAR_SHARE ? 1 : 0;
+    bird->shade = -1;
+}
+
 /* One bird, so that growing the flock at runtime places only the new ones. */
 static void place_one_bird(bird_t *bird, int index) {
     /* A bird starts from nothing: the memory a + grows the flock into is
      * whatever the allocator left there, and the tail index is read as an array
      * index the moment trails are on. */
     *bird = (bird_t){0};
+    if (fireflies_mode) {
+        place_one_firefly(bird);
+        return;
+    }
     double min_x = screen.turn_x, max_x = screen.width - screen.turn_x;
     double min_y = screen.turn_y, max_y = screen.height - screen.turn_bottom;
     if (max_x <= min_x) min_x = max_x = screen.width / 2.0;
@@ -1849,13 +1958,12 @@ static int resize_the_flock(bird_t **birds, bird_t **snapshot, int from, int to)
  * panel's, because the flock has to bend around the pointer and close again
  * behind it, not bounce off it.
  */
-static vector_t pointer_vector(const bird_t *bird) {
+static vector_t pointer_push(const bird_t *bird, double reach) {
     vector_t force = {0, 0};
     if (!mouse.present) return force;
 
     double dx = bird->x - mouse.x, dy = bird->y - mouse.y;
     double squared = dx * dx + dy * dy;
-    double reach = MOUSE_REACH;
     if (squared >= reach * reach || squared < 1e-9) return force;
 
     double distance = sqrt(squared);
@@ -1865,6 +1973,10 @@ static vector_t pointer_vector(const bird_t *bird) {
     force.x = strength * dx / distance;
     force.y = strength * dy / distance;
     return force;
+}
+
+static vector_t pointer_vector(const bird_t *bird) {
+    return pointer_push(bird, MOUSE_REACH);
 }
 
 /*
@@ -2135,6 +2247,99 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
     return target->direction;
 }
 
+/* The edges, for something that drifts. A bird is turned from a band a third of
+ * the screen wide and has the speed to use the rest of it; a firefly at a
+ * fiftieth of the speed does not, and with the bands a bird has the whole swarm
+ * ended up in a box in the middle of the screen, a third as wide as the screen
+ * and twice as dense as it should have been, where it synchronised in eight
+ * seconds. Here the bands are a tenth, and the meadow is a lean instead of a
+ * wall: the top third pushes down, softly, and that is the whole of the
+ * preference for the lower two thirds of the sky. */
+static vector_t firefly_edge_vector(const bird_t *bird) {
+    vector_t push = {0, 0};
+    if (legend_repels(bird, &push)) return push;
+    double band_x = screen.width * FIREFLY_EDGE, band_y = screen.height * FIREFLY_EDGE;
+    if (band_x < 1) band_x = 1;
+    if (band_y < 1) band_y = 1;
+    if (bird->x < band_x)
+        push.x = edge_push(band_x - bird->x, band_x);
+    else if (bird->x > screen.width - band_x)
+        push.x = -edge_push(bird->x - (screen.width - band_x), band_x);
+    if (bird->y < band_y)
+        push.y = edge_push(band_y - bird->y, band_y);
+    else if (bird->y > screen.height - band_y)
+        push.y = -edge_push(bird->y - (screen.height - band_y), band_y);
+    return push;
+}
+
+/*
+ * A firefly's way: it drifts.
+ *
+ * No alignment, no leash, no hawks. It keeps a little room round itself, leans a
+ * little towards the ones near it, is turned from the edges and the lantern as
+ * any bird is, and between those it wanders: the heading takes a small random
+ * turn every step, sized so that the path is the same whatever the frame rate
+ * (a random walk grows with the square root of the time it has had, so the turn
+ * is scaled the same way) and the same shape however fast the speed slider flies
+ * it. The turning slider sets how sharp the wander is as well as how sharp the
+ * sharpest turn can be, because for a drifter those are the one thing.
+ */
+static double firefly_direction(const bird_t *birds, const spatial_grid_t *grid, int index) {
+    const bird_t *target = &birds[index];
+    double room = FIREFLY_ROOM * firefly_spacing();
+    int reach = (int)ceil(room / SPATIAL_CELL_SIZE);
+    vector_t apart = {0, 0}, together = {0, 0};
+    int neighbours = 0;
+    int center_x, center_y;
+    spatial_grid_cell_for_position(grid, target->x, target->y, &center_x, &center_y);
+    int min_x = center_x - reach, max_x = center_x + reach;
+    int min_y = center_y - reach, max_y = center_y + reach;
+    if (min_x < 0) min_x = 0;
+    if (min_y < 0) min_y = 0;
+    if (max_x >= grid->columns) max_x = grid->columns - 1;
+    if (max_y >= grid->rows) max_y = grid->rows - 1;
+
+    for (int cell_y = min_y; cell_y <= max_y; cell_y++) {
+        for (int cell_x = min_x; cell_x <= max_x; cell_x++) {
+            int cell = cell_y * grid->columns + cell_x;
+            for (int slot = grid->offsets[cell]; slot < grid->offsets[cell + 1]; slot++) {
+                int i = grid->indices[slot];
+                const bird_t *other = &birds[i];
+                if (i == index || other->layer != target->layer) continue;
+                double dx = target->x - other->x, dy = target->y - other->y;
+                double squared = dx * dx + dy * dy;
+                if (squared >= room * room || squared < 1e-9) continue;
+                double distance = sqrt(squared);
+                double strength = 1 - distance / room;
+                apart.x += strength * dx / distance;
+                apart.y += strength * dy / distance;
+                together.x -= dx;
+                together.y -= dy;
+                neighbours++;
+            }
+        }
+    }
+    if (neighbours) {
+        together.x /= neighbours * room;
+        together.y /= neighbours * room;
+    }
+
+    double sharpness = turning_notch_radians() / (M_PI * 70 / 180);
+    if (sharpness > 2.5) sharpness = 2.5;
+    double wander = FIREFLY_WANDER * sharpness * sqrt(flight_seconds());
+    double heading = target->direction + wander * sqrt(3.0) * (2 * random_unit() - 1);
+
+    vector_t boundary = firefly_edge_vector(target);
+    vector_t pointer = pointer_push(target, FIREFLY_LANTERN * firefly_spacing());
+    double keep_apart = FIREFLY_PUSH_APART * config.separation / DEFAULT_SEPARATION_W;
+    double lean = target->y < screen.height / 3.0 ? 1 - target->y / (screen.height / 3.0) : 0;
+    double x = cos(heading) + apart.x * keep_apart + together.x * FIREFLY_PULL_TOGETHER +
+               boundary.x * config.boundary + pointer.x * MOUSE_WEIGHT;
+    double y = sin(heading) + apart.y * keep_apart + together.y * FIREFLY_PULL_TOGETHER +
+               boundary.y * config.boundary + pointer.y * MOUSE_WEIGHT + lean * lean * FIREFLY_MEADOW;
+    return x == 0 && y == 0 ? target->direction : normalized_angle(y, x);
+}
+
 /*
  * What decides a bird's shade within the ramp, and it is not a setting: one flock
  * is coloured by heading, and more than one by flock, because those are the two
@@ -2235,6 +2440,62 @@ static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_gr
     }
 }
 
+/* One step of drifting. How far is counted in spacings a second at the pace the
+ * speed slider asks for, so a swarm crosses the screen in about the same time on
+ * any screen: about half a minute at the shipped pace. */
+static void drift_the_fireflies(bird_t *birds, const bird_t *snapshot, const spatial_grid_t *grid) {
+    double step = FIREFLY_DRIFT * firefly_spacing() * (config.pace / DEFAULT_PACE) * frame_seconds;
+    for (int i = 0; i < config.birds; i++) {
+        double direction = firefly_direction(snapshot, grid, i);
+        /* The panel's push is a constraint and not a steer, as it is for a bird. */
+        if (!legend_turn_zone(snapshot[i].x, snapshot[i].y))
+            direction = turn_towards(snapshot[i].direction, direction, turn_limit());
+        birds[i].direction = direction;
+        birds[i].x += step * cos(direction);
+        birds[i].y += step * sin(direction);
+    }
+}
+
+/* What the coupling slider and the sight slider mean here. The push is the
+ * shipped one times the alignment slider's ratio to its default, so the notch
+ * that was a weight of one and a half is a push of one, and the bottom of the
+ * bar is no coupling worth the name. The sight is the perception slider's ratio
+ * to its default times the shipped sight. */
+static fireflies_law_t firefly_law(void) {
+    fireflies_law_t law;
+    law.sight = FIREFLY_SIGHT * firefly_spacing() * config.vision_radius / DEFAULT_VISION_RADIUS;
+    law.push = FIREFLY_PUSH * config.alignment / DEFAULT_ALIGNMENT_W;
+    law.bend = FIREFLY_BEND;
+    law.refractory = FIREFLY_REFRACTORY;
+    return law;
+}
+
+/* The clocks, once a frame: the lantern throws the phases of the ones near it,
+ * every clock runs on, every flash is seen, and each firefly takes the shade its
+ * glow has reached, or none. */
+static void light_the_night(bird_t *birds) {
+    if (fireflies_grow(&night, config.birds, FIREFLY_PERIOD, FIREFLY_SPREAD, random_unit) !=
+        FIREFLIES_OK) {
+        perror("Out of memory");
+        exit(EXIT_FAILURE);
+    }
+    double startled = 1 - exp(-FIREFLY_STARTLE * frame_seconds);
+    double reach = FIREFLY_LANTERN * firefly_spacing();
+    for (int i = 0; i < config.birds; i++) {
+        night.fly[i].x = birds[i].x;
+        night.fly[i].y = birds[i].y;
+        night.fly[i].sky = birds[i].layer;
+        if (!mouse.present) continue;
+        double dx = birds[i].x - mouse.x, dy = birds[i].y - mouse.y;
+        if (dx * dx + dy * dy < reach * reach && random_unit() < startled)
+            fireflies_scatter(&night, i, random_unit());
+    }
+    fireflies_law_t law = firefly_law();
+    fireflies_step(&night, frame_seconds, screen.width, screen.height, &law);
+    int shades = palette_shades();
+    for (int i = 0; i < config.birds; i++) birds[i].shade = fireflies_level(&night, i, shades);
+}
+
 static int bird_placement(const bird_t *bird, kitty_graphics_placement_t *placement) {
     if (bird->x < 0 || bird->y < 0) return 0;
 
@@ -2286,6 +2547,8 @@ static struct {
  * by exactly one cell and nothing rounds. No number: the bar is the readout. */
 static void legend_slider(char *line, size_t size, const char *name, int notch, const char *value,
                           char lower, char raise) {
+    char keys[8] = "   ";
+    if (lower != 0) snprintf(keys, sizeof(keys), "%c/%c", lower, raise); /* A reading has none. */
     char bar[LEGEND_BAR_CELLS * 3 + 1];
     size_t at = 0;
 
@@ -2304,8 +2567,8 @@ static void legend_slider(char *line, size_t size, const char *name, int notch, 
     for (const unsigned char *c = (const unsigned char *)value; *c != '\0'; c++)
         if ((*c & 0xc0) != 0x80) glyphs++;
     int column = LEGEND_VALUE_WIDTH + (int)(bytes - glyphs);
-    snprintf(line, size, "\u2502 %-*s %s %*s  %c/%c \u2502", LEGEND_NAME_WIDTH, name, bar, column,
-             value, lower, raise);
+    snprintf(line, size, "\u2502 %-*s %s %*s  %s \u2502", LEGEND_NAME_WIDTH, name, bar, column,
+             value, keys);
 }
 
 /* Enough decimals to tell one notch from the next, and no more: separation and
@@ -2332,7 +2595,11 @@ static void build_legend(char lines[LEGEND_MAX_ROWS][LEGEND_LINE_MAX]) {
     legend_slider(lines[2], LEGEND_LINE_MAX, "separation", config.separation_notch, value, 's',
                   'S');
     legend_number(value, sizeof(value), config.alignment, 2);
-    legend_slider(lines[3], LEGEND_LINE_MAX, "alignment", config.alignment_notch, value, 'a', 'A');
+    /* Matching neighbours' clocks and not their headings; as a factor on the push
+     * the swarm ships with, like the speed is on its pace. */
+    if (fireflies_mode) snprintf(value, sizeof(value), "%.1f\u00d7", config.alignment / DEFAULT_ALIGNMENT_W);
+    legend_slider(lines[3], LEGEND_LINE_MAX, fireflies_mode ? "coupling" : "alignment",
+                  config.alignment_notch, value, 'a', 'A');
     /* On the panel because it has keys: t and T used to change the banking with
      * nothing on the screen to say what they had done, which is how somebody could
      * turn it to nothing and be left looking at an empty sky. */
@@ -2340,7 +2607,14 @@ static void build_legend(char lines[LEGEND_MAX_ROWS][LEGEND_LINE_MAX]) {
     legend_slider(lines[4], LEGEND_LINE_MAX, "turning", config.turning_notch, value, 't', 'T');
     /* Pixels are whole numbers, so they print as such. */
     snprintf(value, sizeof(value), "%dpx", config.vision_radius);
-    legend_slider(lines[5], LEGEND_LINE_MAX, "perception", config.vision_notch, value, 'p', 'P');
+    /* How far a flash is seen, which is a screen's worth of pixels and not a
+     * bird's: in thousands once it will not fit the column. */
+    if (fireflies_mode) {
+        double sight = firefly_law().sight;
+        snprintf(value, sizeof(value), sight < 1000 ? "%.0fpx" : "%.1fk", sight < 1000 ? sight : sight / 1000);
+    }
+    legend_slider(lines[5], LEGEND_LINE_MAX, fireflies_mode ? "sight" : "perception",
+                  config.vision_notch, value, 'p', 'P');
     /* A factor on the shipped pace, so 1.0 is the flock as it comes. Last, so the
      * rows above keep the places they have always had. */
     snprintf(value, sizeof(value), "%.1f\u00d7", config.pace);
@@ -2350,6 +2624,13 @@ static void build_legend(char lines[LEGEND_MAX_ROWS][LEGEND_LINE_MAX]) {
     if (config.flocks > 1) {
         snprintf(value, sizeof(value), "%.2f\u00d7", config.avoid_notch / 4.0);
         legend_slider(lines[7], LEGEND_LINE_MAX, "avoidance", config.avoid_notch, value, 'g', 'G');
+    }
+    /* What the swarm is doing, which no key sets: the order parameter, as a bar. */
+    if (fireflies_mode) {
+        double order = fireflies_order(&night);
+        snprintf(value, sizeof(value), "%.2f", order);
+        legend_slider(lines[7], LEGEND_LINE_MAX, "sync", (int)(order * LEGEND_BAR_CELLS + 0.5),
+                      value, 0, 0);
     }
 
     /* What the frame costs, always, rather than behind a flag: it was a switch
@@ -2406,6 +2687,21 @@ static kitty_graphics_status_t queue_render_frame(kitty_graphics_t *graphics, co
     if (status == KITTY_GRAPHICS_OK) status = kitty_graphics_delete_all_placements(graphics);
     /* Far birds first and underneath, then the tails, the near birds, the hawks. */
     for (int layer = LAYERS - 1; layer >= 0 && status == KITTY_GRAPHICS_OK; layer--) {
+        /* The bodies of the fireflies that are dark just now, under the ones that
+         * are not. */
+        if (layer == 0 && fireflies_mode) {
+            for (int i = 0; status == KITTY_GRAPHICS_OK && i < config.birds; i++) {
+                if (birds[i].layer != 0 || birds[i].shade >= 0) continue;
+                bird_t body = birds[i];
+                body.x += firefly_body_inset();
+                body.y += firefly_body_inset();
+                kitty_graphics_placement_t placement;
+                if (bird_placement(&body, &placement)) {
+                    placement.image_id = set_image_id(trail_set(0), body.frame);
+                    status = kitty_graphics_place(graphics, &placement);
+                }
+            }
+        }
         if (layer == 0 && config.trails) {
             for (int i = 0; status == KITTY_GRAPHICS_OK && i < config.birds; i += TRAIL_EVERY) {
                 if (birds[i].layer != 0) continue;
@@ -2426,7 +2722,7 @@ static kitty_graphics_status_t queue_render_frame(kitty_graphics_t *graphics, co
             }
         }
         for (int i = 0; status == KITTY_GRAPHICS_OK && i < config.birds; i++) {
-            if (birds[i].layer != layer) continue;
+            if (birds[i].layer != layer || birds[i].shade < 0) continue;
             kitty_graphics_placement_t placement;
             if (bird_placement(&birds[i], &placement))
                 status = kitty_graphics_place(graphics, &placement);
@@ -2538,10 +2834,14 @@ static void fly(bird_t *birds, bird_t *snapshot, spatial_grid_t *grid) {
             spatial_grid_build(grid, config.birds, read_bird_position, snapshot);
         }
         hunt(snapshot);
-        update_birds(birds, snapshot, grid);
+        if (fireflies_mode)
+            drift_the_fireflies(birds, snapshot, grid);
+        else
+            update_birds(birds, snapshot, grid);
     }
     if (steps > 1) set_frame_seconds(whole);
     for (int i = 0; i < config.birds; i++) birds[i].frame = direction_frame(birds[i].direction);
+    if (fireflies_mode) light_the_night(birds);
 }
 
 /* The way out after q: straight up, every one of them, and nothing else steering.
@@ -2730,7 +3030,7 @@ static const option_t OPTIONS[] = {
      "Sliders   0 to 12, as the panel shows them", 0},
 
     {'c', "color", "palette", OPTION_ENUM, &config.palette, 0, 0, PALETTE_NAMES, "RAMP",
-     "theme, ember, ice, acid, matrix, aurora, prism, potion, dusk, ash", "Look", 1},
+     "theme, ember, ice, acid, matrix, aurora, prism, potion, dusk, ash, firefly", "Look", 1},
     {0, "shape", NULL, OPTION_ENUM, &config.shape, 0, 0, SHAPE_NAMES, "NAME",
      "bird, arrow, plane, dot", "Look", 1},
     {0, "sprite", NULL, OPTION_STRING, &sprite_path, 0, 0, NULL, "FILE",
@@ -2746,6 +3046,8 @@ static const option_t OPTIONS[] = {
 
     {0, "matrix", NULL, OPTION_FLAG, &matrix_mode, 0, 0, NULL, NULL, "it is raining birds",
      "Oddities", 0},
+    {0, "fireflies", NULL, OPTION_FLAG, &fireflies_mode, 0, 0, NULL, NULL,
+     "a summer night; they fall into step", "Oddities", 0},
 
     {0, "bench", NULL, OPTION_INT, &bench_frames, 0, 1000000, NULL, "N",
      "run N frames with no terminal, print the numbers, quit", "Output", 0},
@@ -2866,7 +3168,9 @@ static int flying_itself(void) {
 }
 
 static void maybe_drift(void) {
-    if (!flying_itself()) return;
+    /* A swarm left alone is the demonstration; the sliders wandering off by
+     * themselves would only take its coupling away. */
+    if (fireflies_mode || !flying_itself()) return;
     if (clock_state.seconds - last_drift_at < AUTOPILOT_PERIOD) return;
     last_drift_at = clock_state.seconds;
     drift_a_slider();
@@ -2898,6 +3202,7 @@ static void konami_note(char key) {
 
     konami_at = 0;
     memset(konami_seen, 0, sizeof(konami_seen));
+    if (fireflies_mode) return; /* Hawks do nothing to fireflies. */
     config.hawks = MAX_HAWKS;
     place_hawks();
 }
@@ -2977,7 +3282,7 @@ static int handle_input(void) {
                 update_turn_distances();
                 continue;
             case 'k':
-                if (hawk_sets_built && config.hawks < MAX_HAWKS) {
+                if (hawk_sets_built && !fireflies_mode && config.hawks < MAX_HAWKS) {
                     config.hawks++;
                     place_one_hawk(config.hawks - 1);
                 }
@@ -2992,9 +3297,10 @@ static int handle_input(void) {
                 if (config.turning_notch > 0) config.turning_notch--;
                 continue;
             case 'e':
-                config.trails = !config.trails;
+                if (!fireflies_mode) config.trails = !config.trails;
                 continue;
             case '\t':
+                if (fireflies_mode) continue;
                 requested_preset = (requested_preset + 1) % PRESET_COUNT;
                 apply_preset(requested_preset);
                 continue;
@@ -3180,6 +3486,20 @@ static void tint_trail(png_image_t *image, int step) {
     palette_tint(image, palette_shades() / 2);
     fade_alpha(image, TRAIL_ALPHA[step]);
 }
+/* The tails are not drawn on a night, so their sets are the firefly's body. */
+static void tint_body(png_image_t *image, int unused) {
+    (void)unused;
+    const palette_t *chosen = palette();
+    if (sprite_path != NULL || chosen->tints == NULL) {
+        png_tint(image, 70, 70, 70, PNG_TINT_MULTIPLY);
+        return;
+    }
+    const uint8_t *last = chosen->tints[chosen->shades - 1];
+    uint8_t rgb[3];
+    for (int c = 0; c < 3; c++)
+        rgb[c] = (uint8_t)(last[c] + (PICTURE_GROUND[c] - last[c]) * FIREFLY_BODY_FADE + 0.5);
+    png_tint(image, rgb[0], rgb[1], rgb[2], chosen->mode);
+}
 
 static png_status_t rasterise_geometry(const png_image_t *source, png_image_t *frames, int size,
                                        double span, const int *sets, const int *arguments,
@@ -3213,7 +3533,7 @@ static png_status_t rasterise_geometry(const png_image_t *source, png_image_t *f
 /* Before anything is sized from the bird: thirty pixels under every renderer
  * when --size was not given. */
 static void settle_the_bird_size(void) {
-    if (config.bird_size == 0) config.bird_size = DEFAULT_BIRD_SIZE;
+    if (config.bird_size == 0) config.bird_size = fireflies_mode ? FIREFLY_SIZE : DEFAULT_BIRD_SIZE;
 }
 
 static png_status_t rasterise_sprites(png_image_t *frames) {
@@ -3252,15 +3572,13 @@ static png_status_t rasterise_sprites(png_image_t *frames) {
     }
     /* Tails: one geometry, a set a step of fading. */
     if (status == PNG_OK) {
-        int trail_size = (int)(config.bird_size * TRAIL_SIZE + 0.5);
-        if (trail_size < MIN_BIRD_SIZE) trail_size = MIN_BIRD_SIZE;
         int trail_sets[TRAIL_LENGTH], steps[TRAIL_LENGTH];
         for (int step = 0; step < TRAIL_LENGTH; step++) {
             trail_sets[step] = trail_set(step);
             steps[step] = step;
         }
-        status = rasterise_geometry(&source, frames, trail_size, 1.0, trail_sets, steps,
-                                    TRAIL_LENGTH, tint_trail);
+        status = rasterise_geometry(&source, frames, trail_sprite_size(), 1.0, trail_sets, steps,
+                                    TRAIL_LENGTH, fireflies_mode ? tint_body : tint_trail);
     }
     png_image_free(&source);
     return status;
@@ -3293,6 +3611,16 @@ static void compose_onto(png_image_t *canvas, const png_image_t *frames, const b
         memset(canvas->pixels, 0, (size_t)canvas->width * (size_t)canvas->height * 4);
 
     for (int layer = LAYERS - 1; layer >= 0; layer--) {
+        if (layer == 0 && fireflies_mode) {
+            for (int i = 0; i < config.birds; i++) {
+                if (birds[i].layer != 0 || birds[i].shade >= 0) continue;
+                const png_image_t *body =
+                    &frames[trail_set(0) * ROTATION_FRAMES + birds[i].frame % ROTATION_FRAMES];
+                if (body->pixels != NULL)
+                    blend_sprite(canvas, body, (int)birds[i].x + firefly_body_inset(),
+                                 (int)birds[i].y + firefly_body_inset(), with_ground);
+            }
+        }
         if (layer == 0 && config.trails) {
             for (int i = 0; i < config.birds; i += TRAIL_EVERY) {
                 if (birds[i].layer != 0) continue;
@@ -3307,7 +3635,7 @@ static void compose_onto(png_image_t *canvas, const png_image_t *frames, const b
             }
         }
         for (int i = 0; i < config.birds; i++) {
-            if (birds[i].layer != layer) continue;
+            if (birds[i].layer != layer || birds[i].shade < 0) continue; /* Dark: a body, above. */
             int set = flock_set(birds[i].shade % shades, WING_SEQUENCE[birds[i].wing % WING_CYCLE],
                                 birds[i].layer);
             const png_image_t *sprite =
@@ -3372,12 +3700,48 @@ static void usage(FILE *out, const char *program, int everything) {
     if (everything) fputs(KEYS_HELP, out);
 }
 
+/* A night leaves some of the flock's switches with nothing to do. Each is said
+ * once, on stderr, and then does nothing, instead of quietly meaning something
+ * else: hawks leave fireflies alone, there is one swarm, a preset is a flock's
+ * look, a drifter leaves no tail worth drawing, and the rain is another night. */
+static void settle_the_night(void) {
+    if (config.hawks > 0) {
+        fprintf(stderr, "%s: --hawks does nothing with --fireflies\n", program_name);
+        config.hawks = 0;
+    }
+    if (config.flocks > 1) {
+        fprintf(stderr, "%s: --flocks does nothing with --fireflies, which is one swarm\n",
+                program_name);
+        config.flocks = 1;
+    }
+    if (requested_preset >= 0) {
+        fprintf(stderr, "%s: --preset does nothing with --fireflies\n", program_name);
+        requested_preset = -1;
+    }
+    if (config.trails) {
+        fprintf(stderr, "%s: --trails does nothing with --fireflies\n", program_name);
+        config.trails = 0;
+    }
+    if (matrix_mode) {
+        fprintf(stderr, "%s: --matrix does nothing with --fireflies\n", program_name);
+        matrix_mode = 0;
+    }
+}
+
 static void read_options(int argc, char **argv) {
     char error[160];
     if (argc > 0 && argv[0] != NULL) program_name = argv[0];
     name_the_palettes();
     name_the_presets();
     name_the_shapes();
+    /* What a night wants for a default is not what a flock wants, and which one it
+     * is depends on a switch that may come after them on the line. So a value no
+     * option can give stands for "not asked for" while the line is read, and is
+     * settled once it has been. */
+    int shipped_birds = config.birds, shipped_shape = config.shape;
+    int shipped_palette = config.palette;
+    config.birds = 0;
+    config.shape = config.palette = -1;
     options_status_t status =
         options_parse(OPTIONS, OPTION_COUNT, argc, argv, error, sizeof(error));
 
@@ -3403,6 +3767,11 @@ static void read_options(int argc, char **argv) {
         fprintf(stderr, "Try '%s --help'.\n", program_name);
         exit(EXIT_USAGE);
     }
+    if (fireflies_mode) settle_the_night();
+    if (config.birds == 0) config.birds = fireflies_mode ? FIREFLY_COUNT : shipped_birds;
+    if (config.shape < 0) config.shape = fireflies_mode ? shape_named("dot") : shipped_shape;
+    if (config.palette < 0)
+        config.palette = fireflies_mode ? palette_named("firefly") : shipped_palette;
     /* A preset is expanded first so that a slider given after it still wins: the
      * table cannot express that order, so the parser's left to right reading is
      * honoured by putting the broad stroke before the fine ones. */
@@ -3646,6 +4015,7 @@ static int run_cast_recording(void) {
     png_image_free(&text_canvas);
     free_sprites(text_sprites);
     spatial_grid_destroy(&grid);
+    fireflies_destroy(&night);
     free(snapshot);
     free(birds);
     if (!closed) {
@@ -3762,6 +4132,7 @@ static int run_recording(void) {
     png_image_free(&painted);
     if (as_text) cells_destroy(&text_cells);
     spatial_grid_destroy(&grid);
+    fireflies_destroy(&night);
     free(snapshot);
     free(birds);
 
@@ -3832,9 +4203,11 @@ static int run_benchmark(void) {
     printf("ceiling      %.0f fps\n", 1.0 / per_frame);
     printf("bytes/frame  %.0f (%.1f KB)\n", bytes / bench_frames, bytes / bench_frames / 1024.0);
     printf("at %d fps    %.1f MB/s\n", FRAME_RATE, bytes / bench_frames * FRAME_RATE / 1e6);
+    if (fireflies_mode) printf("sync         %.2f\n", fireflies_order(&night));
 
     kitty_graphics_destroy(&graphics);
     spatial_grid_destroy(&grid);
+    fireflies_destroy(&night);
     free(snapshot);
     free(birds);
     return EXIT_SUCCESS;
@@ -4049,6 +4422,7 @@ int main(int argc, char **argv) {
     }
     spatial_grid_destroy(&grid);
     kitty_graphics_destroy(&graphics);
+    fireflies_destroy(&night);
     free(snapshot);
     free(birds);
     return outcome;

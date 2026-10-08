@@ -3,6 +3,7 @@ cbirds
 mkasset
 kitty_graphics_test
 spatial_grid_test
+sky3d_test
 boids_test
 options_test
 png_test

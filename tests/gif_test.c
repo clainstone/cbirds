@@ -241,6 +241,69 @@ static void test_refusals(void) {
     }
 }
 
+/* The table is made from the first frame, and a colour that is not in it yet has
+ * to be asked for: a hawk that flies on later would otherwise be drawn in the
+ * nearest colour there is, and the nearest to red in a frame of greys is grey. */
+static void test_a_reserved_colour_is_in_the_table_whatever_the_frame_shows(void) {
+    enum { W = 64, H = 40 };
+    const char *path = scratch_file("reserved.gif");
+    static const uint8_t RED[][3] = {{255, 60, 72}, {96, 226, 255}};
+    gif_writer_t *writer = NULL;
+    png_image_t frame = {0, 0, NULL};
+    reading_t read;
+
+    assert(png_image_alloc(&frame, W, H) == PNG_OK);
+    /* A frame of several greys and nothing else, with more distinct ones than a
+     * table has room for beside the reserved two, so that a rare colour would be
+     * the first to go. */
+    for (int i = 0; i < W * H; i++) {
+        uint8_t level = (uint8_t)(i * 255 / (W * H));
+        frame.pixels[i * 4 + 0] = frame.pixels[i * 4 + 1] = frame.pixels[i * 4 + 2] = level;
+        frame.pixels[i * 4 + 3] = 255;
+    }
+    assert(gif_open(&writer, path, W, H, 5) == GIF_OK);
+    assert(gif_reserve_colours(writer, NULL, 1) == GIF_ERR_ARGUMENT);
+    assert(gif_reserve_colours(writer, RED, -1) == GIF_ERR_ARGUMENT);
+    assert(gif_reserve_colours(writer, RED, GIF_MAX_RESERVED + 1) == GIF_ERR_ARGUMENT);
+    assert(gif_reserve_colours(writer, RED, 2) == GIF_OK);
+    assert(gif_add_frame(writer, &frame) == GIF_OK);
+    /* Too late once the table is made. */
+    assert(gif_reserve_colours(writer, RED, 1) == GIF_ERR_ARGUMENT);
+    assert(gif_close(writer, NULL, NULL) == GIF_OK);
+
+    assert(read_gif(path, &read));
+    for (size_t wanted = 0; wanted < 2; wanted++) {
+        int found = 0;
+        for (int entry = 0; entry < 256; entry++) {
+            int near = 1;
+            for (int c = 0; c < 3; c++)
+                if (read.palette[entry][c] > RED[wanted][c] + 8 ||
+                    read.palette[entry][c] + 8 < RED[wanted][c])
+                    near = 0;
+            found += near;
+        }
+        assert(found >= 1);
+    }
+    /* And the greys that are in the frame are still there, nearly as they were. */
+    for (size_t i = 0; i < read.pixels; i += 37) {
+        const uint8_t *want = frame.pixels + i * 4;
+        const uint8_t *got = read.palette[read.indices[i]];
+        for (int c = 0; c < 3; c++) assert(got[c] > want[c] - 16 && got[c] < want[c] + 16);
+    }
+    free(read.indices);
+    png_image_free(&frame);
+    remove(path);
+
+    /* Without any, the table is the frame's alone, as it always was. */
+    assert(gif_open(&writer, path, W, H, 5) == GIF_OK);
+    assert(png_image_alloc(&frame, W, H) == PNG_OK);
+    assert(gif_reserve_colours(writer, NULL, 0) == GIF_OK);
+    assert(gif_add_frame(writer, &frame) == GIF_OK);
+    assert(gif_close(writer, NULL, NULL) == GIF_OK);
+    png_image_free(&frame);
+    remove(path);
+}
+
 /* Long runs of one colour are what this program's frames are made of, so they
  * had better compress. */
 static void test_flat_frames_compress(void) {
@@ -270,6 +333,7 @@ int main(void) {
     make_scratch();
     test_round_trip();
     test_refusals();
+    test_a_reserved_colour_is_in_the_table_whatever_the_frame_shows();
     test_flat_frames_compress();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);

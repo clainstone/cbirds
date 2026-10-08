@@ -27,6 +27,13 @@ typedef struct gif_writer gif_writer_t;
 gif_status_t gif_open(gif_writer_t **writer, const char *path, int width, int height,
                       int delay_hundredths);
 
+/* Colours the table must have whatever the first frame shows. The table is built
+ * from the first frame, and a colour that only comes into view later — a hawk that
+ * has not flown on yet — would be drawn in the nearest colour the table has, which
+ * is a red as a grey. At most GIF_MAX_RESERVED, before the first frame. */
+enum { GIF_MAX_RESERVED = 32 };
+gif_status_t gif_reserve_colours(gif_writer_t *writer, const uint8_t (*rgb)[3], int count);
+
 /* RGBA in, alpha ignored: a GIF frame is opaque. */
 gif_status_t gif_add_frame(gif_writer_t *writer, const png_image_t *frame);
 

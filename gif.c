@@ -26,6 +26,8 @@ struct gif_writer {
     size_t written;
     gif_status_t status;
     int have_palette;
+    uint8_t reserved[GIF_MAX_RESERVED][3];
+    int reserved_count;
     uint8_t palette[GIF_COLOURS][3];
     uint8_t bucket_to_index[QUANT_BUCKETS]; /* Nearest palette entry, per bucket. */
     uint8_t *indices;                       /* One frame's worth. */
@@ -90,6 +92,16 @@ static gif_status_t build_palette(gif_writer_t *w, const png_image_t *frame) {
         int bucket = bucket_of(rgb);
         counts[bucket]++;
         for (int c = 0; c < 3; c++) sums[(size_t)bucket * 3 + (size_t)c] += rgb[c];
+    }
+
+    /* A reserved colour counts as a good many pixels of its own, as many as a
+     * frame holds and more, so that it is in the table whatever else is. */
+    enum { RESERVED_WEIGHT = 1 << 22 };
+    for (int i = 0; i < w->reserved_count; i++) {
+        int bucket = bucket_of(w->reserved[i]);
+        counts[bucket] += RESERVED_WEIGHT;
+        for (int c = 0; c < 3; c++)
+            sums[(size_t)bucket * 3 + (size_t)c] += (uint32_t)w->reserved[i][c] * RESERVED_WEIGHT;
     }
 
     /* The top entries by count, chosen by repeated selection: two hundred and
@@ -257,6 +269,15 @@ gif_status_t gif_open(gif_writer_t **out, const char *path, int width, int heigh
     w->delay = delay_hundredths;
     *out = w;
     return w->status;
+}
+
+gif_status_t gif_reserve_colours(gif_writer_t *w, const uint8_t (*rgb)[3], int count) {
+    if (w == NULL || (rgb == NULL && count > 0) || count < 0 ||
+        count > GIF_MAX_RESERVED - w->reserved_count || w->have_palette)
+        return GIF_ERR_ARGUMENT;
+    memcpy(w->reserved[w->reserved_count], rgb, (size_t)count * 3);
+    w->reserved_count += count;
+    return GIF_OK;
 }
 
 gif_status_t gif_add_frame(gif_writer_t *w, const png_image_t *frame) {

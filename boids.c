@@ -1336,7 +1336,7 @@ static const double SIGN_LARGEST_CELL = 2.5;
  * always a flock for it to be a sign in front of; and at most this many to a lit
  * cell, because past four a cell is a smudge. */
 static const double SIGN_WRITER_SHARE = 0.6;
-enum { SIGN_PER_CELL_MAX = 4 };
+enum { SIGN_PER_CELL_MAX = 4, PICTURE_KEPT_MAX = 1024 };
 /* The loop is a seventh of a bird across, and never more than a fifth of the
  * distance between two cells, or the strokes blur into each other; a pixel and a
  * half at least, or there is nothing to see, and six at most. */
@@ -3994,6 +3994,22 @@ static void settle_the_picture(void) {
     if (status != PNG_OK) {
         fprintf(stderr, "%s: %s: %s\n", program_name, picture_path, png_status_string(status));
         exit(EXIT_FAILURE);
+    }
+    /* Kept no larger than a thousand pixels across: the picture is laid out again
+     * whenever the window changes size, and the birds draw it at a fraction of
+     * that. A photograph of forty megapixels would cost a quarter of a second a
+     * time to cut up; this costs fifteen milliseconds, whatever came in. */
+    int longest =
+        picture_image.width > picture_image.height ? picture_image.width : picture_image.height;
+    if (longest > PICTURE_KEPT_MAX) {
+        png_image_t smaller = {0, 0, NULL};
+        int width = (int)((double)picture_image.width * PICTURE_KEPT_MAX / longest + 0.5);
+        int height = (int)((double)picture_image.height * PICTURE_KEPT_MAX / longest + 0.5);
+        if (png_resize(&picture_image, width > 0 ? width : 1, height > 0 ? height : 1, &smaller) ==
+            PNG_OK) {
+            png_image_free(&picture_image);
+            picture_image = smaller;
+        }
     }
     uint8_t colours[MAX_PALETTE_SHADES][3];
     int made = picture_quantise(&picture_image, MAX_PALETTE_SHADES, colours);

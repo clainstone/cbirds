@@ -2757,6 +2757,40 @@ static void test_a_picture_in_black_is_not_a_picture_of_nothing(void) {
     reset_sign_state();
 }
 
+static void test_a_large_picture_is_kept_small(void) {
+    char path[512];
+    reset_sign_state();
+    png_image_t image = {0, 0, NULL};
+    assert(png_image_alloc(&image, 2400, 1200) == PNG_OK);
+    for (int y = 0; y < 1200; y++)
+        for (int x = 0; x < 2400; x++) {
+            uint8_t *pixel = image.pixels + ((size_t)y * 2400 + (size_t)x) * 4;
+            pixel[0] = (uint8_t)(x < 1200 ? 240 : 20);
+            pixel[1] = 60;
+            pixel[2] = (uint8_t)(x < 1200 ? 20 : 240);
+            pixel[3] = (uint8_t)(y < 600 ? 255 : 0);
+        }
+    uint8_t *encoded = NULL;
+    size_t length = 0;
+    assert(png_encode(&image, &encoded, &length) == PNG_OK);
+    png_image_free(&image);
+    scratch_file(path, sizeof(path), "large.png");
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL && fwrite(encoded, 1, length, file) == length && fclose(file) == 0);
+    free(encoded);
+    picture_path = path;
+    settle_the_picture_quietly();
+
+    /* A thousand pixels across, in the same proportions, with the same ink and the
+     * same two colours. */
+    assert(the_sign.kind == SIGN_PICTURE);
+    assert(picture_image.width == PICTURE_KEPT_MAX && picture_image.height == PICTURE_KEPT_MAX / 2);
+    assert(fabs(picture_ink - 0.5) < 0.01);
+    assert(picture_palette.shades == 2);
+    assert(unlink(path) == 0);
+    reset_sign_state();
+}
+
 static void test_a_picture_that_cannot_be_drawn_says_so(void) {
     char good[512], broken[512], empty[512], missing[512];
     reset_sign_state();
@@ -4574,6 +4608,7 @@ int main(void) {
     test_a_picture_gives_every_bird_a_place_and_a_colour();
     test_a_picture_wears_a_ramp_somebody_chose();
     test_a_picture_in_black_is_not_a_picture_of_nothing();
+    test_a_large_picture_is_kept_small();
     test_a_picture_that_cannot_be_drawn_says_so();
     test_a_colour_given_is_told_from_the_default();
     test_a_sign_has_a_bird_as_wide_as_its_cells_unless_it_is_told();

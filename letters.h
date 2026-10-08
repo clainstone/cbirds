@@ -163,6 +163,12 @@ typedef struct {
     size_t limit;           /* Bytes to read at most. */
 } letters_reading_t;
 
+/* How much of the text is fed to the emulator: all of it but the one line feed that
+ * ends it (and the carriage return before that), so that a command's last newline
+ * does not scroll a full screen. Used by the reader and for laying the same bytes
+ * out again. */
+size_t letters_text_end(const uint8_t *bytes, size_t length);
+
 typedef enum {
     LETTERS_READ_ENDED,     /* End of input. */
     LETTERS_READ_QUIET,     /* Silent for the quiet time. */

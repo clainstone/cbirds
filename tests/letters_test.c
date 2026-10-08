@@ -1029,6 +1029,61 @@ static void test_the_bytes_can_be_kept_to_lay_the_text_out_again(void) {
     vt_destroy(&vt);
 }
 
+static void test_the_last_line_feed_does_not_scroll_a_screen_that_the_text_fills(void) {
+    /* Three lines on a screen of three, each ended as a command ends it. A terminal
+     * would push the first one off to make room for the cursor; here there is no
+     * cursor to make room for, and the first line stays. */
+    static const char *const endings[] = {"\n", "\r\n"};
+    for (int e = 0; e < 2; e++) {
+        char text[64];
+        snprintf(text, sizeof(text), "a%sb%sc%s", endings[e], endings[e], endings[e]);
+        int fds[2];
+        assert(pipe(fds) == 0);
+        assert(write(fds[1], text, strlen(text)) == (ssize_t)strlen(text));
+        close(fds[1]);
+        vt_t vt;
+        assert(vt_init(&vt, 10, 3) == 0);
+        letters_reading_t reading = {1.0, 1.0, 5.0, 1 << 20};
+        size_t bytes = 0;
+        assert(letters_read(&vt, fds[0], &reading, &bytes, NULL) == LETTERS_READ_ENDED);
+        assert(bytes == strlen(text)); /* All of it was read, and not all fed. */
+        assert(vt_cell(&vt, 0, 0)->glyph == 'a' && vt_cell(&vt, 0, 2)->glyph == 'c' &&
+               vt.scrolled == 0);
+        close(fds[0]);
+        vt_destroy(&vt);
+    }
+    /* The line feed is held, not lost: more text after it, and it was a line feed. */
+    int fds[2];
+    assert(pipe(fds) == 0);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        close(fds[0]);
+        if (write(fds[1], "a\n", 2) != 2) _exit(1);
+        usleep(300000);
+        if (write(fds[1], "b\nc\n", 4) != 4) _exit(1);
+        _exit(0);
+    }
+    close(fds[1]);
+    vt_t vt;
+    assert(vt_init(&vt, 10, 3) == 0);
+    letters_reading_t reading = {1.0, 2.0, 5.0, 1 << 20};
+    assert(letters_read(&vt, fds[0], &reading, NULL, NULL) == LETTERS_READ_ENDED);
+    assert(vt_cell(&vt, 0, 0)->glyph == 'a' && vt_cell(&vt, 0, 1)->glyph == 'b' &&
+           vt_cell(&vt, 0, 2)->glyph == 'c');
+    close(fds[0]);
+    int status = 0;
+    waitpid(child, &status, 0);
+    vt_destroy(&vt);
+    /* The helper, on its own. */
+    assert(letters_text_end((const uint8_t *)"ab\n", 3) == 2);
+    assert(letters_text_end((const uint8_t *)"ab\r\n", 4) == 2);
+    assert(letters_text_end((const uint8_t *)"ab\n\n", 4) == 3);
+    assert(letters_text_end((const uint8_t *)"ab", 2) == 2 &&
+           letters_text_end((const uint8_t *)"", 0) == 0);
+    assert(letters_text_end((const uint8_t *)"\n", 1) == 0);
+}
+
 int main(void) {
     test_every_glyph_cell_becomes_a_letter_with_its_home_in_the_middle_of_it();
     test_a_letter_carries_the_style_the_command_gave_it();
@@ -1065,6 +1120,7 @@ int main(void) {
     test_a_flood_stops_at_the_byte_limit_and_keeps_the_last_screenful();
     test_input_cut_in_the_middle_of_a_character_is_finished();
     test_the_bytes_can_be_kept_to_lay_the_text_out_again();
+    test_the_last_line_feed_does_not_scroll_a_screen_that_the_text_fills();
     test_a_descriptor_that_is_no_use_is_an_error_and_an_empty_one_is_empty();
     return 0;
 }

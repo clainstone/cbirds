@@ -4119,7 +4119,7 @@ static void test_a_window_that_changes_size_lays_the_text_out_again(void) {
 
 static void test_text_that_does_not_fit_the_screen_it_is_laid_out_on_scrolls(void) {
     /* Forty lines on a screen of twelve: the last twelve are what is there, as they
-     * would be in a terminal that had printed them. */
+     * would be in a terminal that had printed them, less the line feed at the end. */
     static char lines[4096];
     size_t at = 0;
     for (int i = 0; i < 40; i++)
@@ -4129,13 +4129,13 @@ static void test_text_that_does_not_fit_the_screen_it_is_laid_out_on_scrolls(voi
     assert(the_letters.letter[0].glyph == 'l' && the_letters.letter[2].glyph == 'n');
     int found_last = 0, found_first = 0;
     for (int i = 0; i < config.birds; i++) {
-        if (the_letters.letter[i].row == 10 && the_letters.letter[i].glyph == '9') found_last = 1;
+        if (the_letters.letter[i].row == 11 && the_letters.letter[i].glyph == '9') found_last = 1;
         if (the_letters.letter[i].glyph == '0' && the_letters.letter[i + 1].glyph == '1' && i < 8)
             found_first = 1;
     }
     assert(found_last && !found_first);
-    /* Line 39 is on the last row but one: the last line feed made a blank one. */
-    assert(the_letters.letter[config.birds - 1].row == 10);
+    /* Line 39 is on the last row: the line feed that ends it is not a line. */
+    assert(the_letters.letter[config.birds - 1].row == 11);
     world_close(&world);
 }
 

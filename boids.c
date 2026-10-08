@@ -3736,6 +3736,16 @@ static void open_the_keys(void) {
     input_fd = fd;
 }
 
+/* The file --text names, opened, or the reason it cannot be and an end to the run. */
+static int open_the_text_file(void) {
+    int fd = open(text_path, O_RDONLY);
+    if (fd < 0) {
+        fprintf(stderr, "%s: cannot open %s: %s\n", program_name, text_path, strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    return fd;
+}
+
 /* How much of a pipe is read, and for how long. A command that prints and ends is
  * read to its end; one that never ends (tail -f) is read until it has been quiet
  * for a moment, or has gone on long enough, or has sent a megabyte, and the text is
@@ -3753,11 +3763,7 @@ static const letters_reading_t PIPE_READING = {3.0, 1.5, 8.0, 1 << 20};
 static int take_the_text(int cols, int rows, int pipes) {
     int fd = -1, opened = 0;
     if (text_path != NULL && strcmp(text_path, "-") != 0) {
-        fd = open(text_path, O_RDONLY);
-        if (fd < 0) {
-            fprintf(stderr, "%s: cannot open %s: %s\n", program_name, text_path, strerror(errno));
-            exit(EXIT_FAILURE);
-        }
+        fd = open_the_text_file();
         opened = 1;
     } else if (text_path != NULL) {
         if (isatty(STDIN_FILENO)) {
@@ -3839,7 +3845,7 @@ static int reflow_the_letters(bird_t **birds, bird_t **snapshot) {
 
     vt_t vt;
     if (vt_init(&vt, screen.cols, screen.rows) != 0) return 0;
-    vt_feed(&vt, the_text, the_text_length);
+    vt_feed(&vt, the_text, letters_text_end(the_text, the_text_length));
     vt_finish(&vt);
     letters_t fresh;
     int count = letters_build(&fresh, &vt, DEFAULT_CELL_WIDTH, DEFAULT_CELL_HEIGHT, MAX_LETTERS,
@@ -4315,6 +4321,8 @@ int main(int argc, char **argv) {
 
     /* The keys, and then the text, before the terminal is taken: the text is laid
      * out on a screen of the size this one is, and reading it may take a moment. */
+    /* A file that is not there is said first: it is the mistake, and the keys are not. */
+    if (text_path != NULL && strcmp(text_path, "-") != 0) close(open_the_text_file());
     open_the_keys();
     update_screen_dimensions();
     take_the_text(screen.cols, screen.rows, 1);

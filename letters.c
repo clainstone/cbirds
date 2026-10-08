@@ -649,10 +649,19 @@ static double seconds_now(void) {
     return (double)now.tv_sec + (double)now.tv_nsec / 1e9;
 }
 
+size_t letters_text_end(const uint8_t *bytes, size_t length) {
+    if (length > 0 && bytes[length - 1] == '\n') {
+        length--;
+        if (length > 0 && bytes[length - 1] == '\r') length--;
+    }
+    return length;
+}
+
 letters_read_end_t letters_read(vt_t *vt, int fd, const letters_reading_t *reading, size_t *bytes,
                                 uint8_t **raw) {
     static char chunk[READ_CHUNK];
-    size_t total = 0, kept_capacity = 0;
+    size_t total = 0, kept_capacity = 0, held = 0;
+    char held_bytes[2];
     if (raw != NULL) *raw = NULL;
     double started = seconds_now(), first = 0, last = 0;
     letters_read_end_t end = LETTERS_READ_ENDED;
@@ -697,7 +706,14 @@ letters_read_end_t letters_read(vt_t *vt, int fd, const letters_reading_t *readi
         }
         size_t take = (size_t)got;
         if (reading->limit > 0 && total + take > reading->limit) take = reading->limit - total;
-        vt_feed(vt, chunk, take);
+        /* The last line feed of the input is held back until something follows it: a
+         * command ends its last line, and on a screen that it fills to the bottom that
+         * would scroll the top line off for the sake of a line that is not there. */
+        if (held) vt_feed(vt, held_bytes, held);
+        size_t fed = letters_text_end((const uint8_t *)chunk, take);
+        vt_feed(vt, chunk, fed);
+        held = take - fed;
+        memcpy(held_bytes, chunk + fed, held);
         if (raw != NULL) {
             /* The bytes as they came, for laying the text out again on another size of
              * screen. Bounded by the limit like everything else. */

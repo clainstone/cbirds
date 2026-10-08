@@ -4704,7 +4704,6 @@ int main(int argc, char **argv) {
          * from wherever the letters left it, which is the nicest part to watch. */
         if (formation.writing && formation.until >= 0 && clock_state.seconds >= formation.until)
             formation_clear();
-        if (leaving <= 0) sign_advance(birds);
         maybe_drift();
         update_screen_dimensions();
         grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, config.birds);
@@ -4727,6 +4726,9 @@ int main(int argc, char **argv) {
                 exit(EXIT_FAILURE);
             }
         }
+        /* After the flock has the size it is to have, and after the screen is
+         * measured: a sign is laid out for both, and reads every bird of it. */
+        if (leaving <= 0) sign_advance(birds);
         memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
         grid_status = spatial_grid_build(&grid, config.birds, read_bird_position, snapshot);
         if (grid_status != SPATIAL_GRID_OK) {

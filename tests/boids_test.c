@@ -2960,6 +2960,85 @@ static void test_a_sign_records_in_a_gif_and_a_cast(void) {
     reset_sign_state();
 }
 
+/* The whole program, on a terminal of its own, with a sign up and keys that grow
+ * the flock arriving at once: a sign is laid out from every bird of the flock, and
+ * it must be laid out from the flock the keys have made, not the one before them.
+ * It read past the end of the old one, which only the sanitizers could see. */
+static void test_a_sign_survives_the_flock_growing_under_it(void) {
+    const char *runs[][5] = {{"--say", "hi", NULL}, {"--clock", NULL}, {"--picture", NULL}};
+    char picture[512];
+    write_a_picture("grown.png", 1, 255);
+    scratch_file(picture, sizeof(picture), "grown.png");
+    runs[2][1] = picture;
+
+    for (int which = 0; which < 3; which++) {
+        reset_sign_state();
+        int master = posix_openpt(O_RDWR | O_NOCTTY);
+        assert(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0);
+        const char *name = ptsname(master);
+        assert(name != NULL);
+        int terminal = open(name, O_RDWR | O_NOCTTY);
+        assert(terminal >= 0);
+        fflush(NULL);
+        pid_t child = fork();
+        assert(child >= 0);
+        if (child == 0) {
+            alarm(60);
+            int quiet = open("/dev/null", O_WRONLY);
+            if (quiet < 0 || dup2(terminal, STDIN_FILENO) < 0 ||
+                dup2(terminal, STDOUT_FILENO) < 0 || dup2(quiet, STDERR_FILENO) < 0)
+                _exit(99);
+            terminal_is_raw = terminal_restored = alt_screen_is_on = sprites_uploaded = 0;
+            /* A named colour, so that no query for the terminal's own is waiting to
+             * swallow the keys. */
+            char *argv[] = {"cbirds",
+                            "--unlock-fps",
+                            "--frames",
+                            "150",
+                            "--color",
+                            "ember",
+                            "-n",
+                            "60",
+                            "--seed",
+                            "3",
+                            (char *)runs[which][0],
+                            (char *)runs[which][1],
+                            NULL};
+            _exit(cbirds_application_main(runs[which][1] != NULL ? 12 : 11, argv));
+        }
+        close(terminal);
+        /* The keys wait until the program has taken the screen: putting the terminal
+         * in raw mode throws away what was typed before. */
+        int status = 0, typed = 0;
+        size_t seen = 0;
+        char drain[4096], screen_taken[] = ALT_SCREEN_ON;
+        for (;;) {
+            struct pollfd wait = {.fd = master, .events = POLLIN};
+            if (poll(&wait, 1, 100) > 0) {
+                ssize_t got = read(master, drain, sizeof(drain));
+                if (got <= 0) break;
+                for (ssize_t i = 0; i < got && !typed; i++) {
+                    seen = drain[i] == screen_taken[seen] ? seen + 1 : (drain[i] == '\033' ? 1 : 0);
+                    if (seen == sizeof(screen_taken) - 1) {
+                        assert(write(master, "+++++++-+", 9) == 9);
+                        typed = 1;
+                    }
+                }
+            }
+            if (waitpid(child, &status, WNOHANG) == child) {
+                child = -1;
+                break;
+            }
+        }
+        assert(typed);
+        if (child > 0) assert(waitpid(child, &status, 0) == child);
+        assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS);
+        close(master);
+    }
+    assert(unlink(picture) == 0);
+    reset_sign_state();
+}
+
 static void test_presets_set_every_notch(void) {
     reset_test_config();
     /* Each preset names a whole look, so every one of them has to move at least
@@ -4613,6 +4692,7 @@ int main(void) {
     test_a_colour_given_is_told_from_the_default();
     test_a_sign_has_a_bird_as_wide_as_its_cells_unless_it_is_told();
     test_a_sign_records_in_a_gif_and_a_cast();
+    test_a_sign_survives_the_flock_growing_under_it();
     test_presets_set_every_notch();
     test_a_notch_survives_the_round_trip();
     test_the_pointer_moves_the_flock();

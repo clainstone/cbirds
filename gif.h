@@ -27,6 +27,16 @@ typedef struct gif_writer gif_writer_t;
 gif_status_t gif_open(gif_writer_t **writer, const char *path, int width, int height,
                       int delay_hundredths);
 
+/*
+ * Colours that are not in the first frame and will be in later ones, which the
+ * palette takes before it counts anything: a colour that only appears after the
+ * first frame is otherwise drawn in the nearest one that does, and the one thing
+ * a clip was made to show comes out grey. Up to GIF_RESERVED_MAX of them, before
+ * the first frame; with none, the palette is exactly what the first frame makes.
+ */
+enum { GIF_RESERVED_MAX = 16 };
+gif_status_t gif_reserve_colours(gif_writer_t *writer, const uint8_t (*colours)[3], int count);
+
 /* RGBA in, alpha ignored: a GIF frame is opaque. */
 gif_status_t gif_add_frame(gif_writer_t *writer, const png_image_t *frame);
 

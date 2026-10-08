@@ -26,6 +26,7 @@
 #include "png.h"
 #include "spatial_grid.h"
 #include "sprite_png.h"
+#include "waves.h"
 
 enum {
     /* Sixty rotations, six degrees apart. It was ninety, and at four degrees a
@@ -414,6 +415,7 @@ typedef struct {
     int wing;  /* Where in the beat it is: an index into WING_SEQUENCE. */
     double wing_clock;
     double gliding; /* Seconds of wings held out and still. */
+    int alarmed;    /* Swerving in an escape wave, which is what makes it light. */
     double trail_x[TRAIL_LENGTH], trail_y[TRAIL_LENGTH];
     int trail_at, trail_held;
 } bird_t;
@@ -519,6 +521,11 @@ static cells_style_t text_style(void) {
 static struct {
     int present;
     double x, y;
+    /* How fast it is going, in pixels a second on the clock, read over a short
+     * stretch of reports because one is a cell and a cell is a lot of pixels. */
+    double velocity_x, velocity_y;
+    double anchor_x, anchor_y, anchor_at; /* Where, and when, the last stretch began. */
+    double moved_at;                      /* The last report. */
 } mouse;
 
 /* A monotonic clock for everything that animates on its own: the frame counter
@@ -542,6 +549,11 @@ static double frame_seconds = 1.0 / FRAME_RATE;
 static double flight_seconds(void) {
     return frame_seconds * config.pace;
 }
+
+/* How far a bird flies in a second of flight, at the screen it is on: the same
+ * as config.base_speed over the frame, kept as a figure of its own because the
+ * frame can be of no length at all. */
+static double flight_pixels_per_second = DEFAULT_SPEED * FRAME_RATE;
 
 /* Paused holds the simulation still but keeps drawing and reading keys, so the
  * panel still answers and a single step is possible. Stepping is one frame of
@@ -759,6 +771,9 @@ static void update_screen_dimensions(void) {
  */
 static uint8_t theme_tints[5][3];
 static int theme_is_known;
+/* And the terminal's background, which is what a light has to stand clear of
+ * when the terminal is a light one. Until it is asked, the picture's ground. */
+static uint8_t theme_ground[3] = {18, 18, 24};
 
 static int parse_osc_colour(const char *reply, uint8_t rgb[3]) {
     const char *at = strstr(reply, "rgb:");
@@ -833,6 +848,7 @@ static int learn_the_theme(void) {
         /* No background: fade towards black, which is the common case. */
         background[0] = background[1] = background[2] = 0;
     }
+    memcpy(theme_ground, background, sizeof(theme_ground));
     /* Entries one to six are the terminal's own reds through cyans, which is
      * where a colour scheme keeps its character. The most saturated of them is
      * not always the one to take: on stock xterm that is pure blue on black,
@@ -1017,6 +1033,32 @@ static void hawk_tint(png_image_t *image) {
     png_tint(image, colour[0], colour[1], colour[2], PNG_TINT_REPLACE);
 }
 
+/* A bird in an escape wave is lit, and what it is lit in has to stand clear of
+ * everything else on the screen: the ramp, the hawk, and the ground. White is
+ * the first choice, because it is light, and is taken wherever it stands clear.
+ * On ice and ash it does not, since their palest shade is already nearly white
+ * and a fifth of the flock wears it, and a lit bird that looks like an unlit one
+ * is no wave; there the next candidate that stands clear is taken, and where none
+ * does, the one that stands furthest. Prism has a cream hawk, which white is
+ * too near, and pale ice is the one that is not.
+ *
+ * The ground has to show it too, which is a matter of how bright it is against
+ * the ground and not of how different a colour it is: on the terminal's own
+ * colours the ground can be a light one, and then the light of a wave is dark. */
+static const uint8_t HIGHLIGHT_COLOURS[][3] = {
+    {255, 255, 255}, /* White. */
+    {255, 244, 200}, /* Cream. */
+    {255, 226, 120}, /* Gold: against the cold ramps, which are pale at one end. */
+    {206, 240, 255}, /* Pale ice, for a hawk that is already cream. */
+    {200, 255, 215}, /* Mint. */
+    {255, 214, 230}, /* Blush. */
+    {226, 212, 255}, /* Lilac. */
+    {28, 28, 36},    /* Ink, for a ground that is light. */
+};
+enum { HIGHLIGHT_COLOUR_COUNT = sizeof(HIGHLIGHT_COLOURS) / sizeof(*HIGHLIGHT_COLOURS) };
+static const double HIGHLIGHT_CLEARANCE = 140.0;
+static const double HIGHLIGHT_CONTRAST = 3.0; /* Against the ground, as a reader would ask. */
+
 /* Shade zero of a tinted palette is still a tint: the list is the whole ramp. */
 static void palette_tint(png_image_t *image, int shade) {
     const palette_t *chosen = palette();
@@ -1026,6 +1068,36 @@ static void palette_tint(png_image_t *image, int shade) {
     if (shade >= chosen->shades) shade = chosen->shades - 1;
     png_tint(image, chosen->tints[shade][0], chosen->tints[shade][1], chosen->tints[shade][2],
              chosen->mode);
+}
+
+static const uint8_t *highlight_colour(void) {
+    const palette_t *chosen = palette();
+    const uint8_t *hawk = hawk_colour();
+    int best = 0;
+    double best_gap = -1;
+    for (int candidate = 0; candidate < HIGHLIGHT_COLOUR_COUNT; candidate++) {
+        const uint8_t *colour = HIGHLIGHT_COLOURS[candidate];
+        int shows = contrast_between(colour, theme_ground) >= HIGHLIGHT_CONTRAST;
+        double gap = colour_distance(colour, hawk);
+        /* Somebody's own artwork has no ramp to stand clear of, only the hawk. */
+        for (int shade = 0; sprite_path == NULL && shade < chosen->shades; shade++) {
+            const uint8_t *tint = chosen->tints != NULL ? chosen->tints[shade] : SPRITE_OWN_COLOUR;
+            double against = colour_distance(colour, tint);
+            if (against < gap) gap = against;
+        }
+        if (!shows) gap -= 1000; /* Whatever else it is, it is not seen. */
+        if (gap >= HIGHLIGHT_CLEARANCE) return colour;
+        if (gap > best_gap) {
+            best_gap = gap;
+            best = candidate;
+        }
+    }
+    return HIGHLIGHT_COLOURS[best];
+}
+
+static void highlight_tint(png_image_t *image) {
+    const uint8_t *colour = highlight_colour();
+    png_tint(image, colour[0], colour[1], colour[2], PNG_TINT_REPLACE);
 }
 
 /* Twice a bird: a hawk has to read as the bigger thing at a glance, at the
@@ -1447,6 +1519,7 @@ typedef struct {
     double passing;    /* Seconds left of a straight run out of the flock. */
     int wing;          /* A hawk soars, wings out, and beats them only in the dive. */
     double wing_clock;
+    int diving; /* In the dive or the pass out of it: what sets a wave off. */
 } hawk_t;
 
 static hawk_t hawks[MAX_HAWKS];
@@ -1461,7 +1534,10 @@ static int hawk_sets_built;
  * Kitty image id is the set's position times ROTATION_FRAMES plus the frame,
  * plus one, because zero is not an id.
  */
-enum { MAX_SPRITE_SETS = MAX_PALETTE_SHADES * (WING_PHASES + 1) + WING_PHASES + TRAIL_LENGTH };
+enum {
+    MAX_SPRITE_SETS =
+        MAX_PALETTE_SHADES * (WING_PHASES + 1) + WING_PHASES + TRAIL_LENGTH + WING_PHASES
+};
 
 static int flock_set(int shade, int wing, int layer) {
     if (layer > 0) return palette_shades() * WING_PHASES + shade;
@@ -1476,8 +1552,14 @@ static int trail_set(int step) {
     return palette_shades() * (WING_PHASES + 1) + WING_PHASES + step;
 }
 
+/* A bird in an escape wave, at one wing phase: after everything else, so no set
+ * that was there before has moved. */
+static int alarm_set(int wing) {
+    return trail_set(TRAIL_LENGTH) + wing;
+}
+
 static int sprite_set_count(void) {
-    return trail_set(TRAIL_LENGTH);
+    return alarm_set(WING_PHASES);
 }
 
 static uint32_t set_image_id(int set, int frame) {
@@ -1485,8 +1567,9 @@ static uint32_t set_image_id(int set, int frame) {
 }
 
 static uint32_t sprite_image_id(const bird_t *bird) {
-    return set_image_id(flock_set(bird->shade, WING_SEQUENCE[bird->wing % WING_CYCLE], bird->layer),
-                        bird->frame);
+    int wing = WING_SEQUENCE[bird->wing % WING_CYCLE];
+    if (bird->alarmed && bird->layer == 0) return set_image_id(alarm_set(wing), bird->frame);
+    return set_image_id(flock_set(bird->shade, wing, bird->layer), bird->frame);
 }
 
 /* A tail's ghost, or on a night a firefly's body: smaller than the bird, and drawn
@@ -1516,6 +1599,7 @@ static void place_one_hawk(int i) {
     hawks[i].passing = 0;
     hawks[i].wing = 0;
     hawks[i].wing_clock = 0;
+    hawks[i].diving = 0;
 }
 
 static void place_hawks(void) {
@@ -1744,6 +1828,7 @@ static void hunt(const bird_t *birds) {
         }
 
         double pace = HAWK_SPEED;
+        hawk->diving = hawk->passing > 0;
         vector_t apart = hawk_spacing(i);
         vector_t wall = hawk_wall_vector(hawk);
         double want_x = apart.x * HAWK_APART + wall.x * HAWK_WALL;
@@ -1751,7 +1836,10 @@ static void hunt(const bird_t *birds) {
         if (hawk->prey >= 0) {
             const bird_t *prey = &birds[hawk->prey];
             double gap = distance_to_bird(birds, hawk, hawk->prey);
-            if (gap < HAWK_DIVE) pace = HAWK_DIVE_SPEED;
+            if (gap < HAWK_DIVE) {
+                pace = HAWK_DIVE_SPEED;
+                hawk->diving = 1;
+            }
             /* It soars until the dive, and then it beats. */
             if (gap < HAWK_DIVE || hawk->passing > 0) {
                 hawk->wing_clock += WING_HZ * WING_CYCLE * frame_seconds;
@@ -1847,6 +1935,309 @@ static vector_t hawk_vector(const bird_t *bird) {
         force.x += strength * (away_x + HAWK_SWIRL * side_x);
         force.y += strength * (away_y + HAWK_SWIRL * side_y);
     }
+    return force;
+}
+
+/*
+ * Escape waves.
+ *
+ * A hawk coming down on a flock does not frighten the whole of it at once. The
+ * birds in its way see it and swerve; the birds beside them see them swerve and
+ * swerve too, a moment later and in the same way; and the turn runs through the
+ * flock as a band, faster than any one bird flies. That band is the most
+ * striking thing a murmuration does, so it is drawn: a bird in the middle of a
+ * swerve is lit.
+ *
+ * The scale is the program's, not a starling's. A bird here covers two thousand
+ * four hundred pixels in a second of flight, which is its whole perception
+ * radius in fifteen milliseconds, so a reaction time of a tenth of a second is
+ * two hundred and forty pixels of flight: a wave that waits that long for every
+ * hop of a perception radius moves at 360 pixels a second, a seventh of the
+ * birds' own speed, and is left behind by the flock it is meant to cross. The reaction time is
+ * therefore not a figure but a consequence: a wave runs WAVE_PACE times as fast as a bird flies,
+ * whatever the screen, the pace or the frame rate, and the time a bird takes to follow what it saw
+ * is the time that takes over the distance. Measured on a flock of three hundred, settled and then
+ * held still with one bird alarmed, the front crosses it at 3.2 to 3.5 times the birds' speed,
+ * and 3.1 to 3.3 along a line of birds, where the farthest bird in sight is a little short of the
+ * edge of it.
+ *
+ * It is told as it happens, inside the step, rather than a hop a frame: with the
+ * reaction time shorter than a frame a hop a frame would make the wave as fast
+ * as the frame rate, and the same flock would be crossed in half the time at
+ * thirty frames a second as at sixty. Done in order of time, which is what the
+ * heap below is for, it crosses the same pixels a second at any rate: a flock of
+ * two hundred, held still, is crossed at the same moment bird for bird at twenty
+ * five frames a second, thirty and sixty. Told in the order the birds were found
+ * instead, the worst of them began three milliseconds of flight out between
+ * thirty and sixty.
+ *
+ * A bird sees a swerve WAVE_SIGHT times as far as it feels its neighbours.
+ * At the perception radius alone a wave stopped at the first gap, and a flock of
+ * three hundred in a small terminal is several patches with gaps between them: a
+ * wave reached 56% of the flock, on average over thirty seeds, where at one and a
+ * half times it reached 78%, at twice 87%, at two and a half 95% and at three no
+ * more than that. A swerve is a big movement, and a bird watches the sky more
+ * than it watches its neighbours.
+ *
+ * What it does is turn, through SWERVE_ANGLE and for SWERVE_SECONDS, harder than
+ * its banking would let it: three times as hard. The turn is the one the bird it
+ * saw made, so a wave carries a direction as well as a bird, and that is what
+ * makes it a wave and not a burst: every bird that sees a hawk and runs from it
+ * runs its own way, and every bird that sees a bird swerve swerves with it. The
+ * birds the hawk alarms itself turn away from its line, to whichever side they
+ * are on. The flock is otherwise as it was: at the hero's size, over twenty
+ * seeds, 1.05% of the birds were off the screen with hawks and no waves and
+ * 1.13% with them, and a hawk struck as often: 6.1 times in eight seconds
+ * against 6.4.
+ *
+ * A bird that has swerved is deaf to the next for WAVE_REFRACTORY, or the wave
+ * would come back through the birds it had just crossed. It has to be longer than
+ * it looks: a wave does not die at the far side of a flock, it finds a bird whose
+ * rest has run out and goes round. At half a second, in the hero's flock, every
+ * bird was alarmed five times over and the wave never stopped; at a second one
+ * bird in seventeen was alarmed twice; at a second and a half, none. It
+ * is three here, on the clock rather than in flight,
+ * so that it is the same at any pace and a fast flock does not flash faster.
+ * With a hawk in the sky a bird comes out of its rest into a fresh dive almost at
+ * once, and at a second and a half the hero's flock was lit four times in eight
+ * seconds against twice at three: a light that flickers, where a wave every few
+ * strikes is something happening.
+ *
+ * The letters of the intro are never alarmed: a bird writing has somewhere to be,
+ * and the writing is the one thing the hawks cannot spoil. A bird in the far sky
+ * is never alarmed, for the same reason it is never hunted, and does not alarm
+ * those in the near one. Birds of other flocks are watched as far as they are
+ * kin, which is what the avoidance slider says: at the default none, so a wave
+ * stays in its own flock and the colours still tell three flocks apart, where
+ * letting it cross lit all three at once, and at the bottom, where they are one
+ * flock in three colours, all of them.
+ */
+static const double ALARM_SHARE = 0.6; /* Of hawk_reach(): 90 pixels, the dive's own. */
+static const double ALARM_CONE = 0.5;  /* Cosine of the angle ahead of a hawk that is not diving. */
+static const double WAVE_PACE = 3.5;
+static const double WAVE_SIGHT = 2.5;
+static const double SWERVE_SECONDS = 0.03;
+static const double SWERVE_ANGLE = 55.0 * M_PI / 180.0;
+static const double SWERVE_TURN = 3.0;
+static const double WAVE_REFRACTORY = 3.0; /* Seconds on the clock. */
+/* Against the sum of the flocking terms, which is a handful at most: enough to
+ * settle a bird on the heading it was told to take, as the edges at the very
+ * edge of the screen are not enough to take it off. */
+static const double SWERVE_WEIGHT = 8.0;
+
+static wave_t waves[MAX_BIRDS];
+/* Whether any bird has anything going on, so that a flock that was never
+ * alarmed pays for none of it. */
+static int waves_in_flight;
+
+/* Who has begun to swerve in this step, and when in it: what a test can look at,
+ * and what a recording could be asked. A bird is on the list at most once a step,
+ * because it can only begin once. */
+typedef struct {
+    int bird;
+    double at;
+} wave_task_t;
+static wave_task_t wave_tasks[MAX_BIRDS];
+static int wave_task_count;
+
+/*
+ * The birds that will begin to swerve before this step is over, soonest first.
+ *
+ * A bird begins when it is its turn, and what it tells the birds it can see
+ * reaches them later than it began, never sooner, so taking them in order of when
+ * they begin gives every bird the first thing that could have reached it, whatever
+ * the step is: a wave told in the order it was found would be told something
+ * different at thirty frames a second from at sixty, because a bird found first
+ * is not always a bird that began first. A heap on the wait each bird has, with
+ * each bird's place in it, so that a bird told something sooner than it was is
+ * moved up and not put in twice.
+ */
+static int wave_heap[MAX_BIRDS];
+static int wave_heap_place[MAX_BIRDS]; /* Where a bird is in it, or minus one. */
+static int wave_heap_count;
+
+static void wave_heap_swap(int i, int j) {
+    int bird = wave_heap[i];
+    wave_heap[i] = wave_heap[j];
+    wave_heap[j] = bird;
+    wave_heap_place[wave_heap[i]] = i;
+    wave_heap_place[wave_heap[j]] = j;
+}
+
+static void wave_heap_up(int at) {
+    while (at > 0 && waves[wave_heap[at]].wait < waves[wave_heap[(at - 1) / 2]].wait) {
+        wave_heap_swap(at, (at - 1) / 2);
+        at = (at - 1) / 2;
+    }
+}
+
+static void wave_heap_down(int at) {
+    for (;;) {
+        int soonest = at, left = 2 * at + 1, right = left + 1;
+        if (left < wave_heap_count && waves[wave_heap[left]].wait < waves[wave_heap[soonest]].wait)
+            soonest = left;
+        if (right < wave_heap_count &&
+            waves[wave_heap[right]].wait < waves[wave_heap[soonest]].wait)
+            soonest = right;
+        if (soonest == at) return;
+        wave_heap_swap(at, soonest);
+        at = soonest;
+    }
+}
+
+/* A bird that is not in it goes in; one that is has been told something sooner. */
+static void wave_heap_add(int bird) {
+    if (wave_heap_place[bird] < 0) {
+        wave_heap_place[bird] = wave_heap_count;
+        wave_heap[wave_heap_count++] = bird;
+    }
+    wave_heap_up(wave_heap_place[bird]);
+}
+
+static int wave_heap_take(void) {
+    int bird = wave_heap[0];
+    wave_heap_swap(0, --wave_heap_count);
+    wave_heap_place[bird] = -1;
+    wave_heap_down(0);
+    return bird;
+}
+
+/* A bird is told `swerve` at `at` seconds into the step of `seconds`: it will
+ * begin then, if that is inside the step and nothing has told it sooner. */
+static void tell_the_bird(int index, double swerve, double at, double seconds) {
+    if (wave_catch(&waves[index], swerve, at) && waves[index].wait <= seconds) wave_heap_add(index);
+}
+
+static int bird_can_be_alarmed(const bird_t *bird, int index) {
+    double unused_x, unused_y;
+    if (bird->layer > 0) return 0;
+    if (formation_target_of(index, &unused_x, &unused_y)) return 0;
+    return wave_catchable(&waves[index]) || wave_waiting(&waves[index]);
+}
+
+/* How long a bird takes to follow what it has seen at `distance`, out of the
+ * most it can see: half of the reaction time for what is under its wing and the
+ * whole of it for what is at the edge of its sight, and that whole is the time a
+ * wave takes to cover its sight at WAVE_PACE times the pace a bird flies at.
+ * Without the difference every bird a step away follows on the same step, and
+ * the front of a wave moves in jerks of that many pixels instead of running. */
+static double reaction_time(double distance, double sight) {
+    return (sight + distance) / (2.0 * WAVE_PACE * flight_pixels_per_second);
+}
+
+/* The turn a bird makes to get out of the way of something coming along
+ * `direction`: towards the side of that line it is on. */
+static double swerve_away_from(const bird_t *bird, double x, double y, double direction) {
+    double side = cos(direction) * (bird->y - y) - sin(direction) * (bird->x - x);
+    return side < 0 ? -SWERVE_ANGLE : SWERVE_ANGLE;
+}
+
+/* A hawk, or anything else that comes down on the flock: the birds within
+ * `radius` of it are told if it is coming at them, and all of them if it is
+ * diving. Closer is sooner. */
+static void alarm_the_birds_near(const bird_t *birds, double x, double y, double direction,
+                                 int diving, double radius) {
+    for (int i = 0; i < config.birds; i++) {
+        double dx = birds[i].x - x, dy = birds[i].y - y;
+        double squared = dx * dx + dy * dy;
+        if (squared >= radius * radius || !bird_can_be_alarmed(&birds[i], i)) continue;
+        double distance = sqrt(squared);
+        if (!diving && dx * cos(direction) + dy * sin(direction) <= ALARM_CONE * distance) continue;
+        wave_catch(&waves[i], swerve_away_from(&birds[i], x, y, direction),
+                   reaction_time(distance, radius));
+    }
+}
+
+/* The pointer, whipped through the flock, is a hawk to the birds it is going
+ * through, and sets a wave off the same way: a swipe across the screen and not a
+ * drift. Fast is a number of cells a second, because the terminal reports cells,
+ * and moving is the last report being recent, because it reports nothing when
+ * the pointer is still. */
+static const double POINTER_STARTLE_CELLS = 80.0;
+static const double POINTER_SPAN = 0.03;
+static const double POINTER_RECENT = 0.1;
+
+static int pointer_startles(void) {
+    if (!mouse.present || clock_state.seconds - mouse.moved_at > POINTER_RECENT) return 0;
+    double speed = sqrt(mouse.velocity_x * mouse.velocity_x + mouse.velocity_y * mouse.velocity_y);
+    return speed >= POINTER_STARTLE_CELLS * screen.cell_width;
+}
+
+/* A bird that has begun to swerve tells everyone it can see. */
+static void tell_the_neighbours(const bird_t *birds, const spatial_grid_t *grid, int source,
+                                double at, double seconds) {
+    const bird_t *from = &birds[source];
+    double sight = WAVE_SIGHT * config.vision_radius;
+    int cells = (int)ceil(sight / SPATIAL_CELL_SIZE);
+    int center_x, center_y;
+    spatial_grid_cell_for_position(grid, from->x, from->y, &center_x, &center_y);
+    int min_x = center_x - cells, max_x = center_x + cells;
+    int min_y = center_y - cells, max_y = center_y + cells;
+    if (min_x < 0) min_x = 0;
+    if (min_y < 0) min_y = 0;
+    if (max_x >= grid->columns) max_x = grid->columns - 1;
+    if (max_y >= grid->rows) max_y = grid->rows - 1;
+    for (int cell_y = min_y; cell_y <= max_y; cell_y++) {
+        for (int cell_x = min_x; cell_x <= max_x; cell_x++) {
+            int cell = cell_y * grid->columns + cell_x;
+            for (int slot = grid->offsets[cell]; slot < grid->offsets[cell + 1]; slot++) {
+                int i = grid->indices[slot];
+                if (i == source || birds[i].layer != from->layer) continue;
+                if (birds[i].flock != from->flock && config.avoid_kinship <= 0) continue;
+                double dx = from->x - birds[i].x, dy = from->y - birds[i].y;
+                double squared = dx * dx + dy * dy;
+                if (squared >= sight * sight || !bird_can_be_alarmed(&birds[i], i)) continue;
+                tell_the_bird(i, waves[source].swerve, at + reaction_time(sqrt(squared), sight),
+                              seconds);
+            }
+        }
+    }
+}
+
+/* One step of alarm: the clocks, the hawks and the pointer that set a wave off,
+ * and the wave itself as far as it gets in the time the step covers. Every wait
+ * is counted from the start of the step while it is run, and what has not run
+ * out by the end is carried into the next. */
+static void spread_the_alarm(const bird_t *birds, const spatial_grid_t *grid) {
+    double seconds = flight_seconds();
+    int startled = pointer_startles();
+    if (config.hawks == 0 && !waves_in_flight && !startled) return;
+
+    wave_task_count = 0;
+    for (int i = 0; i < config.birds; i++) wave_advance(&waves[i], seconds);
+    for (int h = 0; h < config.hawks; h++)
+        alarm_the_birds_near(birds, hawks[h].x, hawks[h].y, hawks[h].direction, hawks[h].diving,
+                             ALARM_SHARE * hawk_reach());
+    if (startled)
+        alarm_the_birds_near(birds, mouse.x, mouse.y, atan2(mouse.velocity_y, mouse.velocity_x), 1,
+                             ALARM_SHARE * MOUSE_REACH);
+    wave_heap_count = 0;
+    for (int i = 0; i < config.birds; i++) {
+        wave_heap_place[i] = -1;
+        if (waves[i].wait > 0 && waves[i].wait <= seconds) wave_heap_add(i);
+    }
+    while (wave_heap_count > 0) {
+        int bird = wave_heap_take();
+        double at = waves[bird].wait;
+        wave_begin(&waves[bird], birds[bird].direction, seconds - at, SWERVE_SECONDS,
+                   WAVE_REFRACTORY * config.pace);
+        wave_tasks[wave_task_count++] = (wave_task_t){bird, at};
+        tell_the_neighbours(birds, grid, bird, at, seconds);
+    }
+
+    waves_in_flight = 0;
+    for (int i = 0; i < config.birds; i++) {
+        wave_carry(&waves[i], seconds);
+        if (wave_busy(&waves[i])) waves_in_flight = 1;
+    }
+}
+
+/* The swerve as a pull, towards the heading the bird was told to take. */
+static vector_t swerve_vector(int index) {
+    vector_t force = {0, 0};
+    if (waves[index].left <= 0) return force;
+    force.x = cos(waves[index].heading);
+    force.y = sin(waves[index].heading);
     return force;
 }
 
@@ -1991,7 +2382,10 @@ static int resize_the_flock(bird_t **birds, bird_t **snapshot, int from, int to)
         return 0;
     }
     memcpy(grown, *birds, sizeof(**birds) * (size_t)(from < to ? from : to));
-    for (int i = from; i < to; i++) place_one_bird(&grown[i], i);
+    for (int i = from; i < to; i++) {
+        place_one_bird(&grown[i], i);
+        waves[i] = (wave_t){0};
+    }
     free(*birds);
     free(*snapshot);
     *birds = grown;
@@ -2200,6 +2594,7 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
     vector_t leash = leash_vector(target);
     vector_t pointer = pointer_vector(target);
     vector_t hawk = hawk_vector(target);
+    vector_t swerve = swerve_vector(target_index);
     vector_t wind = wind_vector();
     int neighbors = 0, strangers = 0;
     double kin = 0; /* Counted in kinship: a whole bird for its own flock. */
@@ -2281,17 +2676,17 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
         double x = separation.x * config.separation + alignment.x * config.alignment +
                    cohesion.x * COHESION_W + boundary.x * config.boundary + leash.x * LEASH_WEIGHT +
                    pointer.x * MOUSE_WEIGHT + hawk.x * HAWK_WEIGHT + wind.x * WIND_WEIGHT +
-                   wary.x * config.avoid_weight;
+                   wary.x * config.avoid_weight + swerve.x * SWERVE_WEIGHT;
         double y = separation.y * config.separation + alignment.y * config.alignment +
                    cohesion.y * COHESION_W + boundary.y * config.boundary + leash.y * LEASH_WEIGHT +
                    pointer.y * MOUSE_WEIGHT + hawk.y * HAWK_WEIGHT + wind.y * WIND_WEIGHT +
-                   wary.y * config.avoid_weight;
+                   wary.y * config.avoid_weight + swerve.y * SWERVE_WEIGHT;
         return x == 0 && y == 0 ? target->direction : normalized_angle(y, x);
     }
     boundary.x = boundary.x * config.boundary + leash.x * LEASH_WEIGHT + pointer.x * MOUSE_WEIGHT +
-                 hawk.x * HAWK_WEIGHT + wind.x * WIND_WEIGHT;
+                 hawk.x * HAWK_WEIGHT + wind.x * WIND_WEIGHT + swerve.x * SWERVE_WEIGHT;
     boundary.y = boundary.y * config.boundary + leash.y * LEASH_WEIGHT + pointer.y * MOUSE_WEIGHT +
-                 hawk.y * HAWK_WEIGHT + wind.y * WIND_WEIGHT;
+                 hawk.y * HAWK_WEIGHT + wind.y * WIND_WEIGHT + swerve.y * SWERVE_WEIGHT;
     if (boundary.x != 0 || boundary.y != 0) {
         double x = cos(target->direction) + boundary.x;
         double y = sin(target->direction) + boundary.y;
@@ -2466,9 +2861,15 @@ static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_gr
          * is proved on the assumption that a bird can turn away at once. */
         double unused_x, unused_y;
         if (!formation_target_of(i, &unused_x, &unused_y) &&
-            !legend_turn_zone(snapshot[i].x, snapshot[i].y))
-            direction = turn_towards(snapshot[i].direction, direction, turn_limit());
+            !legend_turn_zone(snapshot[i].x, snapshot[i].y)) {
+            /* A swerve is a turn the banking would not allow. */
+            double limit = turn_limit();
+            if (waves[i].left > 0)
+                limit = limit * SWERVE_TURN < 2 * M_PI ? limit * SWERVE_TURN : 2 * M_PI;
+            direction = turn_towards(snapshot[i].direction, direction, limit);
+        }
         birds[i].direction = direction;
+        birds[i].alarmed = waves[i].left > 0;
         /* Never past the target: the last step is the distance left, which is
          * what makes a letter crisp instead of a cloud orbiting one. */
         double step = config.speed * flock_pace(snapshot[i].flock);
@@ -2778,11 +3179,17 @@ static kitty_graphics_status_t queue_render_frame(kitty_graphics_t *graphics, co
             }
         }
         for (int i = 0; status == KITTY_GRAPHICS_OK && i < config.birds; i++) {
-            if (birds[i].layer != layer || birds[i].shade < 0) continue;
+            if (birds[i].layer != layer || birds[i].shade < 0 || birds[i].alarmed) continue;
             kitty_graphics_placement_t placement;
             if (bird_placement(&birds[i], &placement))
                 status = kitty_graphics_place(graphics, &placement);
         }
+    }
+    /* The birds in a wave over the rest of the flock, and under the hawks. */
+    for (int i = 0; status == KITTY_GRAPHICS_OK && i < config.birds; i++) {
+        kitty_graphics_placement_t placement;
+        if (birds[i].alarmed && bird_placement(&birds[i], &placement))
+            status = kitty_graphics_place(graphics, &placement);
     }
     for (int i = 0; status == KITTY_GRAPHICS_OK && i < config.hawks; i++) {
         bird_t as_bird = {.x = hawks[i].x - hawk_draw_offset(),
@@ -2890,10 +3297,14 @@ static void fly(bird_t *birds, bird_t *snapshot, spatial_grid_t *grid) {
             spatial_grid_build(grid, config.birds, read_bird_position, snapshot);
         }
         hunt(snapshot);
-        if (fireflies_mode)
+        if (fireflies_mode) {
+            /* No wave on a night: nothing there is hunted, and the pointer is a
+             * lantern and not a whip. */
             drift_the_fireflies(birds, snapshot, grid);
-        else
+        } else {
+            spread_the_alarm(snapshot, grid);
             update_birds(birds, snapshot, grid);
+        }
     }
     if (steps > 1) set_frame_seconds(whole);
     for (int i = 0; i < config.birds; i++) birds[i].frame = direction_frame(birds[i].direction);
@@ -2941,6 +3352,7 @@ static void update_speed(void) {
     double safe_per_second = shorter / 10.0 * FRAME_RATE;
     if (shorter > 0 && pixels_per_second > safe_per_second) pixels_per_second = safe_per_second;
     config.base_speed = pixels_per_second * frame_seconds;
+    flight_pixels_per_second = pixels_per_second;
     /* The pace multiplies what the screen allows rather than being capped by it,
      * so on a small screen every notch of the slider still does something. */
     config.speed = config.base_speed * config.pace;
@@ -3190,8 +3602,23 @@ static void read_mouse_report(const char *sequence) {
         *at++ != ';' || !read_decimal(&at, &row))
         return;
     if (column < 1 || row < 1) return;
-    mouse.x = (column - 0.5) * screen.cell_width;
-    mouse.y = (row - 0.5) * screen.cell_height;
+    double x = (column - 0.5) * screen.cell_width, y = (row - 0.5) * screen.cell_height;
+    double now = clock_state.seconds;
+    if (!mouse.present) {
+        mouse.anchor_x = x;
+        mouse.anchor_y = y;
+        mouse.anchor_at = now;
+        mouse.velocity_x = mouse.velocity_y = 0;
+    } else if (now - mouse.anchor_at >= POINTER_SPAN) {
+        mouse.velocity_x = (x - mouse.anchor_x) / (now - mouse.anchor_at);
+        mouse.velocity_y = (y - mouse.anchor_y) / (now - mouse.anchor_at);
+        mouse.anchor_x = x;
+        mouse.anchor_y = y;
+        mouse.anchor_at = now;
+    }
+    mouse.moved_at = now;
+    mouse.x = x;
+    mouse.y = y;
     mouse.present = 1;
 }
 
@@ -3534,8 +3961,14 @@ static void far_tint(png_image_t *image, int shade) {
  * does not depend on the colour. */
 typedef void (*tint_fn)(png_image_t *image, int argument);
 
+/* Not a shade of the ramp: the light a bird in a wave is drawn in. */
+enum { LIT_SHADE = -1 };
+
 static void tint_flock(png_image_t *image, int shade) {
-    palette_tint(image, shade);
+    if (shade == LIT_SHADE)
+        highlight_tint(image);
+    else
+        palette_tint(image, shade);
 }
 static void tint_hawk(png_image_t *image, int unused) {
     (void)unused;
@@ -3601,16 +4034,19 @@ static png_status_t rasterise_sprites(png_image_t *frames) {
     png_status_t status = load_sprite(&source);
     if (status != PNG_OK) return status;
     int shades = palette_shades();
-    int sets[MAX_PALETTE_SHADES], arguments[MAX_PALETTE_SHADES];
+    int sets[MAX_PALETTE_SHADES + 1], arguments[MAX_PALETTE_SHADES + 1];
 
-    /* Near birds: one geometry a wing phase, every shade off each. */
+    /* Near birds: one geometry a wing phase, every shade off each, and the same
+     * bird in the light of an escape wave, which costs no rotation of its own. */
     for (int wing = 0; wing < WING_PHASES && status == PNG_OK; wing++) {
         for (int shade = 0; shade < shades; shade++) {
             sets[shade] = flock_set(shade, wing, 0);
             arguments[shade] = shade;
         }
+        sets[shades] = alarm_set(wing);
+        arguments[shades] = LIT_SHADE;
         status = rasterise_geometry(&source, frames, config.bird_size, WING_SPAN[wing], sets,
-                                    arguments, shades, tint_flock);
+                                    arguments, shades + 1, tint_flock);
     }
     /* Far birds: smaller, wings out, dimmed. */
     if (status == PNG_OK) {
@@ -3661,6 +4097,18 @@ static void fill_ground(png_image_t *canvas) {
 /* The same order the live renderer places in: tails, then the flock, then the
  * hawks over the top. On a ground for a picture; on nothing at all for a text
  * terminal, whose own background is the sky and whose cells must not paint it. */
+static void compose_the_wave(png_image_t *canvas, const png_image_t *frames, const bird_t *birds,
+                             int with_ground) {
+    for (int i = 0; i < config.birds; i++) {
+        if (!birds[i].alarmed || birds[i].layer != 0) continue;
+        int set = alarm_set(WING_SEQUENCE[birds[i].wing % WING_CYCLE]);
+        const png_image_t *sprite =
+            &frames[set * ROTATION_FRAMES + birds[i].frame % ROTATION_FRAMES];
+        if (sprite->pixels == NULL) continue;
+        blend_sprite(canvas, sprite, (int)birds[i].x, (int)birds[i].y, with_ground);
+    }
+}
+
 static void compose_onto(png_image_t *canvas, const png_image_t *frames, const bird_t *birds,
                          int with_ground) {
     int shades = palette_shades();
@@ -3668,6 +4116,11 @@ static void compose_onto(png_image_t *canvas, const png_image_t *frames, const b
         fill_ground(canvas);
     else
         memset(canvas->pixels, 0, (size_t)canvas->width * (size_t)canvas->height * 4);
+    /* A picture lays the lit birds over the flock, as a later bird covers an
+     * earlier one. A text terminal keeps the first thing in a cell, so there
+     * they go down first: the cell is read back as the colour that fills most of
+     * it, and a lit bird that loses to the one beside it is not lit. */
+    if (!with_ground) compose_the_wave(canvas, frames, birds, with_ground);
 
     for (int layer = LAYERS - 1; layer >= 0; layer--) {
         if (layer == 0 && fireflies_mode) {
@@ -3694,7 +4147,8 @@ static void compose_onto(png_image_t *canvas, const png_image_t *frames, const b
             }
         }
         for (int i = 0; i < config.birds; i++) {
-            if (birds[i].layer != layer || birds[i].shade < 0) continue; /* Dark: a body, above. */
+            /* Dark: a body, above. Lit by a wave: drawn with the wave. */
+            if (birds[i].layer != layer || birds[i].shade < 0 || birds[i].alarmed) continue;
             int set = flock_set(birds[i].shade % shades, WING_SEQUENCE[birds[i].wing % WING_CYCLE],
                                 birds[i].layer);
             const png_image_t *sprite =
@@ -3703,6 +4157,7 @@ static void compose_onto(png_image_t *canvas, const png_image_t *frames, const b
             blend_sprite(canvas, sprite, (int)birds[i].x, (int)birds[i].y, with_ground);
         }
     }
+    if (with_ground) compose_the_wave(canvas, frames, birds, with_ground);
     for (int i = 0; i < config.hawks; i++) {
         int set = hawk_set(WING_SEQUENCE[hawks[i].wing % WING_CYCLE]);
         const png_image_t *sprite =
@@ -4087,6 +4542,22 @@ static int run_cast_recording(void) {
     return EXIT_SUCCESS;
 }
 
+/* The light of an escape wave is on no first frame, and a GIF's palette is made
+ * from the first frame: so it is asked for, with its edges, which are the light
+ * and the ground in quarters. Only for a clip in which a wave can happen, which
+ * is one with hawks that is longer than the intro, because the letters are never
+ * alarmed: any other clip keeps exactly the palette it always had. */
+static void reserve_the_light(gif_writer_t *gif, double seconds) {
+    if (config.hawks == 0 || seconds <= (formation.writing ? formation.until : 0)) return;
+    const uint8_t *light = highlight_colour();
+    uint8_t colours[4][3];
+    for (int quarter = 0; quarter < 4; quarter++)
+        for (int c = 0; c < 3; c++)
+            colours[quarter][c] =
+                (uint8_t)(light[c] + (PICTURE_GROUND[c] - light[c]) * quarter / 4.0 + 0.5);
+    gif_reserve_colours(gif, (const uint8_t(*)[3])colours, 4);
+}
+
 static int run_recording(void) {
     static png_image_t frames[ROTATION_FRAMES * MAX_SPRITE_SETS];
     png_image_t canvas = {0, 0, NULL};
@@ -4152,6 +4623,7 @@ static int run_recording(void) {
     initialize_birds(birds);
     place_hawks();
     begin_the_intro();
+    reserve_the_light(gif, (double)total / actual_fps);
 
     for (int frame = 0; frame < total && gif_status == GIF_OK; frame++) {
         /* The clock the features read has to advance, or nothing that animates

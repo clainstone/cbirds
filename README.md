@@ -155,8 +155,10 @@ cbirds --fireflies                  a summer night, and they fall into step
 ```
 
 It opens by writing BOIDS, lets go, and flocks. Move the pointer into the
-flock and it scatters. Press `q` and it flies off the top. Left alone for a
-minute, it starts moving the sliders itself; any key takes them back.
+flock and it scatters; whip it through and a wave of light runs across the
+flock, as it does when a hawk dives. Press `q` and it flies off the top. Left
+alone for a minute, it starts moving the sliders itself; any key takes them
+back.
 
 `h` opens a panel of sliders in the corner, and `--panel` opens it from the
 start. Lowercase lowers, uppercase raises, one press is one notch. `speed`
@@ -308,6 +310,13 @@ instead of a cloud snapping into shape. Repeat sixty times a second and a
 murmuration falls out of it; nothing in the code knows what a flock looks
 like. Reynolds' paper, below, has the rest.
 
+A hawk is not a boid. It follows one rule, chase the nearest bird, and every
+bird flees it. When it dives, the birds in its way swerve, and the birds that
+see them swerve do the same a moment later and in the same way, so the turn
+crosses the flock as a wave, about three times as fast as a bird flies. A bird
+is drawn lit while it swerves, and does not swerve again for three seconds,
+which is what lets the wave pass through the flock and not come back through it.
+
 ## Fireflies
 
 `--fireflies` is a summer night. The birds become fireflies that drift in the dark,
@@ -340,6 +349,11 @@ Behavioral Model*, SIGGRAPH 1987; his page on boids is at
 [red3d.com/cwr/boids](https://www.red3d.com/cwr/boids/). The Kitty graphics
 protocol is documented at
 [sw.kovidgoyal.net/kitty/graphics-protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/).
+The escape waves are after what is seen in starling flocks attacked by falcons:
+Procaccini and others, *Propagating waves in starling, Sturnus vulgaris, flocks
+under predation* (Animal Behaviour, 2011), and Storms and others, *Complex
+patterns of collective escape in starling flocks under predation* (Behavioral
+Ecology and Sociobiology, 2019).
 
 The fireflies are from Mirollo and Strogatz, *Synchronization of pulse-coupled
 biological oscillators*, SIAM Journal on Applied Mathematics, 1990. The biology

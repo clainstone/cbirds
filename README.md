@@ -150,6 +150,7 @@ cbirds --hawks 2 --color ice        something to watch
 cbirds --flocks 3 --color ember     three flocks that keep to their own
 cbirds --color prism                a turn runs a rainbow through the flock
 cbirds --depth --trails             a second sky behind the first
+cbirds --link                       one sky across several terminals
 cbirds --matrix                     it is raining birds
 ```
 
@@ -208,6 +209,38 @@ and inside tmux the sprites never reach the terminal.
 If braille does not look right in your terminal, open an issue and say which
 terminal it is. That is the report that helps most.
 
+## One sky, several terminals
+
+```
+cbirds --link        # in one terminal
+cbirds --link        # in another
+```
+
+Birds that fly out of the edge of one window fly in through the edge of the
+next, at the same height and in the same direction. Two terminals side by side,
+or two panes of a split, become one sky with a flock flowing across the gap.
+Hawks cross as well.
+
+The windows lie in a row in the order they were started, so start them from
+left to right: the second joins on the right of the first, the third on the
+right of the second. Only an edge that has a window behind it is open. At the
+ends of the row the outer edge is a wall, as it is alone. A window that closes
+leaves the row, and the two beside it become neighbours.
+
+Each window keeps its own settings, its own `--birds` among them, and its birds
+come and go: a window can empty and fill again. A window that holds 4080 birds
+says so, and its neighbours treat that edge as a wall until it has room. A bird
+sees only the birds of its own window, so a flock does not look across the gap;
+it follows its leaders across.
+
+The windows talk through Unix sockets in a directory that is yours alone:
+`$XDG_RUNTIME_DIR/cbirds`, or `$TMPDIR/cbirds-UID`, or `/tmp/cbirds-UID`.
+cbirds refuses to use one that belongs to somebody else or that others can write
+in, and says which. The sockets are removed when a window quits or is
+interrupted, and the one a killed window leaves behind is swept away by the
+others. `--link` needs a live terminal, so it cannot be combined with `--record`
+or `--bench`.
+
 ## Options
 
 ```
@@ -251,6 +284,7 @@ Output
 
 General
       --unlock-fps              render as fast as the terminal allows
+      --link                    share one sky with other cbirds --link windows
   -h, --help                    the one-screen help
       --completion SHELL        completions for bash, zsh or fish
   -V, --version                 print the version and quit

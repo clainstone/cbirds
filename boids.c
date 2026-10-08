@@ -1347,9 +1347,12 @@ static const double SIGN_HOVER_MIN = 1.5, SIGN_HOVER_MAX = 6.0;
 static const double SIGN_KEEP_OUT_WEIGHT = 5.0;
 static const double SIGN_KEEP_OUT_BAND = 3.0;
 static const double SIGN_KEEP_OUT_STEPS = 4.0;
-/* The room the panel takes, past its own edge, when there is one: a few frames
- * of flight, so that no letter lands in its turn zone at any pace. */
-static const double SIGN_PANEL_GAP = DEFAULT_SPEED * 3.0;
+/* The room kept clear past the panel's own edge, when there is one: a frame of
+ * flight at the shipped pace, which with the pad is more than a frame of flight at
+ * any pace short of the top two or three notches, and so a letter does not land in
+ * the panel's turn zone. At three frames, which is what the top notch asks, the
+ * room under the panel on an eighty column terminal was a hand's breadth. */
+static const double SIGN_PANEL_GAP = DEFAULT_SPEED;
 /* A clock lets go for this long, once a minute: long enough to be a murmuration,
  * short enough that it is a clock the rest of the time. */
 static const double SIGN_CLOCK_FLIGHT = 3.0;
@@ -1450,21 +1453,55 @@ static double sign_hover_for(double cell) {
     return hover;
 }
 
+/* The room a sign may have: the screen less a pad all round, as the intro has it.
+ * With the panel up there are two, the panel's corner being left out of either: the
+ * one beside it, which is what the intro takes, and the one under it, which on an
+ * eighty column terminal is the wider by far. The sign takes whichever makes its
+ * letters larger. */
+typedef struct {
+    double left, top, right, bottom;
+} sign_room_t;
+
+static int sign_rooms(sign_room_t rooms[2]) {
+    double pad = config.bird_size * 2.0;
+    rooms[0] = (sign_room_t){pad, pad, screen.width - pad, screen.height - pad};
+    if (screen.legend_width <= 0) return 1;
+    rooms[1] = rooms[0];
+    rooms[0].left = screen.legend_width + SIGN_PANEL_GAP + pad;
+    rooms[1].top = screen.legend_height + SIGN_PANEL_GAP + pad;
+    return 2;
+}
+
 /* Lays the cleaned text out as a sign and picks its writers from the birds.
  * Returns whether it fits: the screen may be too small, or the flock too small
  * for the text, and then the flock simply flocks. */
 static int sign_place(const char *clean, int reference_columns, int lift_the_colon,
                       const bird_t *birds) {
-    double pad = config.bird_size * 2.0;
-    double left = pad, top = pad, right = screen.width - pad, bottom = screen.height - pad;
-    if (screen.legend_width > 0) left = screen.legend_width + SIGN_PANEL_GAP + pad;
-    double free_width = right - left, free_height = bottom - top;
-    double width = free_width * SIGN_WIDTH_SHARE, height = free_height * SIGN_HEIGHT_SHARE;
-
+    sign_room_t rooms[2];
+    int room_count = sign_rooms(rooms);
     sign_lines_t lines;
-    double cell;
-    int line_count = sign_fit(clean, reference_columns, width, height,
-                              SIGN_LARGEST_CELL * config.bird_size, &lines, &cell);
+    double cell = 0;
+    int line_count = 0;
+    double left = 0, top = 0, free_width = 0, free_height = 0, width = 0, height = 0;
+    for (int r = 0; r < room_count; r++) {
+        sign_lines_t tried;
+        double tried_cell;
+        double room_width = rooms[r].right - rooms[r].left;
+        double room_height = rooms[r].bottom - rooms[r].top;
+        int tried_count = sign_fit(clean, reference_columns, room_width * SIGN_WIDTH_SHARE,
+                                   room_height * SIGN_HEIGHT_SHARE,
+                                   SIGN_LARGEST_CELL * config.bird_size, &tried, &tried_cell);
+        if (tried_count == 0 || tried_cell <= cell) continue;
+        lines = tried;
+        cell = tried_cell;
+        line_count = tried_count;
+        left = rooms[r].left;
+        top = rooms[r].top;
+        free_width = room_width;
+        free_height = room_height;
+        width = room_width * SIGN_WIDTH_SHARE;
+        height = room_height * SIGN_HEIGHT_SHARE;
+    }
     sign_begin_layout();
     if (line_count == 0) return 0;
 
@@ -1542,16 +1579,20 @@ static int picture_shade_of(const uint8_t rgb[3]) {
  * each of them wears the colour of the picture where it goes. */
 static int sign_place_picture(void) {
     static picture_point_t points[MAX_BIRDS];
-    double pad = config.bird_size * 2.0;
-    double left = pad, top = pad, right = screen.width - pad, bottom = screen.height - pad;
-    if (screen.legend_width > 0) left = screen.legend_width + SIGN_PANEL_GAP + pad;
+    sign_room_t rooms[2];
+    int room_count = sign_rooms(rooms);
 
     sign_begin_layout();
-    if (right - left < 1 || bottom - top < 1) return 0;
     /* Centred by where a bird is drawn, as a sign is: from its top left corner. */
     double shift = config.bird_size / 2.0;
-    picture_fit_t fit =
-        picture_fit(&picture_image, left - shift, top - shift, right - left, bottom - top);
+    picture_fit_t fit = {0, 0, 0, 0, 0};
+    for (int r = 0; r < room_count; r++) {
+        picture_fit_t tried =
+            picture_fit(&picture_image, rooms[r].left - shift, rooms[r].top - shift,
+                        rooms[r].right - rooms[r].left, rooms[r].bottom - rooms[r].top);
+        if (tried.scale > fit.scale) fit = tried;
+    }
+    if (fit.scale <= 0) return 0;
     int made = picture_sample(&picture_image, &fit, config.birds, the_sign.seed, points);
     if (made == 0) return 0;
     for (int i = 0; i < made; i++) {

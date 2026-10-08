@@ -1924,8 +1924,32 @@ static void test_a_text_is_laid_out_as_a_sign_in_lines(void) {
     assert(the_sign.up && formation.count == font_text_cells(clean));
     for (int t = 0; t < formation.count; t++) {
         assert(!legend_turn_zone(formation.x[t], formation.y[t]));
-        assert(formation.x[t] > screen.legend_width);
+        assert(formation.x[t] > screen.legend_width || formation.y[t] > screen.legend_height);
     }
+    close_the_world(&world);
+
+    /* On an eighty column terminal the panel is half the width, and what is beside
+     * it is a sliver: the sign takes the room under it instead, and is the larger
+     * for it, and is still not in the panel's corner. */
+    reset_sign_state();
+    legend_enabled = 1;
+    apply_screen_size(80, 24, 640, 384);
+    assert(screen.legend_width > 0);
+    ask_for_a_sign("HI THERE");
+    begin_the_intro();
+    open_the_world(&world, 400, 3);
+    sign_advance(world.birds);
+    assert(the_sign.up);
+    for (int t = 0; t < formation.count; t++) {
+        assert(!legend_turn_zone(formation.x[t], formation.y[t]));
+        assert(formation.y[t] > screen.legend_height);
+    }
+    double cell_with_the_panel = formation.cell;
+    legend_enabled = 0;
+    apply_screen_size(80, 24, 640, 384);
+    clock_state.seconds = 1;
+    sign_advance(world.birds);
+    assert(the_sign.up && formation.cell > cell_with_the_panel); /* More room, larger. */
     close_the_world(&world);
     reset_sign_state();
 }

@@ -23,6 +23,7 @@
 #include "kitty_graphics.h"
 #include "options.h"
 #include "png.h"
+#include "sky3d.h"
 #include "spatial_grid.h"
 #include "sprite_png.h"
 
@@ -96,6 +97,21 @@ enum {
     MAX_CAST_FPS = 120,
     DEFAULT_SPEED = 40,
     DEFAULT_BIRD_SIZE = 30,
+    /* In three dimensions there are more birds, and they are further off. What
+     * --size means there is the bird at the roost's own distance; the nearest are
+     * half as big again and the farthest little more than half. */
+    SKY_BIRDS = 2000,
+    SKY_BIRD_SIZE = 8,
+    /* Dots are coarser than sprites: a bird that a sprite renders in eight pixels
+     * lights as many dots as one of five, and the flock's depth shows in how thick
+     * the dots lie, which a smaller bird leaves room for. */
+    SKY_TEXT_BIRD_SIZE = 5,
+    /* How a bird is drawn at its distance: its body foreshortened or not, and its
+     * wings spread, half spread or edge on. A bird seen from the side of its
+     * flight is a long thin thing, and head on a short wide one. */
+    SKY_ALONG_LEVELS = 2,
+    SKY_ACROSS_LEVELS = 3,
+    SKY_SHAPES = SKY_ALONG_LEVELS * SKY_ACROSS_LEVELS,
     SPATIAL_CELL_SIZE = 12,
     /* Perception is tuned as a radius in pixels rather than in whole grid cells,
      * which is what lets it share the twelve notch travel: the cell scan derives
@@ -320,6 +336,7 @@ typedef struct {
     int flock; /* Which flock it reads: separation ignores this, the rest does not. */
     int layer; /* Near or far; the two never see each other. */
     int wing;  /* Where in the beat it is: an index into WING_SEQUENCE. */
+    int shape; /* In three dimensions, which of the shapes of its size it is drawn as. */
     double wing_clock;
     double gliding; /* Seconds of wings held out and still. */
     double trail_x[TRAIL_LENGTH], trail_y[TRAIL_LENGTH];
@@ -405,6 +422,35 @@ static const char *const RENDER_NAMES[] = {"kitty", "braille", "sextants", "bloc
 static int render_mode = RENDER_UNSET;
 /* --depth: a second plane of birds further off. The default is the one. */
 static int deep_look;
+/* --3d: the flock flies in a space and is seen from a camera that orbits its
+ * roost. The birds below are then only what the camera sees of it, one frame at a
+ * time: a place on the screen, which way it points there, and a size. */
+static int sky_mode;
+
+/* What a picture is painted in: the flat sky has two planes, far then near, and
+ * the space has a bin for every size, farthest first. */
+static int layer_count(void) {
+    return sky_mode ? SKY_BINS : LAYERS;
+}
+
+static int layer_in_pass(int pass) {
+    return sky_mode ? pass : LAYERS - 1 - pass;
+}
+
+/* How big a bin's sprite is. The bird at the middle of the flock's depth is the
+ * size that was asked for on a picture 512 pixels high, and the sprites grow with
+ * the picture: the flock is framed to fill it, so on a bigger one the same bird
+ * would be a speck. The height they were built for is kept, because the sprites
+ * are not rebuilt when the window is resized and where they are placed must agree
+ * with what they were drawn at. */
+static int sky_picture_size;
+
+static int sky_bin_size(int bin) {
+    double picture =
+        sky_picture_size > 0 ? sky_picture_size : sky_picture(screen.width, screen.height);
+    int size = (int)(config.bird_size * picture / 512.0 * sky_bin_scale(bin) + 0.5);
+    return size < MIN_BIRD_SIZE ? MIN_BIRD_SIZE : size;
+}
 
 static int drawing_with_text(void) {
     return render_mode == RENDER_BRAILLE || render_mode == RENDER_SEXTANTS ||
@@ -935,6 +981,14 @@ static int hawk_draw_offset(void) {
     return hawk_sprite_size() / 2;
 }
 
+/* In a space a hawk is two and a half times the bird of its size, whichever it is:
+ * it has to be the thing the eye goes to among two thousand. */
+static int sky_bin_size(int bin);
+static int hawk_size_in_layer(int layer) {
+    int size = sky_bin_size(layer) * 5 / 2;
+    return size > 2 * MAX_BIRD_SIZE ? 2 * MAX_BIRD_SIZE : size;
+}
+
 /*
  * The bird, or something else.
  *
@@ -1233,6 +1287,7 @@ static int formation_target_of(int index, double *x, double *y) {
  * watch. A keypress ends it early, and a screen too small for the word simply
  * starts flocking. */
 static void begin_the_intro(void) {
+    if (sky_mode) return; /* The letters are laid out on a screen, and this is a space. */
     if (formation_layout("BOIDS")) formation.until = INTRO_SECONDS;
 }
 
@@ -1333,6 +1388,7 @@ typedef struct {
     double passing;    /* Seconds left of a straight run out of the flock. */
     int wing;          /* A hawk soars, wings out, and beats them only in the dive. */
     double wing_clock;
+    int layer; /* In three dimensions, the size it is drawn at, as a bird's is. */
 } hawk_t;
 
 static hawk_t hawks[MAX_HAWKS];
@@ -1347,19 +1403,40 @@ static int hawk_sets_built;
  * Kitty image id is the set's position times ROTATION_FRAMES plus the frame,
  * plus one, because zero is not an id.
  */
-enum { MAX_SPRITE_SETS = MAX_PALETTE_SHADES * (WING_PHASES + 1) + WING_PHASES + TRAIL_LENGTH };
+enum {
+    MAX_SPRITE_SETS_FLAT = MAX_PALETTE_SHADES * (WING_PHASES + 1) + WING_PHASES + TRAIL_LENGTH,
+    /* A space has a hawk for every size as well as a bird, and the tails as before. */
+    MAX_SPRITE_SETS_SKY = SKY_BINS * (SKY_SHAPES + WING_PHASES) + TRAIL_LENGTH,
+    MAX_SPRITE_SETS =
+        MAX_SPRITE_SETS_FLAT > MAX_SPRITE_SETS_SKY ? MAX_SPRITE_SETS_FLAT : MAX_SPRITE_SETS_SKY
+};
+
+/* In three dimensions there is no far layer and no shade of the bird's own: what
+ * a bird looks like is how far off it is, one size and one tint for each of the
+ * camera's bins, and the wing beat on top. Every set after the flock's follows it
+ * wherever it ends. */
+static int flock_set_count(void) {
+    if (sky_mode) return SKY_BINS * SKY_SHAPES;
+    return palette_shades() * (WING_PHASES + 1);
+}
 
 static int flock_set(int shade, int wing, int layer) {
+    if (sky_mode) return layer * SKY_SHAPES + wing; /* The shape stands where the beat does. */
     if (layer > 0) return palette_shades() * WING_PHASES + shade;
     return shade * WING_PHASES + wing;
 }
 
+/* And a hawk is a set a size and a wing phase, the sizes in order. */
+static int hawk_set_count(void) {
+    return sky_mode ? SKY_BINS * WING_PHASES : WING_PHASES;
+}
+
 static int hawk_set(int wing) {
-    return palette_shades() * (WING_PHASES + 1) + wing;
+    return flock_set_count() + wing;
 }
 
 static int trail_set(int step) {
-    return palette_shades() * (WING_PHASES + 1) + WING_PHASES + step;
+    return flock_set_count() + hawk_set_count() + step;
 }
 
 static int sprite_set_count(void) {
@@ -1370,13 +1447,28 @@ static uint32_t set_image_id(int set, int frame) {
     return (uint32_t)(set * ROTATION_FRAMES + frame) + 1;
 }
 
+/* What picks a bird's picture within its size: where it is in its beat, in the
+ * flat flock, and in a space its shape, which has the beat in it. */
+static int bird_wing(const bird_t *bird) {
+    return sky_mode ? bird->shape : WING_SEQUENCE[bird->wing % WING_CYCLE];
+}
+
 static uint32_t sprite_image_id(const bird_t *bird) {
-    return set_image_id(flock_set(bird->shade, WING_SEQUENCE[bird->wing % WING_CYCLE], bird->layer),
-                        bird->frame);
+    return set_image_id(flock_set(bird->shade, bird_wing(bird), bird->layer), bird->frame);
+}
+
+/* Which of its sets a hawk is drawn from: the phase of its wings, and in a space
+ * the size that goes with how far off it is. */
+static int hawk_wing(const hawk_t *hawk) {
+    return (sky_mode ? hawk->layer * WING_PHASES : 0) + WING_SEQUENCE[hawk->wing % WING_CYCLE];
+}
+
+static int hawk_offset_of(const hawk_t *hawk) {
+    return sky_mode ? hawk_size_in_layer(hawk->layer) / 2 : hawk_draw_offset();
 }
 
 static uint32_t hawk_image_id(const hawk_t *hawk) {
-    return set_image_id(hawk_set(WING_SEQUENCE[hawk->wing % WING_CYCLE]), hawk->frame);
+    return set_image_id(hawk_set(hawk_wing(hawk)), hawk->frame);
 }
 
 /* One hawk, so that summoning one with k leaves the hawks already hunting exactly
@@ -1581,6 +1673,7 @@ static vector_t hawk_spacing(int self) {
  * back: that exit is the half of a stoop that makes the flock close up behind.
  */
 static void hunt(const bird_t *birds) {
+    if (sky_mode) return; /* The hunt is the space's own, in the flight. */
     for (int i = 0; i < config.hawks; i++) {
         hawk_t *hawk = &hawks[i];
         if (hawk->commitment > 0) {
@@ -1812,7 +1905,14 @@ static void place_one_bird(bird_t *bird, int index) {
                                     : (int)(random_unit() * palette_shades()) % palette_shades();
 }
 
+static void begin_the_sky(bird_t *birds);
+static int grow_the_sky(int from, int to);
+
 static void initialize_birds(bird_t *birds) {
+    if (sky_mode) {
+        begin_the_sky(birds);
+        return;
+    }
     for (int i = 0; i < config.birds; i++) place_one_bird(&birds[i], i);
 }
 
@@ -1824,6 +1924,11 @@ static int resize_the_flock(bird_t **birds, bird_t **snapshot, int from, int to)
     bird_t *grown = malloc(sizeof(**birds) * (size_t)to);
     bird_t *grown_snapshot = malloc(sizeof(**snapshot) * (size_t)to);
     if (grown == NULL || grown_snapshot == NULL) {
+        free(grown);
+        free(grown_snapshot);
+        return 0;
+    }
+    if (sky_mode && !grow_the_sky(from, to)) {
         free(grown);
         free(grown_snapshot);
         return 0;
@@ -2196,6 +2301,172 @@ static void beat_wings(bird_t *bird) {
     }
 }
 
+/*
+ * The flock in three dimensions.
+ *
+ * The flight itself is sky3d.c's: birds in a space, around a roost. What is here
+ * is the seam to everything that draws. Once a frame the camera takes its place on
+ * its orbit, every bird is projected, and what comes out is written into the same
+ * bird_t the flat flock is drawn from: the pixel its sprite's corner goes to, the
+ * way it points on the screen, and its bin, which is a size and a tint. Past that
+ * point the renderers, the recorder and the snapshot do not know the difference.
+ */
+static struct {
+    sky_t world;
+    sky_view_t *views;
+    int views_capacity;
+    int flying;
+} sky;
+
+/* The flight is tuned in metres and seconds, and at the pace the program ships at
+ * a second of the show should be a second of it: the speed slider is the factor
+ * on that. */
+static const double SKY_TIME = 1.0 / DEFAULT_PACE;
+/* No step longer than this, in seconds of flight: a bird turns at a limited rate
+ * per step, and a long one is a bird that cannot turn where it was going to. */
+static const double SKY_LONGEST_STEP = 1.0 / 30;
+enum { SKY_WARMUP_STEPS = 8 * 30 };
+/* How far from the line the pointer makes through the sky a bird feels it, in
+ * metres: a stick wider than a bird and narrower than the flock. */
+static const double SKY_POKE_REACH = 5.0;
+
+/* The sliders, as the weights the flight reads. Each is a factor on what the
+ * flight was tuned at, which is the factor its notch is on the default, so every
+ * slider means to the space what it means to the plane: more or less of the same. */
+static sky_rules_t sky_rules(void) {
+    sky_rules_t rules = sky_default_rules();
+    rules.separation *= config.separation / DEFAULT_SEPARATION_W;
+    rules.alignment *= config.alignment / DEFAULT_ALIGNMENT_W;
+    rules.roost *= config.boundary / DEFAULT_BOUNDARY_W;
+    rules.turn_rate = turning_notch_radians();
+    /* Perception is how far a bird sees in the plane. Here it is how many birds it
+     * heeds, one more a notch, and seven, the number starlings were measured
+     * heeding, at the default. */
+    rules.neighbours = 1 + config.vision_notch;
+    return rules;
+}
+
+static void sky_camera(sky_camera_t *camera) {
+    sky_camera_orbit(camera, sky.world.clock, screen.width, screen.height);
+    sky_camera_frame(camera, &sky.world);
+}
+
+/* Which of its shapes a bird is drawn as: how much of its length the camera sees,
+ * and how much of its span, which its wing beat takes a part of as well. */
+static int sky_shape(const sky_view_t *view, double beat) {
+    double span = view->across * beat;
+    int across = span >= 0.78 ? 0 : span >= 0.48 ? 1 : 2;
+    int along = view->along >= 0.6 ? 0 : 1;
+    return along * SKY_ACROSS_LEVELS + across;
+}
+
+/* Where the birds are on the screen, as the renderers want them. */
+static void project_the_sky(bird_t *birds) {
+    sky_camera_t camera;
+    sky_camera(&camera);
+    if (sky.views_capacity < config.birds) {
+        sky_view_t *views = realloc(sky.views, sizeof(*views) * (size_t)config.birds);
+        if (views == NULL) return;
+        sky.views = views;
+        sky.views_capacity = config.birds;
+    }
+    sky_view(&sky.world, config.birds, &camera, sky.views);
+    for (int i = 0; i < config.birds; i++) {
+        const sky_view_t *view = &sky.views[i];
+        bird_t *bird = &birds[i];
+        if (!view->visible) {
+            bird->x = bird->y = -1e6; /* Nowhere on any screen. */
+            continue;
+        }
+        double half = sky_bin_size(view->bin) / 2.0;
+        bird->x = view->x - half;
+        bird->y = view->y - half;
+        bird->layer = view->bin;
+        bird->direction = view->angle;
+        bird->frame = direction_frame(view->angle);
+        bird->shape = sky_shape(view, WING_SPAN[WING_SEQUENCE[bird->wing % WING_CYCLE]]);
+        beat_wings(bird);
+    }
+    for (int i = 0; i < config.hawks && i < sky.world.hawk_count; i++) {
+        sky_view_t view;
+        hawk_t *hawk = &hawks[i];
+        sky_hawk_view(&sky.world, i, &camera, &view);
+        if (!view.visible) {
+            hawk->x = hawk->y = -1e6;
+            continue;
+        }
+        hawk->x = view.x;
+        hawk->y = view.y;
+        hawk->layer = view.bin;
+        hawk->direction = view.angle;
+        hawk->frame = direction_frame(view.angle);
+        /* It soars, wings out, until the dive, and then it beats. */
+        if (sky.world.hawks[i].diving) {
+            hawk->wing_clock += WING_HZ * WING_CYCLE * frame_seconds;
+            while (hawk->wing_clock >= 1.0) {
+                hawk->wing_clock -= 1.0;
+                hawk->wing = (hawk->wing + 1) % WING_CYCLE;
+            }
+        } else {
+            hawk->wing = 0;
+        }
+    }
+}
+
+static void begin_the_sky(bird_t *birds) {
+    sky_destroy(&sky.world);
+    /* The only draw from the flock's own numbers, so a seed is still a flock. */
+    uint32_t seed = next_random();
+    if (sky_init(&sky.world, config.birds, seed) != SKY_OK) exit(EXIT_FAILURE);
+    sky_populate(&sky.world, 0, config.birds, 0);
+    sky.flying = 1;
+    /* Let it settle before anybody looks: a flock thrown into the air as a cloud
+     * takes a few seconds to become one. */
+    sky_rules_t rules = sky_rules();
+    for (int step = 0; step < SKY_WARMUP_STEPS; step++)
+        sky_step(&sky.world, config.birds, &rules, NULL, SKY_LONGEST_STEP);
+    sky.world.clock = 0;
+    sky_set_hawks(&sky.world, config.hawks);
+    for (int i = 0; i < config.birds; i++) {
+        birds[i] = (bird_t){0};
+        birds[i].wing = (int)(random_unit() * WING_CYCLE) % WING_CYCLE;
+        birds[i].wing_clock = random_unit();
+    }
+    project_the_sky(birds);
+}
+
+static int grow_the_sky(int from, int to) {
+    if (!sky.flying) return 1;
+    if (sky_reserve(&sky.world, to) != SKY_OK) return 0;
+    if (to > from) sky_populate(&sky.world, from, to - from, 1);
+    return 1;
+}
+
+static void end_the_sky(void) {
+    sky_destroy(&sky.world);
+    free(sky.views);
+    memset(&sky, 0, sizeof(sky));
+}
+
+static void fly_the_sky(bird_t *birds) {
+    sky_rules_t rules = sky_rules();
+    sky_poke_t poke = {0};
+    if (mouse.present) {
+        sky_camera_t camera;
+        sky_camera(&camera);
+        poke.active = 1;
+        poke.reach = SKY_POKE_REACH;
+        sky_camera_ray(&camera, mouse.x, mouse.y, poke.origin, poke.direction);
+    }
+    sky_set_hawks(&sky.world, config.hawks);
+    double seconds = flight_seconds() * SKY_TIME;
+    int steps = (int)ceil(seconds / SKY_LONGEST_STEP - 1e-9);
+    if (steps < 1) steps = 1;
+    for (int step = 0; step < steps; step++)
+        sky_step(&sky.world, config.birds, &rules, &poke, seconds / steps);
+    project_the_sky(birds);
+}
+
 static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_grid_t *grid) {
     measure_flocks(snapshot);
     for (int i = 0; i < config.birds; i++) {
@@ -2238,6 +2509,10 @@ static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_gr
 static int bird_placement(const bird_t *bird, kitty_graphics_placement_t *placement) {
     if (bird->x < 0 || bird->y < 0) return 0;
 
+    /* The flat flock is kept out of the panel by a force. A space is projected
+     * wherever it lands, so what falls behind the panel is not drawn. */
+    if (sky_mode && bird->x < screen.legend_width && bird->y < screen.legend_height) return 0;
+
     int pixel_x = (int)bird->x;
     int pixel_y = (int)bird->y;
     int column = pixel_x / screen.cell_width;
@@ -2251,7 +2526,9 @@ static int bird_placement(const bird_t *bird, kitty_graphics_placement_t *placem
         .column = column,
         .x_offset = pixel_x % screen.cell_width,
         .y_offset = pixel_y % screen.cell_height,
-        .z_index = bird->layer > 0 ? -1 : 0, /* The far layer underneath. */
+        .z_index = sky_mode          ? bird->layer
+                   : bird->layer > 0 ? -1
+                                     : 0, /* The far layer underneath. */
     };
     return 1;
 }
@@ -2326,12 +2603,22 @@ static void build_legend(char lines[LEGEND_MAX_ROWS][LEGEND_LINE_MAX]) {
     memcpy(lines[0] + at, "\u256e", 4);
 
     char value[LEGEND_VALUE_WIDTH + 8];
+    /* In three dimensions a row says what it does there, as a factor on the flock's
+     * own: the edges are a roost that pulls, and the numbers of the plane are not
+     * the space's. */
     legend_number(value, sizeof(value), config.boundary, 2);
-    legend_slider(lines[1], LEGEND_LINE_MAX, "boundary", config.boundary_notch, value, 'b', 'B');
+    if (sky_mode)
+        snprintf(value, sizeof(value), "%.2f\u00d7", config.boundary / DEFAULT_BOUNDARY_W);
+    legend_slider(lines[1], LEGEND_LINE_MAX, sky_mode ? "roost" : "boundary", config.boundary_notch,
+                  value, 'b', 'B');
     legend_number(value, sizeof(value), config.separation, 3);
+    if (sky_mode)
+        snprintf(value, sizeof(value), "%.2f\u00d7", config.separation / DEFAULT_SEPARATION_W);
     legend_slider(lines[2], LEGEND_LINE_MAX, "separation", config.separation_notch, value, 's',
                   'S');
     legend_number(value, sizeof(value), config.alignment, 2);
+    if (sky_mode)
+        snprintf(value, sizeof(value), "%.2f\u00d7", config.alignment / DEFAULT_ALIGNMENT_W);
     legend_slider(lines[3], LEGEND_LINE_MAX, "alignment", config.alignment_notch, value, 'a', 'A');
     /* On the panel because it has keys: t and T used to change the banking with
      * nothing on the screen to say what they had done, which is how somebody could
@@ -2340,7 +2627,9 @@ static void build_legend(char lines[LEGEND_MAX_ROWS][LEGEND_LINE_MAX]) {
     legend_slider(lines[4], LEGEND_LINE_MAX, "turning", config.turning_notch, value, 't', 'T');
     /* Pixels are whole numbers, so they print as such. */
     snprintf(value, sizeof(value), "%dpx", config.vision_radius);
-    legend_slider(lines[5], LEGEND_LINE_MAX, "perception", config.vision_notch, value, 'p', 'P');
+    if (sky_mode) snprintf(value, sizeof(value), "%d", 1 + config.vision_notch);
+    legend_slider(lines[5], LEGEND_LINE_MAX, sky_mode ? "neighbours" : "perception",
+                  config.vision_notch, value, 'p', 'P');
     /* A factor on the shipped pace, so 1.0 is the flock as it comes. Last, so the
      * rows above keep the places they have always had. */
     snprintf(value, sizeof(value), "%.1f\u00d7", config.pace);
@@ -2405,8 +2694,9 @@ static kitty_graphics_status_t queue_render_frame(kitty_graphics_t *graphics, co
     kitty_graphics_status_t status = kitty_graphics_begin_synchronized_update(graphics);
     if (status == KITTY_GRAPHICS_OK) status = kitty_graphics_delete_all_placements(graphics);
     /* Far birds first and underneath, then the tails, the near birds, the hawks. */
-    for (int layer = LAYERS - 1; layer >= 0 && status == KITTY_GRAPHICS_OK; layer--) {
-        if (layer == 0 && config.trails) {
+    for (int pass = 0; pass < layer_count() && status == KITTY_GRAPHICS_OK; pass++) {
+        int layer = layer_in_pass(pass);
+        if (layer == 0 && config.trails && !sky_mode) {
             for (int i = 0; status == KITTY_GRAPHICS_OK && i < config.birds; i += TRAIL_EVERY) {
                 if (birds[i].layer != 0) continue;
                 for (int step = 0; step < birds[i].trail_held && status == KITTY_GRAPHICS_OK;
@@ -2433,9 +2723,11 @@ static kitty_graphics_status_t queue_render_frame(kitty_graphics_t *graphics, co
         }
     }
     for (int i = 0; status == KITTY_GRAPHICS_OK && i < config.hawks; i++) {
-        bird_t as_bird = {.x = hawks[i].x - hawk_draw_offset(),
-                          .y = hawks[i].y - hawk_draw_offset(),
-                          .frame = hawks[i].frame};
+        /* Over every bird, in a space too: it is what the picture is of. */
+        bird_t as_bird = {.x = hawks[i].x - hawk_offset_of(&hawks[i]),
+                          .y = hawks[i].y - hawk_offset_of(&hawks[i]),
+                          .frame = hawks[i].frame,
+                          .layer = SKY_BINS};
         kitty_graphics_placement_t placement;
         if (bird_placement(&as_bird, &placement)) {
             placement.image_id = hawk_image_id(&hawks[i]);
@@ -2527,6 +2819,10 @@ static void set_frame_seconds(double seconds);
  * simulation run that many times, which --bench shows.
  */
 static void fly(bird_t *birds, bird_t *snapshot, spatial_grid_t *grid) {
+    if (sky_mode) {
+        fly_the_sky(birds);
+        return;
+    }
     int steps = (int)ceil(config.pace - 1e-9);
     if (steps < 1) steps = 1;
     double whole = frame_seconds;
@@ -2739,6 +3035,8 @@ static const option_t OPTIONS[] = {
      "faint tails behind the flock", "Look", 0},
     {0, "depth", NULL, OPTION_FLAG, &deep_look, 0, 0, NULL, NULL,
      "a second sky further off: smaller, slower, dimmer birds", "Look", 1},
+    {0, "3d", NULL, OPTION_FLAG, &sky_mode, 0, 0, NULL, NULL,
+     "a murmuration in three dimensions, seen from a slow orbit (2000 birds, in ash)", "Look", 1},
     {'l', "panel", NULL, OPTION_FLAG, &legend_enabled, 0, 0, NULL, NULL,
      "the sliders in the corner from the start; h toggles them", "Look", 1},
     {0, "render", NULL, OPTION_ENUM, &render_mode, 0, 0, RENDER_NAMES, "HOW",
@@ -2782,6 +3080,7 @@ static const option_example_t EXAMPLES[] = {
     {"cbirds --hawks 2 --color ice", "something to watch"},
     {"cbirds --flocks 3 --color ember", "three of them, keeping to their own"},
     {"cbirds --depth --trails", "a second sky behind the first"},
+    {"cbirds --3d --hawks 1", "a murmuration, and a hawk through it"},
     {"cbirds --render kitty", "sprites, in Kitty or Ghostty"},
     {"cbirds --record flock.gif", "a GIF, with no terminal in the way"},
     {NULL, NULL},
@@ -2992,7 +3291,7 @@ static int handle_input(void) {
                 if (config.turning_notch > 0) config.turning_notch--;
                 continue;
             case 'e':
-                config.trails = !config.trails;
+                if (!sky_mode) config.trails = !config.trails;
                 continue;
             case '\t':
                 requested_preset = (requested_preset + 1) % PRESET_COUNT;
@@ -3164,6 +3463,31 @@ static void far_tint(png_image_t *image, int shade) {
     png_tint(image, rgb[0], rgb[1], rgb[2], chosen->mode);
 }
 
+/* What distance does to a bird in three dimensions: smaller, which the bin's size
+ * says, and dimmer, which is this. The nearest bin is the ramp's first shade as it
+ * is, the farthest its last, pulled most of the way to the ground as well: the
+ * ramp alone leaves the darkest shade of most of them brighter than a bird
+ * half a flock away should be. At the ground a whole set vanishes, so not all the
+ * way: at 0.55 the farthest bin is still there to be counted. */
+static const double SKY_DIM = 0.55;
+
+static void tint_sky(png_image_t *image, int bin) {
+    const palette_t *chosen = palette();
+    double far = (double)(SKY_BINS - 1 - bin) / (SKY_BINS - 1);
+    double dim = SKY_DIM * far;
+    if (sprite_path != NULL || chosen->tints == NULL) {
+        uint8_t level = (uint8_t)(255 * (1 - dim) + 0.5);
+        png_tint(image, level, level, level, PNG_TINT_MULTIPLY);
+        return;
+    }
+    int shade = (int)(far * (chosen->shades - 1) + 0.5);
+    uint8_t rgb[3];
+    for (int c = 0; c < 3; c++)
+        rgb[c] = (uint8_t)(chosen->tints[shade][c] +
+                           (PICTURE_GROUND[c] - chosen->tints[shade][c]) * dim + 0.5);
+    png_tint(image, rgb[0], rgb[1], rgb[2], chosen->mode);
+}
+
 /* One geometry — a size and a wing span — rotated once per frame, and every set
  * that shares it copied and tinted from that. Rotation is the expensive half and
  * does not depend on the colour. */
@@ -3210,10 +3534,66 @@ static png_status_t rasterise_geometry(const png_image_t *source, png_image_t *f
     return status;
 }
 
+/* How much of its length and of its span a bird shows in each of its shapes. A
+ * bird seen from the side is long and, from above and level, spread; seen head
+ * on it is short, and the wings that were out are edge on. The spans are the beat
+ * of the flat flock's, so that a bird flapping face on to the camera runs through
+ * them, and one seen along its wings stays at the last. */
+static const double SKY_LENGTH[SKY_ALONG_LEVELS] = {1.0, 0.5};
+static const double SKY_SPAN[SKY_ACROSS_LEVELS] = {1.0, 0.62, 0.34};
+
+/* Squashed along the axis of flight as well as across it, and set back in the
+ * middle of its square. */
+static png_status_t squash_axes(const png_image_t *square, double length, double span,
+                                png_image_t *out) {
+    int width = (int)(square->width * length + 0.5), height = (int)(square->height * span + 0.5);
+    if (width < 1) width = 1;
+    if (height < 1) height = 1;
+    png_image_t narrow = {0, 0, NULL};
+    png_status_t status = png_resize(square, width, height, &narrow);
+    if (status == PNG_OK) status = png_image_alloc(out, square->width, square->height);
+    if (status == PNG_OK) {
+        int left = (square->width - width) / 2, top = (square->height - height) / 2;
+        for (int y = 0; y < height; y++)
+            memcpy(out->pixels + ((size_t)(top + y) * (size_t)out->width + (size_t)left) * 4,
+                   narrow.pixels + (size_t)y * (size_t)narrow.width * 4, (size_t)narrow.width * 4);
+    }
+    png_image_free(&narrow);
+    return status;
+}
+
+/* One shape of one bin, at every heading. */
+static png_status_t rasterise_the_sky_shape(const png_image_t *source, png_image_t *frames, int bin,
+                                            int shape) {
+    png_image_t square = {0, 0, NULL}, squashed = {0, 0, NULL};
+    int size = sky_bin_size(bin), set = flock_set(0, shape, bin);
+    int work = size * SPRITE_SUPERSAMPLE;
+    if (work > SPRITE_WORK_MAX) work = SPRITE_WORK_MAX;
+    if (work > source->width) work = source->width;
+    png_status_t status = png_resize(source, work, work, &square);
+    double length = SKY_LENGTH[shape / SKY_ACROSS_LEVELS],
+           span = SKY_SPAN[shape % SKY_ACROSS_LEVELS];
+    if (status == PNG_OK && (length < 1.0 || span < 1.0)) {
+        status = squash_axes(&square, length, span, &squashed);
+        png_image_free(&square);
+        square = squashed;
+    }
+    for (int i = 0; i < ROTATION_FRAMES && status == PNG_OK; i++) {
+        png_image_t *frame = &frames[set * ROTATION_FRAMES + i];
+        status = png_rotate_resize(&square, i * FRAME_ANGLE * M_PI / 180.0, size, size, frame);
+        if (status == PNG_OK) tint_sky(frame, bin);
+    }
+    png_image_free(&square);
+    return status;
+}
+
 /* Before anything is sized from the bird: thirty pixels under every renderer
  * when --size was not given. */
 static void settle_the_bird_size(void) {
-    if (config.bird_size == 0) config.bird_size = DEFAULT_BIRD_SIZE;
+    if (config.bird_size == 0) {
+        config.bird_size = DEFAULT_BIRD_SIZE;
+        if (sky_mode) config.bird_size = drawing_with_text() ? SKY_TEXT_BIRD_SIZE : SKY_BIRD_SIZE;
+    }
 }
 
 static png_status_t rasterise_sprites(png_image_t *frames) {
@@ -3224,8 +3604,13 @@ static png_status_t rasterise_sprites(png_image_t *frames) {
     int shades = palette_shades();
     int sets[MAX_PALETTE_SHADES], arguments[MAX_PALETTE_SHADES];
 
+    /* In three dimensions a bin is a size and a tint, and every shape of each. */
+    if (sky_mode) sky_picture_size = (int)sky_picture(screen.width, screen.height);
+    for (int bin = 0; sky_mode && bin < SKY_BINS && status == PNG_OK; bin++)
+        for (int shape = 0; shape < SKY_SHAPES && status == PNG_OK; shape++)
+            status = rasterise_the_sky_shape(&source, frames, bin, shape);
     /* Near birds: one geometry a wing phase, every shade off each. */
-    for (int wing = 0; wing < WING_PHASES && status == PNG_OK; wing++) {
+    for (int wing = 0; !sky_mode && wing < WING_PHASES && status == PNG_OK; wing++) {
         for (int shade = 0; shade < shades; shade++) {
             sets[shade] = flock_set(shade, wing, 0);
             arguments[shade] = shade;
@@ -3234,7 +3619,7 @@ static png_status_t rasterise_sprites(png_image_t *frames) {
                                     arguments, shades, tint_flock);
     }
     /* Far birds: smaller, wings out, dimmed. */
-    if (status == PNG_OK) {
+    if (status == PNG_OK && !sky_mode) {
         int far_size = (int)(config.bird_size * FAR_SIZE + 0.5);
         if (far_size < MIN_BIRD_SIZE) far_size = MIN_BIRD_SIZE;
         for (int shade = 0; shade < shades; shade++) {
@@ -3244,14 +3629,18 @@ static png_status_t rasterise_sprites(png_image_t *frames) {
         status =
             rasterise_geometry(&source, frames, far_size, 1.0, sets, arguments, shades, far_tint);
     }
-    /* Hawks, at twice the size, at each wing phase. */
-    for (int wing = 0; wing < WING_PHASES && status == PNG_OK; wing++) {
-        int set = hawk_set(wing), argument = 0;
-        status = rasterise_geometry(&source, frames, hawk_sprite_size(), WING_SPAN[wing], &set,
-                                    &argument, 1, tint_hawk);
+    /* Hawks, at twice the size, at each wing phase, and in a space at each size. */
+    for (int bin = 0; bin < (sky_mode ? SKY_BINS : 1); bin++) {
+        for (int wing = 0; wing < WING_PHASES && status == PNG_OK; wing++) {
+            int set = hawk_set(bin * WING_PHASES + wing), argument = 0;
+            status = rasterise_geometry(&source, frames,
+                                        sky_mode ? hawk_size_in_layer(bin) : hawk_sprite_size(),
+                                        WING_SPAN[wing], &set, &argument, 1, tint_hawk);
+        }
     }
-    /* Tails: one geometry, a set a step of fading. */
-    if (status == PNG_OK) {
+    /* Tails: one geometry, a set a step of fading. Not in three dimensions, where a
+     * tail would have to be a set for every size. */
+    if (status == PNG_OK && !sky_mode) {
         int trail_size = (int)(config.bird_size * TRAIL_SIZE + 0.5);
         if (trail_size < MIN_BIRD_SIZE) trail_size = MIN_BIRD_SIZE;
         int trail_sets[TRAIL_LENGTH], steps[TRAIL_LENGTH];
@@ -3292,8 +3681,9 @@ static void compose_onto(png_image_t *canvas, const png_image_t *frames, const b
     else
         memset(canvas->pixels, 0, (size_t)canvas->width * (size_t)canvas->height * 4);
 
-    for (int layer = LAYERS - 1; layer >= 0; layer--) {
-        if (layer == 0 && config.trails) {
+    for (int pass = 0; pass < layer_count(); pass++) {
+        int layer = layer_in_pass(pass);
+        if (layer == 0 && config.trails && !sky_mode) {
             for (int i = 0; i < config.birds; i += TRAIL_EVERY) {
                 if (birds[i].layer != 0) continue;
                 for (int step = 0; step < birds[i].trail_held; step++) {
@@ -3308,8 +3698,7 @@ static void compose_onto(png_image_t *canvas, const png_image_t *frames, const b
         }
         for (int i = 0; i < config.birds; i++) {
             if (birds[i].layer != layer) continue;
-            int set = flock_set(birds[i].shade % shades, WING_SEQUENCE[birds[i].wing % WING_CYCLE],
-                                birds[i].layer);
+            int set = flock_set(birds[i].shade % shades, bird_wing(&birds[i]), birds[i].layer);
             const png_image_t *sprite =
                 &frames[set * ROTATION_FRAMES + birds[i].frame % ROTATION_FRAMES];
             if (sprite->pixels == NULL) continue;
@@ -3317,12 +3706,12 @@ static void compose_onto(png_image_t *canvas, const png_image_t *frames, const b
         }
     }
     for (int i = 0; i < config.hawks; i++) {
-        int set = hawk_set(WING_SEQUENCE[hawks[i].wing % WING_CYCLE]);
+        int set = hawk_set(hawk_wing(&hawks[i]));
         const png_image_t *sprite =
             &frames[set * ROTATION_FRAMES + hawks[i].frame % ROTATION_FRAMES];
         if (sprite->pixels == NULL) continue;
-        blend_sprite(canvas, sprite, (int)hawks[i].x - hawk_draw_offset(),
-                     (int)hawks[i].y - hawk_draw_offset(), with_ground);
+        blend_sprite(canvas, sprite, (int)hawks[i].x - hawk_offset_of(&hawks[i]),
+                     (int)hawks[i].y - hawk_offset_of(&hawks[i]), with_ground);
     }
 }
 
@@ -3372,12 +3761,37 @@ static void usage(FILE *out, const char *program, int everything) {
     if (everything) fputs(KEYS_HELP, out);
 }
 
+/* What does not fly in a space, said once and plainly rather than ignored. */
+static void check_the_sky_options(void) {
+    if (config.flocks > 1 || matrix_mode) {
+        fprintf(stderr, "%s: --3d is one flock over one roost; %s is for the flat sky\n",
+                program_name, matrix_mode ? "--matrix" : "--flocks");
+        exit(EXIT_USAGE);
+    }
+    if (deep_look) {
+        fprintf(stderr, "%s: --3d replaces --depth: every bird has its own distance\n",
+                program_name);
+        deep_look = 0;
+    }
+    if (config.trails) {
+        fprintf(stderr, "%s: --3d draws no tails\n", program_name);
+        config.trails = 0;
+    }
+}
+
 static void read_options(int argc, char **argv) {
     char error[160];
     if (argc > 0 && argv[0] != NULL) program_name = argv[0];
     name_the_palettes();
     name_the_presets();
     name_the_shapes();
+    /* What the mode says it flies with, when nothing was asked for: the count and
+     * the colours of a murmuration are not those of the flat sky, and a value
+     * cannot be told from the default once it is set, so the two are held back
+     * as not given and put back below. */
+    int flat_birds = config.birds, flat_palette = config.palette;
+    config.birds = 0;
+    config.palette = -1;
     options_status_t status =
         options_parse(OPTIONS, OPTION_COUNT, argc, argv, error, sizeof(error));
 
@@ -3403,6 +3817,9 @@ static void read_options(int argc, char **argv) {
         fprintf(stderr, "Try '%s --help'.\n", program_name);
         exit(EXIT_USAGE);
     }
+    if (config.birds == 0) config.birds = sky_mode ? SKY_BIRDS : flat_birds;
+    if (config.palette < 0) config.palette = sky_mode ? palette_named("ash") : flat_palette;
+    if (sky_mode) check_the_sky_options();
     /* A preset is expanded first so that a slider given after it still wins: the
      * table cannot express that order, so the parser's left to right reading is
      * honoured by putting the broad stroke before the fine ones. */
@@ -3646,6 +4063,7 @@ static int run_cast_recording(void) {
     png_image_free(&text_canvas);
     free_sprites(text_sprites);
     spatial_grid_destroy(&grid);
+    end_the_sky();
     free(snapshot);
     free(birds);
     if (!closed) {
@@ -3656,6 +4074,30 @@ static int run_cast_recording(void) {
            screen.cols, screen.rows, record_fps, (double)total / record_fps,
            (double)bytes / 1024.0);
     return EXIT_SUCCESS;
+}
+
+/* A recording's table of colours is made from its first frame, and in a space the
+ * first frame does not show everything: a size of bird nobody has flown into view
+ * yet, or a hawk that is still off the screen, would be drawn in the nearest colour
+ * the table has. The colours that matter are the flat tints of the sprites, each
+ * a handful, and they are asked for by name. The flat flock shows everything it
+ * has from the first frame, and is left as it was. */
+static void reserve_the_colours_of_the_sprites(gif_writer_t *gif, const png_image_t *frames) {
+    uint8_t colours[GIF_MAX_RESERVED][3];
+    int count = 0;
+    for (int set = 0; set < sprite_set_count() && count < GIF_MAX_RESERVED; set++) {
+        const png_image_t *image = &frames[set * ROTATION_FRAMES];
+        if (image->pixels == NULL) continue;
+        for (int i = 0; i < image->width * image->height; i++) {
+            const uint8_t *pixel = image->pixels + (size_t)i * 4;
+            if (pixel[3] != 255) continue;
+            int known = 0;
+            for (int c = 0; c < count; c++) known |= memcmp(colours[c], pixel, 3) == 0;
+            if (!known) memcpy(colours[count++], pixel, 3);
+            break;
+        }
+    }
+    gif_reserve_colours(gif, (const uint8_t(*)[3])colours, count);
 }
 
 static int run_recording(void) {
@@ -3715,6 +4157,7 @@ static int run_recording(void) {
         fprintf(stderr, "%s: %s: %s\n", program_name, record_path, gif_status_string(gif_status));
         return EXIT_FAILURE;
     }
+    if (sky_mode) reserve_the_colours_of_the_sprites(gif, frames);
 
     bird_t *birds = calloc((size_t)config.birds, sizeof(*birds));
     bird_t *snapshot = malloc(sizeof(*snapshot) * (size_t)config.birds);
@@ -3762,6 +4205,7 @@ static int run_recording(void) {
     png_image_free(&painted);
     if (as_text) cells_destroy(&text_cells);
     spatial_grid_destroy(&grid);
+    end_the_sky();
     free(snapshot);
     free(birds);
 
@@ -3835,6 +4279,7 @@ static int run_benchmark(void) {
 
     kitty_graphics_destroy(&graphics);
     spatial_grid_destroy(&grid);
+    end_the_sky();
     free(snapshot);
     free(birds);
     return EXIT_SUCCESS;
@@ -4049,6 +4494,7 @@ int main(int argc, char **argv) {
     }
     spatial_grid_destroy(&grid);
     kitty_graphics_destroy(&graphics);
+    end_the_sky();
     free(snapshot);
     free(birds);
     return outcome;

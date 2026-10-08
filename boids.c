@@ -2612,12 +2612,19 @@ static void fly_away(bird_t *birds) {
  * the window loses is the half the next one gains, and a bird crossing two windows
  * side by side is never wholly in neither.
  */
+/* A bird that has been flying out of a door nobody would open for a few seconds is
+ * a long way out, and a datagram with a distance the format does not believe is
+ * one that is thrown away: the way in is never further than a window. */
+static double post_reach(double reach) {
+    return reach < screen.width ? reach : screen.width;
+}
+
 static link_traveller_t traveller_of_bird(const bird_t *bird, double reach) {
     double height = screen.height > 0 ? bird->y / screen.height : 0;
     link_traveller_t traveller = {
         .kind = LINK_BIRD,
         .height = height < 0 ? 0 : height > 1 ? 1 : height,
-        .reach = reach,
+        .reach = post_reach(reach),
         .direction = bird->direction,
         .flock = bird->flock,
         .shade = bird->shade,
@@ -2634,7 +2641,7 @@ static link_traveller_t traveller_of_hawk(const hawk_t *hawk, double reach) {
     link_traveller_t traveller = {
         .kind = LINK_HAWK,
         .height = height < 0 ? 0 : height > 1 ? 1 : height,
-        .reach = reach,
+        .reach = post_reach(reach),
         .direction = hawk->direction,
         .wing = hawk->wing,
         .wing_clock = hawk->wing_clock,
@@ -2806,13 +2813,13 @@ static void sky_hand_over(bird_t *birds, int *live) {
     sky_look_at_the_doors(); /* A neighbour that would not take one is not a door. */
 }
 
-/* Joins the row of windows, or says why it cannot and ends the run: before the
- * terminal is touched, so that the words are read where they are written. */
 static void sky_leave(void) {
     link_close(&sky);
     memset(&open_edges, 0, sizeof(open_edges));
 }
 
+/* Joins the row of windows, or says why it cannot and ends the run: before the
+ * terminal is touched, so that the words are read where they are written. */
 static void sky_join(void) {
     char directory[LINK_PATH_SIZE];
     if (!share_the_sky) return;

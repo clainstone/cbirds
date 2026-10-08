@@ -3285,7 +3285,15 @@ static void test_flocks_avoid_each_other_as_much_as_asked(void) {
  * the run's; the window beside it is a second endpoint that the test drives by
  * hand. Whichever joins first is on the left. */
 static link_t beside;
-static char sky_directory[512];
+static char sky_directory[64];
+
+/* A directory for sockets. A socket's path may be 104 bytes at most on macOS,
+ * where $TMPDIR is fifty of them and the scratch directory more, so these live
+ * directly under /tmp. */
+static void make_a_short_directory(char *path, size_t size) {
+    snprintf(path, size, "/tmp/cbs.XXXXXX");
+    assert(mkdtemp(path) != NULL);
+}
 
 static void settle_the_windows(void) {
     clock_state.seconds += 1.1;
@@ -3303,7 +3311,7 @@ static void settle_the_windows(void) {
 }
 
 static void join_the_sky(int neighbour_on_the_right) {
-    scratch_file(sky_directory, sizeof(sky_directory), "sky");
+    make_a_short_directory(sky_directory, sizeof(sky_directory));
     clock_state.seconds = 0;
     if (neighbour_on_the_right) {
         assert(link_open(&sky, sky_directory, 0) == LINK_OK);
@@ -3504,6 +3512,13 @@ static void test_birds_that_fly_out_of_a_door_are_posted_whole(void) {
     assert(got.wing_clock == 0.4 && got.holding == 0.7 && got.flock == 0 && got.layer == 0);
     assert(link_receive(&beside, &got) == 0);
 
+    /* A bird a very long way out of a door that would not open is still sent as
+     * one the format believes, and lands near the edge it was meant for. */
+    assert(link_edge_open(&sky, LINK_RIGHT, LINK_BIRD));
+    bird_t straggler = {.x = 5e5, .y = 100};
+    assert(traveller_of_bird(&straggler, 5e5).reach == 800);
+    assert(traveller_of_hawk(&hawks[0], 5e5).reach == 800);
+
     /* Nothing leaves by an edge that is not a door, however far out. */
     birds[0].x = -200;
     sky_hand_over(birds, &live);
@@ -3520,6 +3535,7 @@ static void test_birds_come_in_by_the_facing_edge_at_the_same_height(void) {
                              .holding = 0.9};
 
     reset_test_config();
+    render_mode = RENDER_UNSET; /* Which clips at the edge, as the text renderers do. */
     set_test_screen(900, 400); /* A different size from the sender's: only the share counts. */
     formation_clear();
     join_the_sky(0); /* The neighbour is on the left. */
@@ -3628,6 +3644,7 @@ static void test_a_hawk_crosses_with_what_it_was_doing(void) {
     link_traveller_t got;
 
     reset_test_config();
+    render_mode = RENDER_UNSET;
     set_test_screen(800, 480);
     formation_clear();
     join_the_sky(1);
@@ -3930,10 +3947,9 @@ static void test_a_shared_sky_cannot_be_benchmarked_or_recorded(void) {
 /* A window that is told to die leaves no socket behind, whichever way. */
 static void test_a_signal_removes_the_socket(void) {
     static const int SIGNALS[] = {SIGINT, SIGTERM, SIGHUP, SIGQUIT};
-    char directory[512];
+    char directory[64];
 
-    scratch_file(directory, sizeof(directory), "run");
-    assert(mkdir(directory, 0700) == 0);
+    make_a_short_directory(directory, sizeof(directory));
     for (size_t s = 0; s < sizeof(SIGNALS) / sizeof(*SIGNALS); s++) {
         fflush(NULL);
         pid_t child = fork();
@@ -3950,7 +3966,7 @@ static void test_a_signal_removes_the_socket(void) {
         int status = 0;
         assert(waitpid(child, &status, 0) == child);
         assert(WIFEXITED(status) && WEXITSTATUS(status) == 128 + SIGNALS[s]);
-        char sky_path[600];
+        char sky_path[100];
         snprintf(sky_path, sizeof(sky_path), "%s/cbirds", directory);
         DIR *dir = opendir(sky_path);
         assert(dir != NULL);
@@ -3960,7 +3976,7 @@ static void test_a_signal_removes_the_socket(void) {
         closedir(dir);
         assert(left == 0);
     }
-    char sky_path[600];
+    char sky_path[100];
     snprintf(sky_path, sizeof(sky_path), "%s/cbirds", directory);
     assert(rmdir(sky_path) == 0);
     assert(rmdir(directory) == 0);
@@ -3969,10 +3985,9 @@ static void test_a_signal_removes_the_socket(void) {
 /* The way out through a closed pipe, which takes the normal exit and so the
  * atexit hook: with a sky joined, the socket goes with it. */
 static void test_leaving_through_exit_removes_the_socket(void) {
-    char directory[512], sky_path[600];
+    char directory[64], sky_path[100];
 
-    scratch_file(directory, sizeof(directory), "run");
-    assert(mkdir(directory, 0700) == 0);
+    make_a_short_directory(directory, sizeof(directory));
     snprintf(sky_path, sizeof(sky_path), "%s/cbirds", directory);
     fflush(NULL);
     pid_t child = fork();

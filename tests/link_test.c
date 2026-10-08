@@ -21,14 +21,15 @@
 #include <unistd.h>
 
 /* A directory of the run's own, and the sky inside it: the test never goes near
- * the real one, and a fixed name in /tmp would collide with a second run. */
-static char scratch[256];
-static char sky[300];
+ * the real one, and a fixed name in /tmp would collide with a second run. It is
+ * under /tmp whatever $TMPDIR says, because a socket's path may be 104 bytes at
+ * most on macOS, and $TMPDIR there is fifty of them before the test has named
+ * anything. */
+static char scratch[64];
+static char sky[100];
 
 static void make_scratch(void) {
-    const char *base = getenv("TMPDIR");
-    snprintf(scratch, sizeof(scratch), "%s/cbirds_link_test.XXXXXX",
-             base != NULL && *base != '\0' ? base : "/tmp");
+    snprintf(scratch, sizeof(scratch), "/tmp/cbl.XXXXXX");
     assert(mkdtemp(scratch) != NULL);
     snprintf(sky, sizeof(sky), "%s/sky", scratch);
 }

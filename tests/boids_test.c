@@ -2605,6 +2605,39 @@ static void test_a_picture_wears_a_ramp_somebody_chose(void) {
     reset_sign_state();
 }
 
+static void test_a_picture_in_black_is_not_a_picture_of_nothing(void) {
+    char path[512];
+    reset_sign_state();
+    png_image_t image = {0, 0, NULL};
+    assert(png_image_alloc(&image, 20, 20) == PNG_OK);
+    for (int i = 0; i < 400; i++) {
+        image.pixels[i * 4 + 0] = image.pixels[i * 4 + 1] = image.pixels[i * 4 + 2] = i < 200 ? 0 : 240;
+        image.pixels[i * 4 + 3] = 255;
+    }
+    uint8_t *encoded = NULL;
+    size_t length = 0;
+    assert(png_encode(&image, &encoded, &length) == PNG_OK);
+    png_image_free(&image);
+    scratch_file(path, sizeof(path), "black.png");
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL && fwrite(encoded, 1, length, file) == length && fclose(file) == 0);
+    free(encoded);
+    picture_path = path;
+    settle_the_picture_quietly();
+
+    /* The black of the picture is a colour a bird can be seen in, against the ground
+     * the recordings are painted on, and the white is as it was. */
+    assert(picture_palette.shades == 2);
+    const uint8_t ground[3] = {PICTURE_GROUND[0], PICTURE_GROUND[1], PICTURE_GROUND[2]};
+    for (int c = 0; c < 2; c++) assert(contrast_between(picture_tints[c], ground) >= 1.8);
+    assert(picture_tints[0][0] == 240);
+    assert(picture_tints[1][0] > 0 && picture_tints[1][0] < 120);
+    /* But what is dark in the picture is still the dark end of a ramp of one's own. */
+    assert(picture_dark == 0 && picture_light > 0.9);
+    assert(unlink(path) == 0);
+    reset_sign_state();
+}
+
 static void test_a_picture_that_cannot_be_drawn_says_so(void) {
     char good[512], broken[512], empty[512], missing[512];
     reset_sign_state();
@@ -4408,6 +4441,7 @@ int main(void) {
     test_the_options_that_make_a_sign();
     test_a_picture_gives_every_bird_a_place_and_a_colour();
     test_a_picture_wears_a_ramp_somebody_chose();
+    test_a_picture_in_black_is_not_a_picture_of_nothing();
     test_a_picture_that_cannot_be_drawn_says_so();
     test_a_colour_given_is_told_from_the_default();
     test_a_sign_has_a_bird_as_wide_as_its_cells_unless_it_is_told();

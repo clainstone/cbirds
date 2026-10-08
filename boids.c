@@ -1352,7 +1352,7 @@ static const double SIGN_KEEP_OUT_STEPS = 4.0;
 static const double SIGN_PANEL_GAP = DEFAULT_SPEED * 3.0;
 /* A clock lets go for this long, once a minute: long enough to be a murmuration,
  * short enough that it is a clock the rest of the time. */
-static const double SIGN_CLOCK_FLIGHT = 3.5;
+static const double SIGN_CLOCK_FLIGHT = 3.0;
 /* The colon rises by this many cells at the top of its breath. */
 static const double SIGN_BREATH_LIFT = 0.5;
 /* A pointer that has moved this lately is moving. A bird whose place it
@@ -3936,14 +3936,23 @@ static void settle_the_picture(void) {
         png_image_free(&picture_image);
         return;
     }
+    /* A bird of the picture's black is a bird nobody can see: the picture's dark is
+     * kept for ranking shades, and the colours the birds wear are lifted, towards
+     * white, until they stand as clear of the ground as the ramps' own do. */
+    picture_dark = picture_luminance(colours[made - 1]);
+    picture_light = picture_luminance(colours[0]); /* Lightest first. */
+    for (int c = 0; c < made; c++)
+        for (int step = 0; step < 32 && contrast_between(colours[c], PICTURE_GROUND) < 1.8; step++)
+            for (int channel = 0; channel < 3; channel++) {
+                int lifted = colours[c][channel] + (255 - colours[c][channel]) / 12 + 1;
+                colours[c][channel] = (uint8_t)(lifted > 255 ? 255 : lifted);
+            }
     size_t pixels = (size_t)picture_image.width * (size_t)picture_image.height, ink = 0;
     for (size_t i = 0; i < pixels; i++) ink += picture_image.pixels[i * 4 + 3] > 127;
     picture_ink = (double)ink / (double)pixels;
     memcpy(picture_tints, colours, sizeof(picture_tints));
     picture_palette.shades = made;
     picture_palette.tints = (const uint8_t(*)[3])picture_tints;
-    picture_dark = picture_luminance(colours[made - 1]);
-    picture_light = picture_luminance(colours[0]); /* Lightest first. */
     picture_colours_in_use = !palette_was_asked_for;
     if (sprite_path != NULL)
         fprintf(stderr, "%s: --sprite keeps its own colours, so the picture is drawn in them\n",

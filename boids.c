@@ -2910,6 +2910,8 @@ static void fly_away(bird_t *birds) {
         birds[i].y -= config.base_speed;
         birds[i].frame = direction_frame(birds[i].direction);
     }
+    /* They go up still flashing, and not with whatever glow they had on. */
+    if (fireflies_mode) light_the_night(birds);
 }
 
 /* Move first, then draw, and move both the flock and the hawks before drawing

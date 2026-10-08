@@ -4011,6 +4011,153 @@ static void test_a_far_swarm_flashes_to_itself(void) {
     end_the_night(&run);
 }
 
+/* Left alone for a minute a flock starts moving its sliders by itself; a night does
+ * not, because its coupling is the thing on show. And leaving, with q, the
+ * fireflies go up still flashing. */
+static void test_a_night_is_left_alone_and_flies_off_still_flashing(void) {
+    night_t run;
+    begin_the_night(&run, 96, 26, 30, 9);
+    one_night_frame(&run);
+
+    int before[4] = {config.boundary_notch, config.separation_notch, config.alignment_notch,
+                     config.vision_notch};
+    last_key_at = 0;
+    last_drift_at = 0;
+    clock_state.seconds = 10 * IDLE_SECONDS;
+    for (int i = 0; i < 20; i++) {
+        clock_state.seconds += AUTOPILOT_PERIOD;
+        maybe_drift();
+    }
+    assert(before[0] == config.boundary_notch && before[1] == config.separation_notch &&
+           before[2] == config.alignment_notch && before[3] == config.vision_notch);
+    fireflies_mode = 0; /* A flock, in the same minute, does move them. */
+    last_drift_at = 0;
+    for (int i = 0; i < 20; i++) {
+        clock_state.seconds += AUTOPILOT_PERIOD;
+        maybe_drift();
+    }
+    assert(before[0] != config.boundary_notch || before[1] != config.separation_notch ||
+           before[2] != config.alignment_notch || before[3] != config.vision_notch);
+    fireflies_mode = 1;
+    config.boundary_notch = before[0];
+    config.separation_notch = before[1];
+    config.alignment_notch = before[2];
+    config.vision_notch = before[3];
+    apply_notches();
+    clock_state.seconds = 0;
+
+    double phase = night.fly[3].phase, y = run.birds[3].y;
+    fly_away(run.birds);
+    assert(run.birds[3].y < y);
+    assert(night.fly[3].phase != phase);
+    end_the_night(&run);
+}
+
+/* Under Kitty a lit firefly is a placement of its shade of the ramp, a dark one a
+ * placement of its body, set in by half the difference of their sizes, and none is
+ * left out. */
+static void test_the_sprites_of_a_night_are_placed_lit_or_as_bodies(void) {
+    kitty_graphics_t graphics;
+    bird_t birds[3] = {{.x = 100, .y = 50, .shade = 2, .frame = 5},
+                       {.x = 200, .y = 100, .shade = -1, .frame = 5},
+                       {.x = 300, .y = 150, .shade = 0, .frame = 7}};
+    char expected[96];
+
+    reset_test_config();
+    fireflies_mode = 1;
+    config.birds = 3;
+    config.palette = palette_named("firefly");
+    config.bird_size = 0;
+    settle_the_bird_size();
+    apply_screen_size(80, 24, 640, 384);
+    legend_drawn = 0;
+    assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
+    assert(queue_render_frame(&graphics, birds) == KITTY_GRAPHICS_OK);
+
+    snprintf(expected, sizeof(expected), "a=p,I=%u,q=2,X=4,Y=2,C=1",
+             set_image_id(flock_set(2, 0, 0), 5));
+    assert(strstr(graphics.buffer, expected) != NULL);
+    int inset = firefly_body_inset();
+    assert(inset > 0 && trail_sprite_size() < config.bird_size);
+    snprintf(expected, sizeof(expected), "a=p,I=%u,q=2,X=%d,Y=%d,C=1",
+             set_image_id(trail_set(0), 5), (200 + inset) % 8, (100 + inset) % 16);
+    assert(strstr(graphics.buffer, expected) != NULL);
+    snprintf(expected, sizeof(expected), "a=p,I=%u,q=2,", set_image_id(flock_set(0, 0, 0), 7));
+    assert(strstr(graphics.buffer, expected) != NULL);
+    /* Three fireflies, three placements, and the dark one is not a bird of any shade. */
+    int placements = 0;
+    for (const char *at = graphics.buffer; (at = strstr(at, "a=p,")) != NULL; at++) placements++;
+    assert(placements == 3);
+
+    kitty_graphics_destroy(&graphics);
+    reset_test_config();
+}
+
+/* What a night shows of three sliders, over forty seconds with the others at their
+ * defaults: the share of the swarm within a few pixels of an edge, how far a
+ * firefly is from its nearest neighbour, and how much it turns a second. */
+typedef struct {
+    double near_edge, nearest, turned;
+} night_look_t;
+
+static night_look_t look_at_a_night(int boundary, int separation, int turning) {
+    night_t run;
+    night_look_t look = {0, 0, 0};
+    long samples = 0;
+
+    begin_the_night(&run, 96, 26, 30, 3);
+    config.boundary_notch = boundary;
+    config.separation_notch = separation;
+    config.turning_notch = turning;
+    apply_notches();
+    for (int frame = 0; frame < 40 * 30; frame++) {
+        one_night_frame(&run);
+        for (int i = 0; i < config.birds; i++) {
+            double change = run.birds[i].direction - run.snapshot[i].direction;
+            look.turned += fabs(atan2(sin(change), cos(change))) / config.birds / 40;
+        }
+        if (frame < 10 * 30 || frame % 30) continue;
+        for (int i = 0; i < config.birds; i++) {
+            const bird_t *a = &run.birds[i];
+            double least = 1e18;
+            for (int j = 0; j < config.birds; j++) {
+                if (j == i) continue;
+                double dx = a->x - run.birds[j].x, dy = a->y - run.birds[j].y;
+                if (dx * dx + dy * dy < least) least = dx * dx + dy * dy;
+            }
+            double edge = fmin(fmin(a->x, screen.width - a->x), fmin(a->y, screen.height - a->y));
+            look.near_edge += edge < 0.03 * screen.height;
+            look.nearest += sqrt(least);
+            samples++;
+        }
+    }
+    look.near_edge /= samples;
+    look.nearest /= samples;
+    end_the_night(&run);
+    return look;
+}
+
+/* A row does what it says: boundary keeps them off the edges, separation keeps them
+ * apart, turning is how much they wander. The other three are in the panel test:
+ * coupling and sight are the law, and the speed is the step. Measured: 2.9% of the
+ * swarm at an edge with the boundary at nothing and none at the top; the nearest
+ * neighbour 12.3 pixels off at nothing and 17.2 at the top; 2.3 radians of turning
+ * a second and 5.6. */
+static void test_every_slider_does_what_it_says_to_a_night(void) {
+    night_look_t no_boundary = look_at_a_night(0, DEFAULT_NOTCH, DEFAULT_TURNING_NOTCH);
+    night_look_t full_boundary =
+        look_at_a_night(LEGEND_BAR_CELLS, DEFAULT_NOTCH, DEFAULT_TURNING_NOTCH);
+    assert(no_boundary.near_edge > full_boundary.near_edge + 0.01);
+
+    night_look_t no_room = look_at_a_night(DEFAULT_NOTCH, 0, DEFAULT_TURNING_NOTCH);
+    night_look_t all_room = look_at_a_night(DEFAULT_NOTCH, LEGEND_BAR_CELLS, DEFAULT_TURNING_NOTCH);
+    assert(all_room.nearest > no_room.nearest * 1.2);
+
+    night_look_t lazy = look_at_a_night(DEFAULT_NOTCH, DEFAULT_NOTCH, 0);
+    night_look_t sharp = look_at_a_night(DEFAULT_NOTCH, DEFAULT_NOTCH, LEGEND_BAR_CELLS);
+    assert(sharp.turned > lazy.turned * 1.5);
+}
+
 int main(void) {
     make_scratch();
     trig_lookup_init();
@@ -4091,6 +4238,9 @@ int main(void) {
     test_a_night_records_with_the_whole_ramp_in_its_colour_table();
     test_a_night_benchmarks_and_reports_its_sync();
     test_a_far_swarm_flashes_to_itself();
+    test_a_night_is_left_alone_and_flies_off_still_flashing();
+    test_the_sprites_of_a_night_are_placed_lit_or_as_bodies();
+    test_every_slider_does_what_it_says_to_a_night();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);
     return 0;

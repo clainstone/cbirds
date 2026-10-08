@@ -69,7 +69,8 @@ $(TESTDIR)/cells_test: $(TESTDIR)/cells_test.c cells.c cells.h png.c png.h
 $(TESTDIR)/spatial_grid_test: $(TESTDIR)/spatial_grid_test.c spatial_grid.c spatial_grid.h
 	$(CC) $(BUILD) $@.c spatial_grid.c -o $@ $(LDFLAGS) $(LDLIBS)
 
-$(TESTDIR)/fireflies_test: $(TESTDIR)/fireflies_test.c fireflies.c fireflies.h spatial_grid.c spatial_grid.h
+$(TESTDIR)/fireflies_test: $(TESTDIR)/fireflies_test.c fireflies.c fireflies.h spatial_grid.c \
+                            spatial_grid.h
 	$(CC) $(BUILD) $@.c fireflies.c spatial_grid.c -o $@ $(LDFLAGS) $(LDLIBS)
 
 $(TESTDIR)/boids_test: $(TESTDIR)/boids_test.c $(SRC) $(HDR)

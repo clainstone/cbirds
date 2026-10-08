@@ -19,10 +19,10 @@
  * Nothing is delayed on its way. A firefly answers a flash in the step it sees it,
  * and a real one does not: it takes a few tenths of a second. That was tried, as
  * a hold between being pushed over and flashing, and it does not work here. With
- * 400 fireflies and a push that falls into step in 20 seconds, a hold of 20
- * milliseconds got the swarm to a sync of 0.9 and not to 0.95 in 60 seconds, and
- * one of 50 milliseconds left it at 0.3 for ever: the one that answers late is
- * late again next cycle, and it is the same lag every time.
+ * 400 fireflies at rest and a push that falls into step in 25 seconds or so, a
+ * hold of 20 milliseconds had the swarm at a sync of 0.8 to 0.9 after a minute,
+ * and one of 50 milliseconds never kept any sync it found: the one that answers
+ * late is late again next cycle, by the same lag each time.
  *
  * This file knows nothing of birds, screens or colours. It knows positions
  * (handed over by the caller each step), clocks, and how far a flash is seen.

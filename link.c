@@ -32,9 +32,10 @@ enum {
     /* A small number is a flock, a shade, a layer or a wing: the program knows
      * what they mean and none of them is anywhere near this. */
     SMALL_MAX = 15,
-    /* More garbage than this in one call and the rest waits for the next frame:
-     * whoever is flooding the socket does not get to stall the flock. */
-    JUNK_LIMIT = 1024
+    /* More datagrams than this that carry no bird, in one call, and the rest waits
+     * for the next frame: whoever is flooding the socket, with garbage or with
+     * statuses, does not get to stall the flock. */
+    NO_BIRD_LIMIT = 4096
 };
 static const uint8_t MAGIC[4] = {'C', 'B', 'L', 'K'};
 static const double TWO_PI = 6.283185307179586;
@@ -608,7 +609,7 @@ static void take_status(link_t *link, const link_message_t *message) {
 }
 
 int link_receive(link_t *link, link_traveller_t *traveller) {
-    int junk = 0;
+    int without_a_bird = 0;
     if (!link->opened) return 0;
     for (;;) {
         if (link->waiting_at < link->waiting_count) {
@@ -623,12 +624,13 @@ int link_receive(link_t *link, link_traveller_t *traveller) {
         }
         link_message_t message;
         if (!link_decode(bytes, (size_t)length, &message) || same_sender(&message.from, &link->me)) {
-            if (++junk >= JUNK_LIMIT) return 0;
+            if (++without_a_bird >= NO_BIRD_LIMIT) return 0;
             continue;
         }
         notice(link, &message.from);
         if (message.status) {
             take_status(link, &message);
+            if (++without_a_bird >= NO_BIRD_LIMIT) return 0;
             continue;
         }
         memcpy(link->waiting, message.travellers, sizeof(message.travellers[0]) * (size_t)message.count);

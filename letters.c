@@ -457,7 +457,7 @@ static void disturb(letters_t *letters, const letters_disturbance_t *disturbance
 void letters_advance(letters_t *letters, double seconds, const letters_disturbance_t *disturbances,
                      int disturbance_count) {
     if (letters == NULL || letters->count == 0) return;
-    if (seconds < 0) seconds = 0;
+    if (!(seconds >= 0)) seconds = 0; /* Negative, and not a number. */
     if (seconds > LONGEST_STEP) seconds = LONGEST_STEP;
     letters->clock += seconds;
     letters->launched_count = 0;

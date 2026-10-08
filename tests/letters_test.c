@@ -614,6 +614,25 @@ static void test_a_hawk_over_the_text_scatters_it_too(void) {
     vt_destroy(&vt);
 }
 
+static void test_a_clock_that_is_not_a_time_does_not_stop_the_cycle(void) {
+    letters_t letters;
+    vt_t vt;
+    build(&letters, &vt, "some text\nand more", 20, 3);
+    letters_advance(&letters, NAN, NULL, 0);
+    letters_advance(&letters, -1.0, NULL, 0);
+    letters_advance(&letters, INFINITY, NULL, 0);
+    assert(isfinite(letters.clock) && isfinite(letters.rest_left));
+    /* And it still runs: the first rest ends. */
+    double waited = 0;
+    while (letters.phase == LETTERS_AT_REST && waited < 30) {
+        letters_advance(&letters, STEP, NULL, 0);
+        waited += STEP;
+    }
+    assert(letters.phase == LETTERS_TAKING_OFF);
+    letters_destroy(&letters);
+    vt_destroy(&vt);
+}
+
 static void test_a_long_pause_in_the_clock_does_not_skip_the_wave(void) {
     letters_t letters;
     vt_t vt;
@@ -1106,6 +1125,7 @@ int main(void) {
     test_the_letters_in_the_air_join_the_cycle_when_the_wave_comes();
     test_a_hawk_over_the_text_scatters_it_too();
     test_a_long_pause_in_the_clock_does_not_skip_the_wave();
+    test_a_clock_that_is_not_a_time_does_not_stop_the_cycle();
     test_a_letter_in_the_air_is_drawn_where_it_is_and_its_home_is_left_empty();
     test_a_background_stays_when_the_letter_on_it_leaves();
     test_attributes_belong_to_the_letter_wherever_it_is();

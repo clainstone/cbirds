@@ -3513,8 +3513,9 @@ static void test_a_dive_alarms_the_birds_in_its_way(void) {
     reset_test_config();
 }
 
-/* Nothing is alarmed without a hawk: a flock flown for a long while without
- * one never has anything in its alarm state. */
+/* Nothing is alarmed without a hawk, or a pointer that is whipped: a flock
+ * flown for a long while with neither never has anything in its alarm state, and
+ * a pointer that is slow, or still, is not a hawk. */
 static void test_nothing_is_alarmed_without_hawks(void) {
     enum { COUNT = 120 };
     static bird_t birds[COUNT], snapshot[COUNT];
@@ -3539,6 +3540,18 @@ static void test_nothing_is_alarmed_without_hawks(void) {
     }
     static const wave_t still;
     for (int i = 0; i < COUNT; i++) assert(memcmp(&waves[i], &still, sizeof(still)) == 0);
+
+    mouse.present = 1;
+    mouse.x = birds[0].x;
+    mouse.y = birds[0].y;
+    mouse.moved_at = clock_state.seconds;
+    mouse.velocity_x = POINTER_STARTLE_CELLS * screen.cell_width * 0.5;
+    for (int frame = 0; frame < 30; frame++) {
+        memcpy(snapshot, birds, sizeof(birds));
+        assert(spatial_grid_build(&grid, COUNT, read_bird_position, snapshot) == SPATIAL_GRID_OK);
+        fly(birds, snapshot, &grid);
+    }
+    assert(!waves_in_flight);
     spatial_grid_destroy(&grid);
     reset_the_waves();
     reset_test_config();
@@ -3755,6 +3768,74 @@ static void test_a_wave_stays_in_its_flock_unless_the_flocks_are_kin(void) {
     reset_test_config();
 }
 
+/* A pointer whipped through the flock sets a wave off, and one that drifts, or
+ * has stopped, or is not there, does not. */
+static void test_a_pointer_whipped_through_the_flock_starts_a_wave(void) {
+    enum { COUNT = 60 };
+    static bird_t birds[COUNT];
+    spatial_grid_t grid;
+
+    reset_test_config();
+    reset_the_waves();
+    legend_enabled = 0;
+    apply_screen_size(200, 50, 1600, 800);
+    config.birds = COUNT;
+    config.hawks = 0;
+    for (int i = 0; i < COUNT; i++)
+        birds[i] = (bird_t){.x = 700 + (i % 10) * 12.0, .y = 350 + (i / 10) * 12.0};
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, COUNT) == SPATIAL_GRID_OK);
+    assert(spatial_grid_build(&grid, COUNT, read_bird_position, birds) == SPATIAL_GRID_OK);
+    double fast = 2 * POINTER_STARTLE_CELLS * screen.cell_width;
+
+    /* Absent, and slow, and stale: nothing. */
+    spread_the_alarm(birds, &grid);
+    assert(!waves_in_flight);
+    mouse.present = 1;
+    mouse.x = 750;
+    mouse.y = 380;
+    mouse.velocity_x = fast / 4;
+    mouse.moved_at = clock_state.seconds;
+    spread_the_alarm(birds, &grid);
+    assert(!waves_in_flight);
+    mouse.velocity_x = fast;
+    mouse.moved_at = clock_state.seconds - 5;
+    spread_the_alarm(birds, &grid);
+    assert(!waves_in_flight);
+
+    /* Whipped across, it is a hawk: the birds near it swerve, and tell the rest. */
+    mouse.moved_at = clock_state.seconds;
+    assert(pointer_startles());
+    for (int frame = 0; frame < 120; frame++) {
+        mouse.moved_at = clock_state.seconds;
+        spread_the_alarm(birds, &grid);
+    }
+    int alarmed = 0;
+    for (int i = 0; i < COUNT; i++) alarmed += wave_busy(&waves[i]);
+    assert(alarmed == COUNT);
+
+    /* And the reports that make that speed are read from the terminal: a pointer
+     * fifty columns in a twentieth of a second is going fast, and goes quiet when
+     * the terminal stops reporting it. */
+    reset_the_waves();
+    clock_state.seconds = 10;
+    read_mouse_report("<35;10;5");
+    clock_state.seconds = 10.05;
+    read_mouse_report("<35;60;5");
+    assert(mouse.velocity_x > 0 && fabs(mouse.velocity_y) < 1e-9);
+    assert(pointer_startles());
+    clock_state.seconds = 10.3;
+    assert(!pointer_startles());
+    clock_state.seconds = 11;
+    read_mouse_report("<35;62;5"); /* Two columns in most of a second. */
+    assert(!pointer_startles());
+
+    clock_state.seconds = 0;
+    spatial_grid_destroy(&grid);
+    reset_the_waves();
+    reset_test_config();
+}
+
 /* The light of a wave stands clear of the ramp, of the hawk and of the ground,
  * for every ramp, the terminal's own among them, on a dark ground and a light
  * one, and on artwork of somebody's own. */
@@ -3963,6 +4044,7 @@ int main(void) {
     test_far_birds_are_never_alarmed();
     test_the_letters_are_never_alarmed();
     test_a_wave_stays_in_its_flock_unless_the_flocks_are_kin();
+    test_a_pointer_whipped_through_the_flock_starts_a_wave();
     test_the_light_of_a_wave_stands_clear_of_everything();
     test_a_bird_in_a_wave_is_lit_in_every_renderer();
     /* Every test removes what it wrote, so this fails if one did not. */

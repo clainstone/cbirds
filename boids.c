@@ -425,6 +425,11 @@ static cells_style_t text_style(void) {
 static struct {
     int present;
     double x, y;
+    /* How fast it is going, in pixels a second on the clock, read over a short
+     * stretch of reports because one is a cell and a cell is a lot of pixels. */
+    double velocity_x, velocity_y;
+    double anchor_x, anchor_y, anchor_at; /* Where, and when, the last stretch began. */
+    double moved_at;                      /* The last report. */
 } mouse;
 
 /* A monotonic clock for everything that animates on its own: the frame counter
@@ -1958,6 +1963,21 @@ static void alarm_the_birds_near(const bird_t *birds, double x, double y, double
     }
 }
 
+/* The pointer, whipped through the flock, is a hawk to the birds it is going
+ * through, and sets a wave off the same way: a swipe across the screen and not a
+ * drift. Fast is a number of cells a second, because the terminal reports cells,
+ * and moving is the last report being recent, because it reports nothing when
+ * the pointer is still. */
+static const double POINTER_STARTLE_CELLS = 80.0;
+static const double POINTER_SPAN = 0.03;
+static const double POINTER_RECENT = 0.1;
+
+static int pointer_startles(void) {
+    if (!mouse.present || clock_state.seconds - mouse.moved_at > POINTER_RECENT) return 0;
+    double speed = sqrt(mouse.velocity_x * mouse.velocity_x + mouse.velocity_y * mouse.velocity_y);
+    return speed >= POINTER_STARTLE_CELLS * screen.cell_width;
+}
+
 /* A bird that has begun to swerve tells everyone it can see. */
 static void tell_the_neighbours(const bird_t *birds, const spatial_grid_t *grid, int source,
                                 double at, double seconds) {
@@ -1993,7 +2013,8 @@ static void tell_the_neighbours(const bird_t *birds, const spatial_grid_t *grid,
  * itself as far as it gets in the time the step covers. */
 static void spread_the_alarm(const bird_t *birds, const spatial_grid_t *grid) {
     double seconds = flight_seconds();
-    if (config.hawks == 0 && !waves_in_flight) return;
+    int startled = pointer_startles();
+    if (config.hawks == 0 && !waves_in_flight && !startled) return;
 
     wave_task_count = 0;
     for (int i = 0; i < config.birds; i++) {
@@ -2007,6 +2028,9 @@ static void spread_the_alarm(const bird_t *birds, const spatial_grid_t *grid) {
     for (int h = 0; h < config.hawks; h++)
         alarm_the_birds_near(birds, hawks[h].x, hawks[h].y, hawks[h].direction, hawks[h].diving,
                              ALARM_SHARE * hawk_reach(), seconds);
+    if (startled)
+        alarm_the_birds_near(birds, mouse.x, mouse.y, atan2(mouse.velocity_y, mouse.velocity_x), 1,
+                             ALARM_SHARE * MOUSE_REACH, seconds);
     for (int next = 0; next < wave_task_count; next++)
         tell_the_neighbours(birds, grid, wave_tasks[next].bird, wave_tasks[next].at, seconds);
 
@@ -3146,8 +3170,23 @@ static void read_mouse_report(const char *sequence) {
         *at++ != ';' || !read_decimal(&at, &row))
         return;
     if (column < 1 || row < 1) return;
-    mouse.x = (column - 0.5) * screen.cell_width;
-    mouse.y = (row - 0.5) * screen.cell_height;
+    double x = (column - 0.5) * screen.cell_width, y = (row - 0.5) * screen.cell_height;
+    double now = clock_state.seconds;
+    if (!mouse.present) {
+        mouse.anchor_x = x;
+        mouse.anchor_y = y;
+        mouse.anchor_at = now;
+        mouse.velocity_x = mouse.velocity_y = 0;
+    } else if (now - mouse.anchor_at >= POINTER_SPAN) {
+        mouse.velocity_x = (x - mouse.anchor_x) / (now - mouse.anchor_at);
+        mouse.velocity_y = (y - mouse.anchor_y) / (now - mouse.anchor_at);
+        mouse.anchor_x = x;
+        mouse.anchor_y = y;
+        mouse.anchor_at = now;
+    }
+    mouse.moved_at = now;
+    mouse.x = x;
+    mouse.y = y;
     mouse.present = 1;
 }
 

@@ -3465,11 +3465,13 @@ static void far_tint(png_image_t *image, int shade) {
 
 /* What distance does to a bird in three dimensions: smaller, which the bin's size
  * says, and dimmer, which is this. The nearest bin is the ramp's first shade as it
- * is, the farthest its last, pulled most of the way to the ground as well: the
- * ramp alone leaves the darkest shade of most of them brighter than a bird
- * half a flock away should be. At the ground a whole set vanishes, so not all the
- * way: at 0.55 the farthest bin is still there to be counted. */
-static const double SKY_DIM = 0.55;
+ * is and the farthest its last, pulled a quarter of the way to the ground as well.
+ * A farther bird has to be fainter than the ramp's darkest shade says, or the
+ * flock has no depth to it; and at half way, which is what looked best on a
+ * picture, the farthest bin was a contrast of 1.4 against the ground, which in a
+ * terminal is not there at all. At a quarter it is two to one, the contrast the
+ * ramps themselves are kept to, and the nearest is seventeen. */
+static const double SKY_DIM = 0.25;
 
 static void tint_sky(png_image_t *image, int bin) {
     const palette_t *chosen = palette();

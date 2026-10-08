@@ -873,6 +873,54 @@ static void test_a_hawk_hunts_for_as_long_as_it_is_left(void) {
     sky_destroy(&sky);
 }
 
+/* The camera gives a flock that spreads room at once and takes it back slowly: a
+ * flock cut off at the edge is worse than one a little small, and a camera that
+ * pumps in and out is worse than either. */
+static void test_the_camera_makes_room_quickly_and_takes_it_back_slowly(void) {
+    enum { COUNT = 200 };
+    sky_rules_t rules = sky_default_rules();
+    sky_t wide, narrow;
+    double settled;
+
+    assert(sky_init(&wide, COUNT, 3) == SKY_OK && sky_init(&narrow, COUNT, 3) == SKY_OK);
+    sky_populate(&wide, 0, COUNT, 0);
+    for (int step = 0; step < 600; step++) sky_step(&wide, COUNT, &rules, NULL, 0.05);
+    memcpy(narrow.birds, wide.birds, COUNT * sizeof(*wide.birds));
+    narrow.flock_radius = wide.flock_radius;
+    narrow.framed = 1;
+    settled = wide.flock_radius;
+    assert(settled > 1);
+
+    /* One flock is suddenly twice as big, the other half the size, about the same
+     * middle; a second of flight is all they get to show it. */
+    double centre[3], radius;
+    sky_measure(&wide, COUNT, centre, &radius);
+    for (int i = 0; i < COUNT; i++) {
+        wide.birds[i].x = centre[0] + (wide.birds[i].x - centre[0]) * 2;
+        wide.birds[i].y = centre[1] + (wide.birds[i].y - centre[1]) * 2;
+        wide.birds[i].z = centre[2] + (wide.birds[i].z - centre[2]) * 2;
+        narrow.birds[i].x = centre[0] + (narrow.birds[i].x - centre[0]) * 0.5;
+        narrow.birds[i].y = centre[1] + (narrow.birds[i].y - centre[1]) * 0.5;
+        narrow.birds[i].z = centre[2] + (narrow.birds[i].z - centre[2]) * 0.5;
+    }
+    sky_rules_t still = rules;
+    still.cruise = 0;
+    for (int step = 0; step < 20; step++) {
+        sky_step(&wide, COUNT, &still, NULL, 0.05);
+        sky_step(&narrow, COUNT, &still, NULL, 0.05);
+    }
+    double grown = (wide.flock_radius - settled) / settled;
+    double shrunk = (settled - narrow.flock_radius) / settled;
+    /* Of the whole way to the new size, which is +100% and -50%, how much each has
+     * covered after a second: the growing one has most of it, the shrinking one a
+     * fraction. */
+    assert(grown / 1.0 > 0.5);
+    assert(shrunk / 0.5 < 0.4);
+    assert(grown / 1.0 > 2 * (shrunk / 0.5));
+    sky_destroy(&wide);
+    sky_destroy(&narrow);
+}
+
 int main(void) {
     test_the_nearest_birds_are_the_ones_a_search_of_everything_finds();
     test_an_index_too_fine_for_the_sky_is_cut_coarser();
@@ -892,6 +940,7 @@ int main(void) {
     test_a_bad_bird_is_put_back_and_a_bad_step_is_nothing();
     test_the_index_is_sized_by_the_flock();
     test_the_camera_frames_the_flock();
+    test_the_camera_makes_room_quickly_and_takes_it_back_slowly();
     test_hawks_come_and_go_without_disturbing_each_other();
     test_a_bird_flees_a_hawk_in_reach();
     test_a_hawk_goes_through_its_bird_and_runs_on();

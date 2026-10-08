@@ -94,13 +94,14 @@ static const double ROLL_LIMIT = 0.95;
  * is eased over seconds: the flock breathes, and the picture should not. */
 static const double ORBIT_SECONDS = 120.0;
 static const double FRAME_MEMORY = 0.12;
-static const double SIZE_MEMORY = 3.0;
+static const double SIZE_ATTACK = 0.8;
+static const double SIZE_RELEASE = 4.0;
 static const double FOLLOW = 0.9;
 /* How many times the flock's root mean square radius the camera stands off, and
  * the focal length as a share of the picture: a wide view, nearly sixty degrees,
  * because the near edge of a flock should be a good deal nearer than the far one
  * for the sizes to say anything. */
-static const double FRAME_DISTANCE = 3.4;
+static const double FRAME_DISTANCE = 2.6;
 static const double FRAME_FOCAL = 0.72;
 /* A little above the flock, and rocking slowly, so that the orbit is never quite
  * a circle and a still frame is never quite the last one. */
@@ -853,7 +854,11 @@ void sky_step(sky_t *sky, int count, const sky_rules_t *rules, const sky_poke_t 
         sky->framed = 1;
     } else {
         double ease = 1 - exp(-seconds / FRAME_MEMORY);
-        double ease_size = 1 - exp(-seconds / SIZE_MEMORY);
+        /* Quick to give the flock room when it spreads, slow to take it back when it
+         * draws in: a flock that is cut off at the edge is worse than one that is a
+         * little small, and a camera that pumps in and out is worse than either. */
+        double ease_size =
+            1 - exp(-seconds / (radius > sky->flock_radius ? SIZE_ATTACK : SIZE_RELEASE));
         for (int axis = 0; axis < 3; axis++)
             sky->flock_centre[axis] += (centre[axis] - sky->flock_centre[axis]) * ease;
         sky->flock_radius += (radius - sky->flock_radius) * ease_size;

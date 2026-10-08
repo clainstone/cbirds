@@ -4975,6 +4975,42 @@ static void test_a_bird_in_a_wave_is_lit_in_every_renderer(void) {
     reset_test_config();
 }
 
+/* On a night nothing is hunted and the pointer is a lantern and not a whip: held
+ * at a speed that sets a wave off in a flock, it sets none off among fireflies,
+ * and none of them is lit as a bird in a wave is. The same whip over the same
+ * birds in a flock does start one, so what is measured is the night. */
+static void test_a_night_tells_no_alarm(void) {
+    night_t run;
+    begin_the_night(&run, 96, 26, 30, 3);
+    reset_the_waves();
+    mouse.present = 1;
+    mouse.x = screen.width / 2.0;
+    mouse.y = screen.height / 2.0;
+    mouse.velocity_x = 2 * POINTER_STARTLE_CELLS * screen.cell_width;
+    mouse.velocity_y = 0;
+    for (int frame = 0; frame < 90; frame++) {
+        mouse.moved_at = clock_state.seconds;
+        assert(pointer_startles());
+        one_night_frame(&run);
+    }
+    assert(!waves_in_flight && wave_task_count == 0);
+    for (int i = 0; i < config.birds; i++) assert(!run.birds[i].alarmed && !wave_busy(&waves[i]));
+
+    /* The lantern has cleared a hole round itself by now: put it on a firefly. */
+    fireflies_mode = 0;
+    assert(spatial_grid_build(&run.grid, config.birds, read_bird_position, run.birds) ==
+           SPATIAL_GRID_OK);
+    mouse.x = run.birds[0].x;
+    mouse.y = run.birds[0].y;
+    mouse.moved_at = clock_state.seconds;
+    spread_the_alarm(run.birds, &run.grid);
+    int lit = 0;
+    for (int i = 0; i < config.birds; i++) lit += wave_busy(&waves[i]);
+    assert(lit > 0);
+    reset_the_waves();
+    end_the_night(&run);
+}
+
 int main(void) {
     make_scratch();
     trig_lookup_init();
@@ -5074,6 +5110,7 @@ int main(void) {
     test_a_recording_with_hawks_has_the_light_in_its_palette();
     test_the_light_of_a_wave_stands_clear_of_everything();
     test_a_bird_in_a_wave_is_lit_in_every_renderer();
+    test_a_night_tells_no_alarm();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);
     return 0;

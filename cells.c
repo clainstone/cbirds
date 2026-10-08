@@ -355,6 +355,50 @@ static void paint_line(png_image_t *out, int x0, int y0, int x1, int y1, int thi
                    thickness, rgb);
 }
 
+/* The eight arrows of U+2190 to U+2199, which is what a hawk is over text, as a line
+ * to a head: not in the font, and a hollow box in their place would not say which
+ * way it flies. */
+static int paint_arrow(png_image_t *out, int x, int y, int width, int height, uint32_t glyph,
+                       const uint8_t rgb[3]) {
+    static const signed char DIRECTION[10][2] = {{-1, 0}, {0, -1},  {1, 0},  {0, 1}, {1, 0},
+                                                 {0, 1},  {-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
+    int which = (int)(glyph - 0x2190);
+    int thick = width / 6 > 1 ? width / 6 : 1;
+    int cx = x + width / 2, cy = y + height / 2;
+    int half_w = width * 2 / 5, half_h = height * 2 / 5;
+    int sides = 1;
+    int dx = DIRECTION[which][0], dy = DIRECTION[which][1];
+    if (which == 4 || which == 5) { /* The two-headed ones: left and right, up and down. */
+        sides = 2;
+        dx = which == 4 ? 1 : 0;
+        dy = which == 5 ? 1 : 0;
+    }
+    /* The diagonals are as long as the shorter side allows, so they point where they
+     * say instead of leaning towards the taller one. */
+    int reach_w = dx != 0 && dy != 0 ? (half_w < half_h / 2 ? half_w : half_h / 2) : half_w;
+    int reach_h = dx != 0 && dy != 0 ? (half_w < half_h / 2 ? half_w * 2 : half_h) : half_h;
+    for (int side = 0; side < sides; side++) {
+        int sign = side == 0 ? 1 : -1;
+        int tip_x = cx + sign * dx * reach_w, tip_y = cy + sign * dy * reach_h;
+        int tail_x = cx - sign * dx * reach_w, tail_y = cy - sign * dy * reach_h;
+        if (sides == 2) {
+            tail_x = cx;
+            tail_y = cy;
+        }
+        paint_line(out, tail_x, tail_y, tip_x, tip_y, thick, rgb);
+        /* The head: two strokes back from the tip, a quarter turn either side of the
+         * way back. */
+        int back_x = -sign * dx, back_y = -sign * dy;
+        int head_w = width / 4 > 1 ? width / 4 : 1, head_h = height / 5 > 1 ? height / 5 : 1;
+        int left_x = back_x - back_y, left_y = back_y + back_x;
+        int right_x = back_x + back_y, right_y = back_y - back_x;
+        paint_line(out, tip_x, tip_y, tip_x + left_x * head_w, tip_y + left_y * head_h, thick, rgb);
+        paint_line(out, tip_x, tip_y, tip_x + right_x * head_w, tip_y + right_y * head_h, thick,
+                   rgb);
+    }
+    return 1;
+}
+
 /* A block element, a box drawing character or a braille pattern, drawn to the
  * whole cell as a terminal draws them, so that a logo made of █ and a tree made of
  * ├── meet at the edges instead of floating in the font's margins. Returns whether
@@ -410,6 +454,8 @@ static int paint_cell_graphic(png_image_t *out, int x, int y, int width, int hei
         if (arms & 8) paint_rect(out, cx, cy, thick, y + height - cy, rgb);
         return 1;
     }
+    if (glyph >= 0x2190 && glyph <= 0x2199)
+        return paint_arrow(out, x, y, width, height, glyph, rgb);
     if (glyph >= 0x2800 && glyph <= 0x28FF) {
         int dot_w = width / 2, dot_h = height / 4;
         int gap_w = dot_w > 2 ? 1 : 0, gap_h = dot_h > 2 ? 1 : 0;

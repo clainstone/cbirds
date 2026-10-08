@@ -749,6 +749,42 @@ static void test_painted_blocks_boxes_and_braille_fill_the_cell(void) {
     cells_destroy(&cells);
 }
 
+static int ink_columns(const png_image_t *picture, int x0, int y0, int width, int rows,
+                       const uint8_t ground[3]) {
+    int first = -1, last = -1;
+    for (int x = x0; x < x0 + width; x++)
+        for (int y = y0; y < y0 + rows; y++)
+            if (memcmp(pixel(picture, x, y), ground, 3) != 0) {
+                if (first < 0) first = x;
+                last = x;
+            }
+    return first < 0 ? 0 : last - first + 1;
+}
+
+static void test_painted_arrows_have_their_head_at_the_end_they_point_to(void) {
+    static const uint8_t ground[3] = {0, 0, 0};
+    cells_t cells;
+    assert(cells_init(&cells, 1) == CELLS_OK);
+    assert(cells_resize(&cells, 4, 1) == CELLS_OK);
+    put(&cells, 0, 0, 0x2191); /* Up. */
+    put(&cells, 1, 0, 0x2193); /* Down. */
+    put(&cells, 2, 0, 0x2197); /* Up and right. */
+    put(&cells, 3, 0, 0x2199); /* Down and left. */
+    png_image_t picture = {0, 0, NULL};
+    emit_and_paint(&cells, &picture, ground);
+    /* The head is the wide end: broad at the top of an up arrow, at the bottom of a
+     * down one. */
+    assert(ink_columns(&picture, 0, 0, 12, 6, ground) >
+           ink_columns(&picture, 0, 14, 12, 6, ground));
+    assert(ink_columns(&picture, 12, 14, 12, 6, ground) >
+           ink_columns(&picture, 12, 0, 12, 6, ground));
+    /* A diagonal has ink in its two opposite corners and not in the other two. */
+    assert(lit_pixels(&picture, 24, 0, 6, 8, ground) < lit_pixels(&picture, 30, 0, 6, 8, ground));
+    assert(lit_pixels(&picture, 36, 12, 6, 8, ground) > lit_pixels(&picture, 42, 12, 6, 8, ground));
+    png_image_free(&picture);
+    cells_destroy(&cells);
+}
+
 static void test_painted_accents_fall_back_and_the_unknown_is_a_box(void) {
     static const uint8_t ground[3] = {0, 0, 0};
     cells_t cells;
@@ -799,6 +835,7 @@ int main(void) {
     test_painted_attributes();
     test_painted_palette_colours_are_the_pictures_own();
     test_painted_blocks_boxes_and_braille_fill_the_cell();
+    test_painted_arrows_have_their_head_at_the_end_they_point_to();
     test_painted_accents_fall_back_and_the_unknown_is_a_box();
     return 0;
 }

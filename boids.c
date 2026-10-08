@@ -2421,7 +2421,9 @@ static int bench_frames;
 static const char *snapshot_path;
 static const char *record_path;
 static int record_fps = 25;
-static int record_seconds = 6;
+/* Zero until asked for: six seconds for a flock, and for text the whole cycle of it
+ * (see settle_the_recording_length). */
+static int record_seconds;
 /* The size of the recording, in cells, as one thing: two flags for one idea, and
  * nobody was ever going to reach for four hundred by a hundred and twenty. */
 static int record_columns = 96;
@@ -2984,7 +2986,7 @@ static const option_t OPTIONS[] = {
     {0, "record-fps", NULL, OPTION_INT, &record_fps, 2, MAX_CAST_FPS, NULL, "RATE",
      "frames a second; a GIF can carry up to 50 (default 25)", "Output", 0},
     {0, "record-seconds", NULL, OPTION_INT, &record_seconds, 1, 120, NULL, "SECONDS",
-     "how long the recording runs (default 6)", "Output", 0},
+     "how long the recording runs (default 6, 34 for text)", "Output", 0},
     {0, "record-size", NULL, OPTION_STRING, &requested_record_size, 0, 0, NULL, "COLSxROWS",
      "the size to record at, in cells (default 96x26)", "Output", 0},
 
@@ -2998,7 +3000,7 @@ enum { OPTION_COUNT = sizeof(OPTIONS) / sizeof(*OPTIONS) };
     "\nKeys   b/B s/S a/A t/T p/P v/V   one notch down / up\n"                     \
     "       space pause   . step   0 reset   +/- birds   Tab preset\n"             \
     "       h panel   e trails   k/K hawks   g/G flocks avoid, with two or more\n" \
-    "       enter letters off, or home, with text   q quit\n"
+    "       enter letters off, or home (with text)   q quit\n"
 
 enum { EXIT_USAGE = 2 }; /* A mistyped command is not a run that went wrong. */
 
@@ -3870,6 +3872,16 @@ static void settle_the_palette_without_a_terminal(void) {
     if (palette_follows_the_theme()) config.palette = FALLBACK_PALETTE;
 }
 
+/* Six seconds is a flock's clip. A text's is a cycle: four seconds at rest, a wave
+ * of one, a flight of up to twenty-two, and four to come home, and the text whole
+ * again for the last two. */
+enum { FLOCK_RECORD_SECONDS = 6, TEXT_RECORD_SECONDS = 34 };
+
+static void settle_the_recording_length(void) {
+    if (record_seconds == 0)
+        record_seconds = letters_mode ? TEXT_RECORD_SECONDS : FLOCK_RECORD_SECONDS;
+}
+
 /* JSON needs its control characters spelled out, and an escape sequence is
  * nothing but control characters and text. Everything else, braille included,
  * goes through as the UTF-8 it already is. */
@@ -3896,6 +3908,7 @@ static void write_json_string(FILE *out, const char *text, size_t length) {
  */
 static int run_cast_recording(void) {
     spatial_grid_t grid;
+    settle_the_recording_length();
     int total = record_fps * record_seconds;
     settle_the_palette_without_a_terminal();
     set_frame_seconds(1.0 / record_fps);
@@ -4016,6 +4029,7 @@ static int run_recording(void) {
      * claimed. Every simulated frame is recorded, and the simulation steps at the
      * recording rate, so the motion in the GIF runs at life speed. */
     settle_the_palette_without_a_terminal();
+    settle_the_recording_length();
     int delay = record_delay_for(record_fps);
     /* The rate a hundredth-of-a-second delay really gives, which is not always a
      * whole number: a delay of 17 plays at 5.88 a second, not 5. */
@@ -4061,6 +4075,18 @@ static int run_recording(void) {
     if (gif_status != GIF_OK) {
         fprintf(stderr, "%s: %s: %s\n", program_name, record_path, gif_status_string(gif_status));
         return EXIT_FAILURE;
+    }
+
+    /* The first frame is the text at rest, which is where the table is chosen: the
+     * colours the letters will fly in are promised to it. */
+    if (letters_mode) {
+        uint8_t flying[GIF_SEEDS * 3];
+        int colours = 0;
+        for (int shade = 0; shade < palette()->shades && colours < GIF_SEEDS - 1;
+             shade++, colours++)
+            memcpy(flying + colours * 3, palette()->tints[shade], 3);
+        if (config.hawks > 0) memcpy(flying + 3 * colours++, hawk_colour(), 3);
+        gif_hint_colours(gif, flying, colours);
     }
 
     bird_t *birds = calloc((size_t)config.birds, sizeof(*birds));

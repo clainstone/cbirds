@@ -7,13 +7,14 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <math.h>
-#include <poll.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/select.h>
+#include <sys/time.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -576,8 +577,14 @@ static size_t terminal_query(const char *request, size_t request_length, char *r
         long spent = (now.tv_sec - start.tv_sec) * 1000L + (now.tv_nsec - start.tv_nsec) / 1000000L;
         if (spent >= milliseconds) break;
 
-        struct pollfd wait = {.fd = input_fd, .events = POLLIN};
-        int ready = poll(&wait, 1, (int)(milliseconds - spent));
+        /* select and not poll: macOS's poll does not answer for /dev/tty, which is
+         * where the keys come from when the standard input is a pipe. */
+        fd_set readable;
+        FD_ZERO(&readable);
+        FD_SET(input_fd, &readable);
+        long left = milliseconds - spent;
+        struct timeval timeout = {left / 1000, (left % 1000) * 1000};
+        int ready = select(input_fd + 1, &readable, NULL, NULL, &timeout);
         if (ready < 0) {
             if (errno == EINTR) continue;
             break;
@@ -3297,13 +3304,17 @@ static int handle_input(void) {
 }
 
 static int wait_for_terminal_io(void) {
-    struct pollfd descriptors[] = {
-        {.fd = input_fd, .events = POLLIN},
-        {.fd = STDOUT_FILENO, .events = POLLOUT},
-    };
     int result;
     do {
-        result = poll(descriptors, sizeof(descriptors) / sizeof(*descriptors), -1);
+        /* The sets are rebuilt each time round: select leaves in them only what was
+         * ready. */
+        fd_set readable, writable;
+        FD_ZERO(&readable);
+        FD_ZERO(&writable);
+        FD_SET(input_fd, &readable);
+        FD_SET(STDOUT_FILENO, &writable);
+        result = select((input_fd > STDOUT_FILENO ? input_fd : STDOUT_FILENO) + 1, &readable,
+                        &writable, NULL, NULL);
     } while (result < 0 && errno == EINTR);
     return result < 0 ? -1 : 0;
 }

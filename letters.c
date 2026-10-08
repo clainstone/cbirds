@@ -6,10 +6,12 @@
 #include "letters.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <math.h>
-#include <poll.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/select.h>
+#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -682,18 +684,23 @@ letters_read_end_t letters_read(vt_t *vt, int fd, const letters_reading_t *readi
                                                                    : LETTERS_READ_IMPATIENT);
             break;
         }
-        struct pollfd wait = {.fd = fd, .events = POLLIN};
-        int ready = poll(&wait, 1, (int)ceil(left * 1000.0));
+        /* select, because it answers for every kind of descriptor a text can come
+         * from, a device like /dev/null included, on every system this runs on. */
+        if (fd < 0 || fd >= FD_SETSIZE || fcntl(fd, F_GETFD) < 0) {
+            end = LETTERS_READ_ERROR; /* Not a descriptor that is open. */
+            break;
+        }
+        fd_set readable;
+        FD_ZERO(&readable);
+        FD_SET(fd, &readable);
+        struct timeval timeout = {(time_t)left, (suseconds_t)((left - (double)(time_t)left) * 1e6)};
+        int ready = select(fd + 1, &readable, NULL, NULL, &timeout);
         if (ready < 0) {
             if (errno == EINTR) continue;
             end = LETTERS_READ_ERROR;
             break;
         }
         if (ready == 0) continue; /* The deadline test at the top decides which. */
-        if (wait.revents & POLLNVAL) {
-            end = LETTERS_READ_ERROR;
-            break;
-        }
         ssize_t got = read(fd, chunk, sizeof(chunk));
         if (got < 0) {
             if (errno == EINTR || errno == EAGAIN) continue;

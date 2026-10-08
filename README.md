@@ -242,7 +242,8 @@ which is how to record a change of minute.
 no flight out. Input in the first half second is ignored, because it is
 whatever started the lock. It goes with everything else, so
 `cbirds --screensaver --clock` is a lock screen that tells the time. For tmux,
-which locks a client after that many idle seconds and runs the command on it:
+which locks a client after `lock-after-time` idle seconds and runs `lock-command`
+on it:
 
 ```
 set -g lock-after-time 300

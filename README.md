@@ -151,6 +151,7 @@ cbirds --flocks 3 --color ember     three flocks that keep to their own
 cbirds --color prism                a turn runs a rainbow through the flock
 cbirds --depth --trails             a second sky behind the first
 cbirds --matrix                     it is raining birds
+cbirds --fireflies                  a summer night, and they fall into step
 ```
 
 It opens by writing BOIDS, lets go, and flocks. Move the pointer into the
@@ -229,7 +230,7 @@ Sliders   0 to 12, as the panel shows them
       --avoidance NOTCH         how much flocks keep out of each other's way (default 4)
 
 Look
-  -c, --color RAMP              theme, ember, ice, acid, matrix, aurora, prism, potion, dusk, ash
+  -c, --color RAMP              theme, ember, ice, acid, matrix, aurora, prism, potion, dusk, ash, firefly
       --shape NAME              bird, arrow, plane, dot
       --sprite FILE             a PNG you supply, kept in its own colours
   -e, --trails                  faint tails behind the flock
@@ -239,6 +240,7 @@ Look
 
 Oddities
       --matrix                  it is raining birds
+      --fireflies               a summer night; they fall into step
 
 Output
       --bench N                 run N frames with no terminal, print the numbers, quit
@@ -306,6 +308,30 @@ instead of a cloud snapping into shape. Repeat sixty times a second and a
 murmuration falls out of it; nothing in the code knows what a flock looks
 like. Reynolds' paper, below, has the rest.
 
+## Fireflies
+
+`--fireflies` is a summer night. The birds become fireflies that drift in the dark,
+each flashing to a clock of its own: a second long, and a few percent off its
+neighbours'. Nothing is in charge. A firefly that sees a flash moves its own clock
+forward a little, more the nearer it is to its own flash, and one that is pushed
+past the end flashes at once. From a random start the swarm falls into step in
+about half a minute: patches first, then waves of light rolling across the
+screen, then the whole night flashing and going dark together.
+
+A flash is seen a long way, but not everywhere, which is why synchrony grows in
+patches and not all at once. The reach is counted in the distance between
+fireflies, so a small window and a large screen tell the same story. The pointer
+is a lantern: the fireflies it is held over are startled and their clocks
+thrown, and the swarm heals when it moves on.
+
+The panel keeps working. `alignment` becomes `coupling`, how far a flash moves a
+clock, and `perception` becomes `sight`, how far a flash is seen. A `sync` row
+reads out how much of the swarm is in step, from 0 to 1. Hawks, flocks, presets
+and tails have nothing to do on a night, and the program says so. A flash is the
+pale yellow of the `firefly` ramp, dying through yellow green to dark green over
+half a second, and between flashes each firefly is a faint dot; `--birds`,
+`--size`, `--shape` and `--color` still work.
+
 ## Credits
 
 The model is from Craig Reynolds' *Flocks, Herds, and Schools: A Distributed
@@ -313,6 +339,11 @@ Behavioral Model*, SIGGRAPH 1987; his page on boids is at
 [red3d.com/cwr/boids](https://www.red3d.com/cwr/boids/). The Kitty graphics
 protocol is documented at
 [sw.kovidgoyal.net/kitty/graphics-protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/).
+
+The fireflies are from Mirollo and Strogatz, *Synchronization of pulse-coupled
+biological oscillators*, SIAM Journal on Applied Mathematics, 1990. The biology
+is Buck's, in *Synchronous Rhythmic Flashing of Fireflies. II*, Quarterly Review
+of Biology, 1988.
 
 ## License
 

@@ -3084,6 +3084,7 @@ static const option_example_t EXAMPLES[] = {
     {"cbirds --hawks 2 --color ice", "something to watch"},
     {"cbirds --flocks 3 --color ember", "three of them, keeping to their own"},
     {"cbirds --depth --trails", "a second sky behind the first"},
+    {"cbirds --fireflies", "a summer night, and they fall into step"},
     {"cbirds --render kitty", "sprites, in Kitty or Ghostty"},
     {"cbirds --record flock.gif", "a GIF, with no terminal in the way"},
     {NULL, NULL},

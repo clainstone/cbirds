@@ -4,7 +4,9 @@
 #define _DARWIN_C_SOURCE
 
 #include <errno.h>
+#include <langinfo.h>
 #include <limits.h>
+#include <locale.h>
 #include <math.h>
 #include <poll.h>
 #include <signal.h>
@@ -23,6 +25,7 @@
 #include "kitty_graphics.h"
 #include "options.h"
 #include "png.h"
+#include "sign.h"
 #include "spatial_grid.h"
 #include "sprite_png.h"
 
@@ -324,6 +327,7 @@ typedef struct {
     double gliding; /* Seconds of wings held out and still. */
     double trail_x[TRAIL_LENGTH], trail_y[TRAIL_LENGTH];
     int trail_at, trail_held;
+    double scattered; /* Seconds a bird of a sign stays away from its place. */
 } bird_t;
 
 typedef struct {
@@ -423,6 +427,7 @@ static cells_style_t text_style(void) {
 static struct {
     int present;
     double x, y;
+    double moved_at; /* On the run's clock: a pointer that is still scatters no sign. */
 } mouse;
 
 /* A monotonic clock for everything that animates on its own: the frame counter
@@ -1171,11 +1176,65 @@ static struct {
     double y[FORMATION_MAX_TARGETS];
     double until; /* Seconds on the clock at which to let go; negative is never. */
     int writing;
+    /* What only a sign has (see below). The intro leaves all of it alone, and a
+     * bird of the intro is told by nothing but its number. */
+    int sign;
+    double cell;                          /* The side of one lit cell of a letter. */
+    double hover;                         /* How far a bird loops round its place. */
+    int slot[MAX_BIRDS];                  /* A bird's target, or -1 if it flocks on. */
+    double hover_x[MAX_BIRDS], hover_y[MAX_BIRDS]; /* Where in its loop, this frame. */
+    double lift[FORMATION_MAX_TARGETS];   /* One for a target that rises with the breath. */
+    double shift_y[FORMATION_MAX_TARGETS]; /* And how far it has risen, this frame. */
+    int keep_out;                         /* The rest of the flock stays out of box. */
+    sign_box_t box;
+    double band;
 } formation;
 
 static void formation_clear(void) {
     formation.count = 0;
     formation.writing = 0;
+    formation.keep_out = 0;
+}
+
+/* Puts lines of text on the grid of cells, centred in the rectangle, each cell
+ * `cell` pixels on a side; formation.count says how many targets that made. Each
+ * line is centred on the widest. A lone line is laid out exactly as it always
+ * was, to the last bit, because the intro is a lone line and every recording
+ * opens with it. */
+static void formation_place(const char *const *lines, int line_count, double left, double top,
+                            double right, double bottom, double cell, int lift_the_colon) {
+    int columns = 0;
+    for (int l = 0; l < line_count; l++)
+        if (font_text_width(lines[l]) > columns) columns = font_text_width(lines[l]);
+
+    double width = columns * cell, height = sign_rows(line_count) * cell;
+    double origin_x = left + (right - left - width) / 2;
+    double origin_y = top + (bottom - top - height) / 2;
+
+    for (int l = 0; l < line_count; l++) {
+        double indent = (columns - font_text_width(lines[l])) / 2.0;
+        int column = 0;
+        for (const char *c = lines[l]; *c != '\0'; c++) {
+            const char *glyph = font_glyph(*c);
+            if (glyph == NULL) continue;
+            for (int row = 0; row < FONT_HEIGHT; row++) {
+                for (int x = 0; x < FONT_WIDTH; x++) {
+                    if (glyph[row * FONT_WIDTH + x] != '#') continue;
+                    if (formation.count >= FORMATION_MAX_TARGETS) break;
+                    double px = origin_x + (indent + column + x + 0.5) * cell;
+                    double py = origin_y + (l * (FONT_HEIGHT + SIGN_LINE_GAP) + row + 0.5) * cell;
+                    if (legend_turn_zone(px, py)) continue;
+                    formation.x[formation.count] = px;
+                    formation.y[formation.count] = py;
+                    formation.lift[formation.count] = lift_the_colon && *c == ':' ? 1.0 : 0.0;
+                    formation.shift_y[formation.count] = 0;
+                    formation.count++;
+                }
+            }
+            column += FONT_ADVANCE;
+        }
+    }
+    formation.writing = formation.count > 0;
 }
 
 /* Lays the text out and returns how many targets it made, zero if it will not
@@ -1187,6 +1246,7 @@ static int formation_layout(const char *text) {
     int columns = font_text_width(text);
 
     formation_clear();
+    formation.sign = 0;
     if (columns <= 0 || right - left < columns || bottom - top < FONT_HEIGHT) return 0;
 
     /* One cell is as large as both dimensions allow, so the text fills the space
@@ -1195,37 +1255,354 @@ static int formation_layout(const char *text) {
     double by_height = (bottom - top) / FONT_HEIGHT;
     if (by_height < cell) cell = by_height;
 
-    double width = columns * cell, height = FONT_HEIGHT * cell;
-    double origin_x = left + (right - left - width) / 2;
-    double origin_y = top + (bottom - top - height) / 2;
-
-    int column = 0;
-    for (const char *c = text; *c != '\0'; c++) {
-        const char *glyph = font_glyph(*c);
-        if (glyph == NULL) continue;
-        for (int row = 0; row < FONT_HEIGHT; row++) {
-            for (int x = 0; x < FONT_WIDTH; x++) {
-                if (glyph[row * FONT_WIDTH + x] != '#') continue;
-                if (formation.count >= FORMATION_MAX_TARGETS) break;
-                double px = origin_x + (column + x + 0.5) * cell;
-                double py = origin_y + (row + 0.5) * cell;
-                if (legend_turn_zone(px, py)) continue;
-                formation.x[formation.count] = px;
-                formation.y[formation.count] = py;
-                formation.count++;
-            }
-        }
-        column += FONT_ADVANCE;
-    }
-    formation.writing = formation.count > 0;
+    formation_place(&text, 1, left, top, right, bottom, cell, 0);
     return formation.count;
 }
 
 static int formation_target_of(int index, double *x, double *y) {
     if (!formation.writing || formation.count == 0) return 0;
-    *x = formation.x[index % formation.count];
-    *y = formation.y[index % formation.count];
+    if (!formation.sign) {
+        *x = formation.x[index % formation.count];
+        *y = formation.y[index % formation.count];
+        return 1;
+    }
+    /* A sign picks its writers, and they hover: a few pixels of loop of their own
+     * round the place, and the colon's birds lift with the breath. */
+    int target = index >= 0 && index < MAX_BIRDS ? formation.slot[index] : -1;
+    if (target < 0) return 0;
+    *x = formation.x[target] + formation.hover_x[index];
+    *y = formation.y[target] + formation.hover_y[index] + formation.shift_y[target];
     return 1;
+}
+
+/* A bird of a sign that has been scattered is no writer until it has come back:
+ * it flocks, and flees what scattered it, and then it goes home. */
+static int formation_target_for(const bird_t *bird, int index, double *x, double *y) {
+    if (bird->scattered > 0) return 0;
+    return formation_target_of(index, x, y);
+}
+
+/*
+ * The flock as a sign.
+ *
+ * The intro is three seconds of letters. A sign is the same idea held for as
+ * long as it takes to read: --say writes what it is given, --clock the time, and
+ * in both the flock stays at it, lets go now and then for a murmuration, and
+ * writes it again.
+ *
+ * What three seconds can do without and a minute cannot is stand still. A bird
+ * that lands and stops is dead on the screen after the first few seconds, so a
+ * bird of a sign hovers: it flies a small loop of its own about its place, with
+ * its own phase and pace, and the strokes shimmer and stay sharp. Not every bird
+ * writes. Round robin over eight hundred birds would put a dozen on every cell
+ * of a short word and leave nobody to fly; a sign gives a lit cell a few birds,
+ * and the rest keep flocking round it, kept out of the box the text is in.
+ */
+typedef enum { SIGN_NONE, SIGN_SAY, SIGN_CLOCK } sign_kind_t;
+
+static const char *say_text;          /* --say, as it was typed. */
+static char sign_words[SIGN_TEXT_MAX]; /* And as the font can draw it. */
+static int clock_mode;
+static const char *clock_start;       /* --clock-at: a time to start from. */
+static int screensaver_mode;
+
+/* Two thirds of the free width, centred, which is sky on either side for the
+ * flock; and three fifths of the height, so that two or three lines of a long
+ * text are still lines of a sign and not the whole screen. */
+static const double SIGN_WIDTH_SHARE = 2.0 / 3.0;
+static const double SIGN_HEIGHT_SHARE = 0.6;
+/* The largest a cell grows, in bird sizes: past two and a half the cells of a
+ * short word are further apart than a bird is wide, and the letters fall apart
+ * into dots. */
+static const double SIGN_LARGEST_CELL = 2.5;
+/* At most this share of the flock writes, whatever the text, so that there is
+ * always a flock for it to be a sign in front of; and at most this many to a lit
+ * cell, because past four a cell is a smudge. */
+static const double SIGN_WRITER_SHARE = 0.6;
+enum { SIGN_PER_CELL_MAX = 4 };
+/* The loop is a seventh of a bird across, and never more than a fifth of the
+ * distance between two cells, or the strokes blur into each other; a pixel and a
+ * half at least, or there is nothing to see, and six at most. */
+static const double SIGN_HOVER_SIZE = 0.14, SIGN_HOVER_CELL = 0.22;
+static const double SIGN_HOVER_MIN = 1.5, SIGN_HOVER_MAX = 6.0;
+/* The rest of the flock is turned away from the text about as firmly as from
+ * the pointer, from three birds off at the least. */
+static const double SIGN_KEEP_OUT_WEIGHT = 5.0;
+static const double SIGN_KEEP_OUT_BAND = 3.0;
+static const double SIGN_KEEP_OUT_STEPS = 4.0;
+/* The room the panel takes, past its own edge, when there is one: a few frames
+ * of flight, so that no letter lands in its turn zone at any pace. */
+static const double SIGN_PANEL_GAP = DEFAULT_SPEED * 3.0;
+/* A clock lets go for this long, once a minute: long enough to be a murmuration,
+ * short enough that it is a clock the rest of the time. */
+static const double SIGN_CLOCK_FLIGHT = 3.5;
+/* The colon rises by this many cells at the top of its breath. */
+static const double SIGN_BREATH_LIFT = 0.5;
+/* A pointer that has moved this lately is moving. A bird whose place it
+ * reaches is scattered for this long after the last time it did, and a little
+ * longer, bird by bird, so that they do not all come home as one. */
+static const double POINTER_MOVING_SECONDS = 0.6;
+static const double SCATTER_SECONDS = 1.2;
+static const double SCATTER_STAGGER = 1.0;
+/* A lock command is started by the key that is about to be pressed: input in the
+ * first half second is whatever started it. */
+static const double SCREENSAVER_GRACE = 0.5;
+
+static struct {
+    sign_kind_t kind;
+    int up;           /* Being held, as far as the flock is concerned. */
+    unsigned cycle;   /* Times held and let go, which varies the rhythm. */
+    double until;     /* On the run's clock: when the hold or the flight is over. */
+    double last_tick;
+    char written[SIGN_TEXT_MAX]; /* What is up now. */
+    int twelve_hours;
+    int virtual_clock; /* The time is the start time and the run's clock, not the wall's. */
+    time_t origin;
+    /* The screen it was laid out for: a sign that outlives a window resize or the
+     * panel being opened is laid out again, and its birds fly to the new places. */
+    int key_width, key_height, key_legend_width, key_legend_height, key_birds, key_size;
+} the_sign;
+
+static int a_sign_is_asked_for(void) {
+    return the_sign.kind != SIGN_NONE;
+}
+
+/* The clock's second, to the nanosecond when it is the wall's, so the colon
+ * breathes on the tick; and a recording's own, from where it was told to start. */
+static time_t sign_wall_time(double *into_the_second) {
+    if (the_sign.virtual_clock) {
+        double whole = floor(clock_state.seconds);
+        *into_the_second = clock_state.seconds - whole;
+        return the_sign.origin + (time_t)whole;
+    }
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    *into_the_second = (double)now.tv_nsec / 1e9;
+    return now.tv_sec;
+}
+
+static void sign_text_now(char *out, size_t size) {
+    if (the_sign.kind == SIGN_CLOCK) {
+        double unused;
+        time_t now = sign_wall_time(&unused);
+        struct tm local;
+        if (localtime_r(&now, &local) == NULL) memset(&local, 0, sizeof(local));
+        sign_clock_text(&local, the_sign.twelve_hours, out, size);
+    } else {
+        snprintf(out, size, "%s", sign_words);
+    }
+}
+
+static int sign_layout_is_current(void) {
+    return the_sign.key_width == screen.width && the_sign.key_height == screen.height &&
+           the_sign.key_legend_width == screen.legend_width &&
+           the_sign.key_legend_height == screen.legend_height &&
+           the_sign.key_birds == config.birds && the_sign.key_size == config.bird_size;
+}
+
+/* Lays the cleaned text out as a sign and picks its writers from the birds.
+ * Returns whether it fits: the screen may be too small, or the flock too small
+ * for the text, and then the flock simply flocks. */
+static int sign_place(const char *clean, int reference_columns, int lift_the_colon,
+                      const bird_t *birds) {
+    double pad = config.bird_size * 2.0;
+    double left = pad, top = pad, right = screen.width - pad, bottom = screen.height - pad;
+    if (screen.legend_width > 0) left = screen.legend_width + SIGN_PANEL_GAP + pad;
+    double free_width = right - left, free_height = bottom - top;
+    double width = free_width * SIGN_WIDTH_SHARE, height = free_height * SIGN_HEIGHT_SHARE;
+
+    sign_lines_t lines;
+    double cell;
+    int line_count = sign_fit(clean, reference_columns, width, height,
+                              SIGN_LARGEST_CELL * config.bird_size, &lines, &cell);
+    formation_clear();
+    formation.sign = 1;
+    the_sign.key_width = screen.width;
+    the_sign.key_height = screen.height;
+    the_sign.key_legend_width = screen.legend_width;
+    the_sign.key_legend_height = screen.legend_height;
+    the_sign.key_birds = config.birds;
+    the_sign.key_size = config.bird_size;
+    if (line_count == 0) return 0;
+
+    int lit = 0;
+    const char *text[SIGN_MAX_LINES];
+    for (int l = 0; l < line_count; l++) {
+        text[l] = lines.line[l];
+        lit += font_text_cells(lines.line[l]);
+    }
+    int near_birds = 0;
+    for (int i = 0; i < config.birds; i++) near_birds += birds[i].layer == 0;
+    if (lit > FORMATION_MAX_TARGETS || lit > near_birds) return 0;
+
+    /* The text is centred by where its birds are drawn, which is a bird's top left
+     * corner: half a bird off to the right and down of the place it is flown to. */
+    double shift = config.bird_size / 2.0;
+    left += (free_width - width) / 2 - shift;
+    top += (free_height - height) / 2 - shift;
+    formation_place(text, line_count, left, top, left + width, top + height, cell, lift_the_colon);
+    if (formation.count == 0) return 0;
+
+    formation.cell = cell;
+    double hover = SIGN_HOVER_SIZE * config.bird_size;
+    if (SIGN_HOVER_CELL * cell < hover) hover = SIGN_HOVER_CELL * cell;
+    if (hover < SIGN_HOVER_MIN) hover = SIGN_HOVER_MIN;
+    if (hover > SIGN_HOVER_MAX) hover = SIGN_HOVER_MAX;
+    formation.hover = hover;
+
+    /* A few birds to a lit cell, as many as the flock can spare. */
+    int per_cell = (int)(near_birds * SIGN_WRITER_SHARE) / formation.count;
+    if (per_cell > SIGN_PER_CELL_MAX) per_cell = SIGN_PER_CELL_MAX;
+    if (per_cell < 1) per_cell = 1;
+    int writers = per_cell * formation.count;
+    if (writers > near_birds) writers = near_birds;
+    for (int i = 0; i < MAX_BIRDS; i++) formation.slot[i] = -1;
+    int next = 0;
+    for (int i = 0; i < config.birds && next < writers; i++) {
+        if (birds[i].layer > 0) continue; /* The far sky is another sky. */
+        formation.slot[i] = next++ % formation.count;
+    }
+
+    /* The box the rest of the flock is turned away from: the text, and a bird's
+     * width round it. */
+    double x_min = left + width, x_max = left, y_min = top + height, y_max = top;
+    for (int t = 0; t < formation.count; t++) {
+        if (formation.x[t] < x_min) x_min = formation.x[t];
+        if (formation.x[t] > x_max) x_max = formation.x[t];
+        if (formation.y[t] < y_min) y_min = formation.y[t];
+        if (formation.y[t] > y_max) y_max = formation.y[t];
+    }
+    formation.box = (sign_box_t){x_min - config.bird_size, y_min - config.bird_size,
+                                 x_max + config.bird_size, y_max + config.bird_size};
+    formation.band = SIGN_KEEP_OUT_BAND * config.bird_size;
+    formation.keep_out = 1;
+    return 1;
+}
+
+/* Where every writer is in its loop, and how far the colon has risen, this frame. */
+static void sign_move_the_letters(void) {
+    for (int i = 0; i < config.birds; i++)
+        if (formation.slot[i] >= 0)
+            sign_hover((unsigned)i, clock_state.seconds, formation.hover, &formation.hover_x[i],
+                       &formation.hover_y[i]);
+    double fraction = 0;
+    if (the_sign.kind == SIGN_CLOCK) (void)sign_wall_time(&fraction);
+    double breath = sign_breath(fraction);
+    for (int t = 0; t < formation.count; t++)
+        formation.shift_y[t] = -formation.lift[t] * SIGN_BREATH_LIFT * formation.cell * breath;
+}
+
+static int sign_write(const bird_t *birds) {
+    char text[SIGN_TEXT_MAX];
+    char clean[SIGN_TEXT_MAX];
+    sign_text_now(text, sizeof(text));
+    sign_clean(text, clean, sizeof(clean));
+    int fits = sign_place(clean, the_sign.kind == SIGN_CLOCK ? sign_columns("00:00") : 0,
+                          the_sign.kind == SIGN_CLOCK, birds);
+    if (!fits) {
+        formation_clear();
+        the_sign.up = 0;
+        return 0;
+    }
+    snprintf(the_sign.written, sizeof(the_sign.written), "%s", text);
+    formation.until = -1; /* A sign lets go when it is time, not when the intro is. */
+    the_sign.up = 1;
+    sign_move_the_letters();
+    return 1;
+}
+
+static void sign_let_go(void) {
+    formation_clear();
+    the_sign.up = 0;
+    the_sign.until = clock_state.seconds + (the_sign.kind == SIGN_CLOCK
+                                                ? SIGN_CLOCK_FLIGHT
+                                                : sign_flight_seconds(the_sign.cycle));
+    the_sign.cycle++; /* One held and flown: the next is a little different. */
+}
+
+static void begin_the_sign(void) {
+    the_sign.up = 0;
+    the_sign.cycle = 0;
+    the_sign.until = clock_state.seconds;
+    the_sign.last_tick = clock_state.seconds;
+    formation_clear();
+    formation.sign = 1;
+}
+
+/* Once a frame, before the flock flies: the sign is written, held, let go of
+ * and written again. A pause holds it too, so that a sign does not let go the
+ * moment a pause is over. */
+static void sign_advance(const bird_t *birds) {
+    if (the_sign.kind == SIGN_NONE) return;
+    double now = clock_state.seconds;
+    double waited = now - the_sign.last_tick;
+    the_sign.last_tick = now;
+    if (paused && !step_once) {
+        if (the_sign.until >= 0) the_sign.until += waited;
+        return;
+    }
+
+    if (!the_sign.up) {
+        if (now < the_sign.until) return;
+        if (sign_write(birds)) {
+            the_sign.until = the_sign.kind == SIGN_CLOCK ? -1 : now + sign_hold_seconds(the_sign.cycle);
+        } else {
+            the_sign.until = now + 1; /* The screen may be bigger by then. */
+        }
+        return;
+    }
+    int new_minute = 0;
+    if (the_sign.kind == SIGN_CLOCK) {
+        char shown[SIGN_TEXT_MAX];
+        sign_text_now(shown, sizeof(shown));
+        new_minute = strcmp(shown, the_sign.written) != 0;
+    }
+    if (new_minute || (the_sign.until >= 0 && now >= the_sign.until)) {
+        sign_let_go();
+        return;
+    }
+    if (!sign_layout_is_current() && !sign_write(birds)) {
+        the_sign.until = now + 1;
+        return;
+    }
+    sign_move_the_letters();
+}
+
+/* The rest of the flock is turned away from the text while it is up. Zero for a
+ * bird of the far sky, and with no sign. */
+static vector_t sign_keep_out_vector(const bird_t *bird) {
+    vector_t push = {0, 0};
+    if (!formation.writing || !formation.keep_out || bird->layer > 0) return push;
+    /* Felt some steps of flight before the box, and not at a fixed distance: a
+     * band of three birds is crossed in a frame or two at the pace of a 25 frame
+     * recording. Measured on 800 birds saying HELLO WORLD for forty seconds, with
+     * the band alone, a hundredth of the free flock was inside the text at any
+     * moment at 25 frames a second on 96 by 26 cells, and a five hundredth at 60
+     * on 200 by 50; with the band at four steps of flight, none and a three
+     * thousandth. */
+    double band = SIGN_KEEP_OUT_STEPS * config.speed;
+    if (band < formation.band) band = formation.band;
+    sign_box_push(&formation.box, band, bird->x, bird->y, &push.x, &push.y);
+    return push;
+}
+
+static int pointer_is_moving(void) {
+    return mouse.present && clock_state.seconds - mouse.moved_at < POINTER_MOVING_SECONDS;
+}
+
+/* How long a bird of a sign has still to stay away: the pointer, while it moves,
+ * scatters every bird whose place it reaches, and they come home when it has
+ * gone. */
+static double sign_scatter_left(const bird_t *was, int index) {
+    if (!formation.writing) return 0;
+    double left = was->scattered - frame_seconds;
+    if (left < 0) left = 0;
+    int target = index >= 0 && index < MAX_BIRDS ? formation.slot[index] : -1;
+    if (target < 0 || !pointer_is_moving()) return left;
+    double dx = formation.x[target] - mouse.x, dy = formation.y[target] - mouse.y;
+    if (dx * dx + dy * dy >= (double)MOUSE_REACH * MOUSE_REACH) return left;
+    double staying = SCATTER_SECONDS + SCATTER_STAGGER * sign_unit((unsigned)index);
+    return staying > left ? staying : left;
 }
 
 /* It opens by writing its name, in the middle, for a moment; then the flock
@@ -1233,6 +1610,11 @@ static int formation_target_of(int index, double *x, double *y) {
  * watch. A keypress ends it early, and a screen too small for the word simply
  * starts flocking. */
 static void begin_the_intro(void) {
+    /* A sign is what the flock writes instead, if one was asked for. */
+    if (a_sign_is_asked_for()) {
+        begin_the_sign();
+        return;
+    }
     if (formation_layout("BOIDS")) formation.until = INTRO_SECONDS;
 }
 
@@ -2025,7 +2407,7 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
     double want_x, want_y;
     /* Writing overrules flocking while it lasts: a bird with a target steers at
      * it and nothing else, which is what makes a letter a letter. */
-    if (formation_target_of(target_index, &want_x, &want_y)) {
+    if (formation_target_for(target, target_index, &want_x, &want_y)) {
         double to_x = want_x - target->x, to_y = want_y - target->y;
         if (to_x * to_x + to_y * to_y > 1e-9) return normalized_angle(to_y, to_x);
         return target->direction;
@@ -2036,6 +2418,7 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
     vector_t pointer = pointer_vector(target);
     vector_t hawk = hawk_vector(target);
     vector_t wind = wind_vector();
+    vector_t keep_out = sign_keep_out_vector(target);
     int neighbors = 0, strangers = 0;
     double kin = 0; /* Counted in kinship: a whole bird for its own flock. */
     int center_x, center_y;
@@ -2116,17 +2499,17 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
         double x = separation.x * config.separation + alignment.x * config.alignment +
                    cohesion.x * COHESION_W + boundary.x * config.boundary + leash.x * LEASH_WEIGHT +
                    pointer.x * MOUSE_WEIGHT + hawk.x * HAWK_WEIGHT + wind.x * WIND_WEIGHT +
-                   wary.x * config.avoid_weight;
+                   wary.x * config.avoid_weight + keep_out.x * SIGN_KEEP_OUT_WEIGHT;
         double y = separation.y * config.separation + alignment.y * config.alignment +
                    cohesion.y * COHESION_W + boundary.y * config.boundary + leash.y * LEASH_WEIGHT +
                    pointer.y * MOUSE_WEIGHT + hawk.y * HAWK_WEIGHT + wind.y * WIND_WEIGHT +
-                   wary.y * config.avoid_weight;
+                   wary.y * config.avoid_weight + keep_out.y * SIGN_KEEP_OUT_WEIGHT;
         return x == 0 && y == 0 ? target->direction : normalized_angle(y, x);
     }
     boundary.x = boundary.x * config.boundary + leash.x * LEASH_WEIGHT + pointer.x * MOUSE_WEIGHT +
-                 hawk.x * HAWK_WEIGHT + wind.x * WIND_WEIGHT;
+                 hawk.x * HAWK_WEIGHT + wind.x * WIND_WEIGHT + keep_out.x * SIGN_KEEP_OUT_WEIGHT;
     boundary.y = boundary.y * config.boundary + leash.y * LEASH_WEIGHT + pointer.y * MOUSE_WEIGHT +
-                 hawk.y * HAWK_WEIGHT + wind.y * WIND_WEIGHT;
+                 hawk.y * HAWK_WEIGHT + wind.y * WIND_WEIGHT + keep_out.y * SIGN_KEEP_OUT_WEIGHT;
     if (boundary.x != 0 || boundary.y != 0) {
         double x = cos(target->direction) + boundary.x;
         double y = sin(target->direction) + boundary.y;
@@ -2205,17 +2588,16 @@ static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_gr
          * inside the panel's turn zone, whose push is a constraint rather than a
          * force. Limiting that one would break the panel's unreachability, which
          * is proved on the assumption that a bird can turn away at once. */
-        double unused_x, unused_y;
-        if (!formation_target_of(i, &unused_x, &unused_y) &&
-            !legend_turn_zone(snapshot[i].x, snapshot[i].y))
+        double want_x, want_y;
+        int writing = formation_target_for(&snapshot[i], i, &want_x, &want_y);
+        if (!writing && !legend_turn_zone(snapshot[i].x, snapshot[i].y))
             direction = turn_towards(snapshot[i].direction, direction, turn_limit());
         birds[i].direction = direction;
         /* Never past the target: the last step is the distance left, which is
          * what makes a letter crisp instead of a cloud orbiting one. */
         double step = config.speed * flock_pace(snapshot[i].flock);
         if (snapshot[i].layer > 0) step *= FAR_PACE; /* Further away moves slower: parallax. */
-        double want_x, want_y;
-        if (formation_target_of(i, &want_x, &want_y)) {
+        if (writing) {
             double dx = want_x - birds[i].x, dy = want_y - birds[i].y;
             double remaining = sqrt(dx * dx + dy * dy);
             if (remaining < step) step = remaining;
@@ -2223,7 +2605,13 @@ static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_gr
         birds[i].x += step * cos(direction);
         birds[i].y += step * sin(direction);
         if (the_rain_is_falling) wrap_position(&birds[i]);
+        if (formation.sign) birds[i].scattered = sign_scatter_left(&snapshot[i], i);
         birds[i].shade = shade_for(&birds[i]);
+        /* A writer of a sign keeps one colour from the moment it is sent: its
+         * heading goes round the loop of its hover once or twice a second, and a
+         * colour that went round the ramp with it would make the letters flicker. */
+        if (writing && formation.sign && config.flocks == 1 && palette_shades() > 1)
+            birds[i].shade = (int)(sign_unit((unsigned)i) * palette_shades()) % palette_shades();
         beat_wings(&birds[i]);
         if (config.trails && i % TRAIL_EVERY == 0) {
             /* Where it was, not where it is: a tail behind, never under. */
@@ -2744,6 +3132,13 @@ static const option_t OPTIONS[] = {
     {0, "render", NULL, OPTION_ENUM, &render_mode, 0, 0, RENDER_NAMES, "HOW",
      "braille by default; sextants, blocks, or kitty in Kitty and Ghostty", "Look", 1},
 
+    {0, "say", NULL, OPTION_STRING, &say_text, 0, 0, NULL, "TEXT",
+     "the flock writes TEXT and holds it as a sign", "Sign", 0},
+    {0, "clock", NULL, OPTION_FLAG, &clock_mode, 0, 0, NULL, NULL,
+     "the flock tells the time, HH:MM, in local time", "Sign", 0},
+    {0, "clock-at", NULL, OPTION_STRING, &clock_start, 0, 0, NULL, "TIME",
+     "start the clock at HH:MM or HH:MM:SS, not now", "Sign", 0},
+
     {0, "matrix", NULL, OPTION_FLAG, &matrix_mode, 0, 0, NULL, NULL, "it is raining birds",
      "Oddities", 0},
 
@@ -2764,6 +3159,8 @@ static const option_t OPTIONS[] = {
 
     {0, "unlock-fps", NULL, OPTION_FLAG, &unlock_fps, 0, 0, NULL, NULL,
      "render as fast as the terminal allows", "General", 0},
+    {0, "screensaver", NULL, OPTION_FLAG, &screensaver_mode, 0, 0, NULL, NULL,
+     "quit at once on any key, click or movement, for tmux's lock-command", "General", 0},
 };
 enum { OPTION_COUNT = sizeof(OPTIONS) / sizeof(*OPTIONS) };
 
@@ -2783,6 +3180,8 @@ static const option_example_t EXAMPLES[] = {
     {"cbirds --flocks 3 --color ember", "three of them, keeping to their own"},
     {"cbirds --depth --trails", "a second sky behind the first"},
     {"cbirds --render kitty", "sprites, in Kitty or Ghostty"},
+    {"cbirds --say \"back in five\"", "the flock writes it and holds it"},
+    {"cbirds --screensaver --clock", "a lock screen that tells the time"},
     {"cbirds --record flock.gif", "a GIF, with no terminal in the way"},
     {NULL, NULL},
 };
@@ -2832,6 +3231,7 @@ static void read_mouse_report(const char *sequence) {
     mouse.x = (column - 0.5) * screen.cell_width;
     mouse.y = (row - 0.5) * screen.cell_height;
     mouse.present = 1;
+    mouse.moved_at = clock_state.seconds;
 }
 
 /*
@@ -2910,6 +3310,11 @@ static int handle_input(void) {
     char input[INPUT_BUFFER_SIZE];
     ssize_t length = read(STDIN_FILENO, input, sizeof(input));
     if (length > 0) last_key_at = clock_state.seconds;
+    /* A screensaver goes at the first sign of anybody: a key, a click, a pointer
+     * that moves, all of which arrive here as bytes. Whatever arrives in its first
+     * moments is what started it, or the terminal answering something, and is read
+     * and thrown away. */
+    if (screensaver_mode && length > 0) return clock_state.seconds < SCREENSAVER_GRACE;
     for (ssize_t i = 0; i < length; i++) {
         unsigned char key = (unsigned char)input[i];
         int *notch = NULL, step = 0;
@@ -2943,7 +3348,9 @@ static int handle_input(void) {
         }
 
         if (key == 'b' || key == 'a') konami_note((char)key);
-        formation_clear(); /* Any key ends the intro; the pointer does not. */
+        /* Any key ends the intro; the pointer does not. A sign is for reading, and
+         * the keys are for the flock: they leave it up. */
+        if (!formation.sign) formation_clear();
         switch (key) {
             case 'q':
                 return 0;
@@ -3210,10 +3617,34 @@ static png_status_t rasterise_geometry(const png_image_t *source, png_image_t *f
     return status;
 }
 
+/* A sign is read at the size of its letters, and a bird of thirty pixels on a
+ * letter whose cells are twelve apart is a smudge: on an eighty column terminal
+ * it was not a word any more. So when --size was not given a sign's bird is as
+ * wide as the distance between two cells of its letters, and never more than the
+ * usual thirty. This is the same fit the sign is laid out by, on the screen as it
+ * is, with a margin of its own since the bird's size is what is being chosen. */
+static int sign_bird_size(void) {
+    if (screen.width <= 0 || screen.height <= 0) return DEFAULT_BIRD_SIZE;
+    char clean[SIGN_TEXT_MAX];
+    sign_lines_t lines;
+    double cell;
+    const double margin = 40;
+    if (the_sign.kind == SIGN_CLOCK)
+        sign_clean("00:00", clean, sizeof(clean));
+    else
+        snprintf(clean, sizeof(clean), "%s", sign_words);
+    if (sign_fit(clean, 0, (screen.width - 2 * margin) * SIGN_WIDTH_SHARE,
+                 (screen.height - 2 * margin) * SIGN_HEIGHT_SHARE, 1e9, &lines, &cell) == 0)
+        return DEFAULT_BIRD_SIZE;
+    int size = (int)(cell + 0.5);
+    return size < MIN_BIRD_SIZE ? MIN_BIRD_SIZE : (size > DEFAULT_BIRD_SIZE ? DEFAULT_BIRD_SIZE : size);
+}
+
 /* Before anything is sized from the bird: thirty pixels under every renderer
- * when --size was not given. */
+ * when --size was not given, or what fits the letters when it is a sign. */
 static void settle_the_bird_size(void) {
-    if (config.bird_size == 0) config.bird_size = DEFAULT_BIRD_SIZE;
+    if (config.bird_size != 0) return;
+    config.bird_size = a_sign_is_asked_for() ? sign_bird_size() : DEFAULT_BIRD_SIZE;
 }
 
 static png_status_t rasterise_sprites(png_image_t *frames) {
@@ -3372,6 +3803,75 @@ static void usage(FILE *out, const char *program, int everything) {
     if (everything) fputs(KEYS_HELP, out);
 }
 
+/* HH:MM or HH:MM:SS, as many digits as the person felt like typing. */
+static int read_clock_start(const char *text, int *hour, int *minute, int *second) {
+    const char *at = text;
+    *second = 0;
+    if (!read_decimal(&at, hour) || *at++ != ':' || !read_decimal(&at, minute)) return 0;
+    if (*at == ':' && (at++, !read_decimal(&at, second))) return 0;
+    return *at == '\0' && *hour < 24 && *minute < 60 && *second < 60;
+}
+
+/* The options that make the flock a sign, settled together: which one it is,
+ * whether the font can draw it, and what the clock is going by. Said out loud
+ * and then ignored where the flock can simply fly as usual, and refused where
+ * the command is a mistake. */
+static void settle_the_sign(void) {
+    int hour = 0, minute = 0, second = 0;
+    if (clock_start != NULL) {
+        if (!read_clock_start(clock_start, &hour, &minute, &second)) {
+            fprintf(stderr, "%s: --clock-at wants HH:MM or HH:MM:SS, not '%s'\n", program_name,
+                    clock_start);
+            exit(EXIT_USAGE);
+        }
+        clock_mode = 1;
+    }
+    if ((say_text != NULL) + clock_mode > 1) {
+        fprintf(stderr, "%s: --say and --clock each write the whole sign, so only one of them\n",
+                program_name);
+        exit(EXIT_USAGE);
+    }
+    if (say_text != NULL) {
+        int kept = sign_clean(say_text, sign_words, sizeof(sign_words));
+        int needs = font_text_cells(sign_words);
+        if (kept == 0) {
+            fprintf(stderr, "%s: --say has nothing the font can draw, so the flock flies as usual\n",
+                    program_name);
+        } else if (needs > FORMATION_MAX_TARGETS) {
+            fprintf(stderr, "%s: --say is too long to write, so the flock flies as usual\n",
+                    program_name);
+        } else if (needs > config.birds) {
+            fprintf(stderr,
+                    "%s: that text takes %d birds to write and the flock has %d, so the flock "
+                    "flies as usual\n",
+                    program_name, needs, config.birds);
+        } else {
+            the_sign.kind = SIGN_SAY;
+        }
+    }
+    if (clock_mode) {
+        the_sign.kind = SIGN_CLOCK;
+        /* The locale's own idea of the hour, and nothing else of it: only the
+         * names of things in time are asked of it. */
+        setlocale(LC_TIME, "");
+        the_sign.twelve_hours = sign_wants_twelve_hours(nl_langinfo(T_FMT));
+        /* A recording runs on its own clock and not the wall's, so the time it tells
+         * is the time it started at, moved on by its own frames. */
+        the_sign.virtual_clock = record_path != NULL || bench_frames > 0 || clock_start != NULL;
+        the_sign.origin = time(NULL);
+        if (clock_start != NULL) {
+            struct tm today;
+            if (localtime_r(&the_sign.origin, &today) != NULL) {
+                today.tm_hour = hour;
+                today.tm_min = minute;
+                today.tm_sec = second;
+                today.tm_isdst = -1;
+                the_sign.origin = mktime(&today);
+            }
+        }
+    }
+}
+
 static void read_options(int argc, char **argv) {
     char error[160];
     if (argc > 0 && argv[0] != NULL) program_name = argv[0];
@@ -3435,6 +3935,7 @@ static void read_options(int argc, char **argv) {
         }
         png_image_free(&probe);
     }
+    settle_the_sign();
     if (requested_record_size != NULL) {
         int columns = 0, rows = 0;
         const char *at = requested_record_size;
@@ -3565,9 +4066,9 @@ static int run_cast_recording(void) {
     set_frame_seconds(1.0 / record_fps);
     legend_enabled = 0;
     render_mode = RENDER_BRAILLE;
-    settle_the_bird_size();
     apply_screen_size(record_columns, record_rows, record_columns * DEFAULT_CELL_WIDTH,
                       record_rows * DEFAULT_CELL_HEIGHT);
+    settle_the_bird_size();
     if (spatial_grid_init(&grid, SPATIAL_CELL_SIZE) != SPATIAL_GRID_OK) return EXIT_FAILURE;
     if (spatial_grid_prepare(&grid, screen.width, screen.height, config.birds) != SPATIAL_GRID_OK)
         return EXIT_FAILURE;
@@ -3611,6 +4112,7 @@ static int run_cast_recording(void) {
         clock_state.seconds = (double)frame / record_fps;
         if (formation.writing && formation.until >= 0 && clock_state.seconds >= formation.until)
             formation_clear();
+        sign_advance(birds);
         maybe_drift();
 
         memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
@@ -3731,6 +4233,7 @@ static int run_recording(void) {
         clock_state.seconds = (double)frame / actual_fps;
         if (formation.writing && formation.until >= 0 && clock_state.seconds >= formation.until)
             formation_clear();
+        sign_advance(birds);
         maybe_drift();
 
         memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
@@ -3806,10 +4309,17 @@ static int run_benchmark(void) {
     seed_random(requested_seed >= 0 ? (unsigned)requested_seed : 1u);
     initialize_birds(birds);
     place_hawks();
+    /* The default bench has never written anything, and still does not; a sign
+     * is measured with the clock it would have at sixty frames a second. */
+    if (a_sign_is_asked_for()) begin_the_intro();
 
     double bytes = 0;
     clock_gettime(CLOCK_MONOTONIC, &start);
     for (int frame = 0; frame < bench_frames; frame++) {
+        if (a_sign_is_asked_for()) {
+            clock_state.seconds = (double)frame / FRAME_RATE;
+            sign_advance(birds);
+        }
         memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
         spatial_grid_build(&grid, config.birds, read_bird_position, snapshot);
         hunt(snapshot);
@@ -3861,7 +4371,6 @@ int main(int argc, char **argv) {
     /* Braille in every terminal, and the sprites when --render kitty asks: there
      * is no terminal this refuses to run in, and none it has to guess about. */
     render_mode = live_render_mode();
-    settle_the_bird_size();
     if (palette_follows_the_theme() && !learn_the_theme()) config.palette = FALLBACK_PALETTE;
 
     spatial_grid_status_t grid_status = spatial_grid_init(&grid, SPATIAL_CELL_SIZE);
@@ -3874,6 +4383,7 @@ int main(int argc, char **argv) {
      * and a bug report be reproduced. */
     seed_random(requested_seed >= 0 ? (unsigned)requested_seed : (unsigned)time(NULL));
     update_screen_dimensions();
+    settle_the_bird_size(); /* From the screen, if it is a sign that is being sized. */
     grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, config.birds);
     if (grid_status != SPATIAL_GRID_OK) {
         fprintf(stderr, "Cannot prepare spatial grid: %s\n",
@@ -3932,6 +4442,9 @@ int main(int argc, char **argv) {
     double leaving = 0; /* Seconds left of the flight out. */
     while (running) {
         if (!handle_input() && leaving <= 0) {
+            /* A screensaver is gone the moment it is asked, with no flight out: the
+             * person at the keyboard is waiting for the shell. */
+            if (screensaver_mode) break;
             /* Asked to quit: fly off the top first, so the last thing seen is
              * the flock leaving rather than the screen blinking out. */
             leaving = (double)OUTRO_FRAMES_AT_SIXTY / FRAME_RATE;
@@ -3952,6 +4465,7 @@ int main(int argc, char **argv) {
          * from wherever the letters left it, which is the nicest part to watch. */
         if (formation.writing && formation.until >= 0 && clock_state.seconds >= formation.until)
             formation_clear();
+        if (leaving <= 0) sign_advance(birds);
         maybe_drift();
         update_screen_dimensions();
         grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, config.birds);

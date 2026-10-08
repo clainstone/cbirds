@@ -649,9 +649,11 @@ static double seconds_now(void) {
     return (double)now.tv_sec + (double)now.tv_nsec / 1e9;
 }
 
-letters_read_end_t letters_read(vt_t *vt, int fd, const letters_reading_t *reading, size_t *bytes) {
+letters_read_end_t letters_read(vt_t *vt, int fd, const letters_reading_t *reading, size_t *bytes,
+                                uint8_t **raw) {
     static char chunk[READ_CHUNK];
-    size_t total = 0;
+    size_t total = 0, kept_capacity = 0;
+    if (raw != NULL) *raw = NULL;
     double started = seconds_now(), first = 0, last = 0;
     letters_read_end_t end = LETTERS_READ_ENDED;
 
@@ -696,6 +698,24 @@ letters_read_end_t letters_read(vt_t *vt, int fd, const letters_reading_t *readi
         size_t take = (size_t)got;
         if (reading->limit > 0 && total + take > reading->limit) take = reading->limit - total;
         vt_feed(vt, chunk, take);
+        if (raw != NULL) {
+            /* The bytes as they came, for laying the text out again on another size of
+             * screen. Bounded by the limit like everything else. */
+            if (total + take > kept_capacity) {
+                size_t wanted = kept_capacity ? kept_capacity * 2 : 4 * READ_CHUNK;
+                while (wanted < total + take) wanted *= 2;
+                uint8_t *grown = realloc(*raw, wanted);
+                if (grown == NULL) {
+                    free(*raw);
+                    *raw = NULL;
+                    raw = NULL;
+                } else {
+                    *raw = grown;
+                    kept_capacity = wanted;
+                }
+            }
+            if (raw != NULL) memcpy(*raw + total, chunk, take);
+        }
         total += take;
         last = seconds_now();
         if (first == 0) first = last;

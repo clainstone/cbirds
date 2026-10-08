@@ -343,7 +343,8 @@ static void test_the_wave_takes_about_a_second_to_cross_a_screenful(void) {
         static int left_on[8192];
         fill_screen(text, sizeof(text), 80, 24);
         rng_state = 1234567ull + (unsigned long long)run * 7919ull;
-        for (int warm = 0; warm < 50; warm++) test_random(); /* A seed is not random until it has been stirred. */
+        for (int warm = 0; warm < 50; warm++)
+            test_random(); /* A seed is not random until it has been stirred. */
         build(&letters, &vt, text, 80, 24);
         run_until_everyone_is_up(&letters, left_on);
         int first = 1 << 30, last = -1;
@@ -389,11 +390,12 @@ static void test_a_wave_that_is_taking_too_long_startles_the_rest_at_once(void) 
     letters_t letters;
     vt_t vt;
     /* Words far apart in a long row: the wave would cross each gap in turn. */
-    build(&letters, &vt, "aa                                                                    "
-                         "                                                                      "
-                         "bb                                                                    "
-                         "                                                                      "
-                         "cc",
+    build(&letters, &vt,
+          "aa                                                                    "
+          "                                                                      "
+          "bb                                                                    "
+          "                                                                      "
+          "cc",
           200, 2);
     letters_poke(&letters);
     letters_advance(&letters, STEP, NULL, 0);
@@ -860,7 +862,7 @@ static void test_input_that_ends_is_read_to_its_end(void) {
     letters_reading_t reading = {1.0, 1.0, 5.0, 1 << 20};
     size_t bytes = 0;
     double started = clock_seconds();
-    assert(letters_read(&vt, fds[0], &reading, &bytes) == LETTERS_READ_ENDED);
+    assert(letters_read(&vt, fds[0], &reading, &bytes, NULL) == LETTERS_READ_ENDED);
     assert(clock_seconds() - started < 0.5); /* Not by waiting for a timeout. */
     assert(bytes == 12);
     assert(vt_cell(&vt, 0, 0)->glyph == 'h' && vt_cell(&vt, 0, 1)->glyph == 'w');
@@ -877,7 +879,7 @@ static void test_input_that_goes_quiet_is_not_waited_for_for_ever(void) {
     letters_reading_t reading = {5.0, 0.3, 5.0, 1 << 20};
     size_t bytes = 0;
     double started = clock_seconds();
-    assert(letters_read(&vt, fds[0], &reading, &bytes) == LETTERS_READ_QUIET);
+    assert(letters_read(&vt, fds[0], &reading, &bytes, NULL) == LETTERS_READ_QUIET);
     double took = clock_seconds() - started;
     assert(took >= 0.25 && took < 1.5);
     assert(bytes == 8 && vt_cell(&vt, 0, 0)->glyph == 't');
@@ -894,7 +896,7 @@ static void test_input_that_never_comes_ends_the_wait(void) {
     letters_reading_t reading = {0.3, 0.3, 5.0, 1 << 20};
     size_t bytes = 99;
     double started = clock_seconds();
-    assert(letters_read(&vt, fds[0], &reading, &bytes) == LETTERS_READ_NOTHING);
+    assert(letters_read(&vt, fds[0], &reading, &bytes, NULL) == LETTERS_READ_NOTHING);
     double took = clock_seconds() - started;
     assert(took >= 0.25 && took < 1.5 && bytes == 0);
     close(fds[0]);
@@ -921,7 +923,7 @@ static void test_input_that_keeps_trickling_is_cut_off_by_patience(void) {
     letters_reading_t reading = {5.0, 0.5, 0.6, 1 << 20};
     size_t bytes = 0;
     double started = clock_seconds();
-    assert(letters_read(&vt, fds[0], &reading, &bytes) == LETTERS_READ_IMPATIENT);
+    assert(letters_read(&vt, fds[0], &reading, &bytes, NULL) == LETTERS_READ_IMPATIENT);
     double took = clock_seconds() - started;
     assert(took >= 0.5 && took < 1.5);
     assert(bytes >= 5 * 5 && bytes < 100 * 5);
@@ -948,7 +950,7 @@ static void test_a_flood_stops_at_the_byte_limit_and_keeps_the_last_screenful(vo
     letters_reading_t reading = {5.0, 5.0, 10.0, 100000};
     size_t bytes = 0;
     double started = clock_seconds();
-    assert(letters_read(&vt, fds[0], &reading, &bytes) == LETTERS_READ_LIMIT);
+    assert(letters_read(&vt, fds[0], &reading, &bytes, NULL) == LETTERS_READ_LIMIT);
     assert(bytes == 100000);
     assert(clock_seconds() - started < 3.0);
     assert(vt_cell(&vt, 0, 0)->glyph == 'y' && vt.scrolled > 40000);
@@ -966,7 +968,7 @@ static void test_input_cut_in_the_middle_of_a_character_is_finished(void) {
     vt_t vt;
     assert(vt_init(&vt, 20, 4) == 0);
     letters_reading_t reading = {1.0, 1.0, 5.0, 1 << 20};
-    assert(letters_read(&vt, fds[0], &reading, NULL) == LETTERS_READ_ENDED);
+    assert(letters_read(&vt, fds[0], &reading, NULL, NULL) == LETTERS_READ_ENDED);
     assert(vt_cell(&vt, 2, 0)->glyph == 0xFFFD);
     close(fds[0]);
     vt_destroy(&vt);
@@ -977,12 +979,51 @@ static void test_a_descriptor_that_is_no_use_is_an_error_and_an_empty_one_is_emp
     assert(vt_init(&vt, 20, 4) == 0);
     letters_reading_t reading = {0.5, 0.5, 1.0, 1 << 20};
     size_t bytes = 5;
-    assert(letters_read(&vt, 987, &reading, &bytes) == LETTERS_READ_ERROR && bytes == 0);
+    assert(letters_read(&vt, 987, &reading, &bytes, NULL) == LETTERS_READ_ERROR && bytes == 0);
     int fds[2];
     assert(pipe(fds) == 0);
     close(fds[1]);
-    assert(letters_read(&vt, fds[0], &reading, &bytes) == LETTERS_READ_ENDED && bytes == 0);
+    assert(letters_read(&vt, fds[0], &reading, &bytes, NULL) == LETTERS_READ_ENDED && bytes == 0);
     close(fds[0]);
+    vt_destroy(&vt);
+}
+
+static void test_the_bytes_can_be_kept_to_lay_the_text_out_again(void) {
+    int fds[2];
+    assert(pipe(fds) == 0);
+    static char big[200000];
+    for (size_t i = 0; i < sizeof(big); i++) big[i] = (char)('a' + i % 26);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        close(fds[0]);
+        size_t at = 0;
+        while (at < sizeof(big)) {
+            ssize_t put = write(fds[1], big + at, sizeof(big) - at);
+            if (put <= 0) _exit(1);
+            at += (size_t)put;
+        }
+        _exit(0);
+    }
+    close(fds[1]);
+    vt_t vt;
+    assert(vt_init(&vt, 20, 4) == 0);
+    letters_reading_t reading = {2.0, 1.0, 5.0, 150000};
+    size_t bytes = 0;
+    uint8_t *raw = NULL;
+    assert(letters_read(&vt, fds[0], &reading, &bytes, &raw) == LETTERS_READ_LIMIT);
+    /* Exactly what was fed, no more than the limit, and the same screen again from it. */
+    assert(raw != NULL && bytes == 150000 && memcmp(raw, big, bytes) == 0);
+    vt_t again;
+    assert(vt_init(&again, 20, 4) == 0);
+    vt_feed(&again, raw, bytes);
+    vt_finish(&again);
+    assert(memcmp(vt.storage, again.storage, 20 * 4 * sizeof(vt_cell_t)) == 0);
+    free(raw);
+    close(fds[0]);
+    int status = 0;
+    waitpid(child, &status, 0);
+    vt_destroy(&again);
     vt_destroy(&vt);
 }
 
@@ -1021,6 +1062,7 @@ int main(void) {
     test_input_that_keeps_trickling_is_cut_off_by_patience();
     test_a_flood_stops_at_the_byte_limit_and_keeps_the_last_screenful();
     test_input_cut_in_the_middle_of_a_character_is_finished();
+    test_the_bytes_can_be_kept_to_lay_the_text_out_again();
     test_a_descriptor_that_is_no_use_is_an_error_and_an_empty_one_is_empty();
     return 0;
 }

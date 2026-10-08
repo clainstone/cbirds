@@ -416,6 +416,11 @@ static int deep_look;
 static const char *text_path;
 static int letters_mode;
 static letters_t the_letters;
+/* The text as it was read, so that it can be laid out again when the window changes
+ * size, and how long the window has been a size the letters are not laid out for. */
+static uint8_t *the_text;
+static size_t the_text_length;
+static double reflow_wait;
 /* Where the keys come from, and the terminal's modes are set and queried: the
  * standard input, unless that is a pipe with text in it, in which case the
  * controlling terminal. */
@@ -3704,6 +3709,12 @@ static void read_options(int argc, char **argv) {
     }
 }
 
+static void forget_the_text(void) {
+    free(the_text);
+    the_text = NULL;
+    the_text_length = 0;
+}
+
 /*
  * Where the keys come from, and where the text does.
  *
@@ -3766,7 +3777,10 @@ static int take_the_text(int cols, int rows, int pipes) {
         exit(EXIT_FAILURE);
     }
     size_t bytes = 0;
-    letters_read_end_t end = letters_read(&vt, fd, &PIPE_READING, &bytes);
+    free(the_text);
+    the_text = NULL;
+    letters_read_end_t end = letters_read(&vt, fd, &PIPE_READING, &bytes, &the_text);
+    the_text_length = bytes;
     if (opened) close(fd);
     if (end == LETTERS_READ_ERROR && text_path != NULL) {
         fprintf(stderr, "%s: cannot read %s\n", program_name, text_path);
@@ -3782,6 +3796,7 @@ static int take_the_text(int cols, int rows, int pipes) {
         exit(EXIT_FAILURE);
     }
     if (count == 0) {
+        forget_the_text();
         if (text_path != NULL)
             fprintf(stderr, "%s: nothing to see in %s, so here are birds\n", program_name,
                     text_path);
@@ -3802,6 +3817,55 @@ static int take_the_text(int cols, int rows, int pipes) {
     deep_look = 0;
     config.trails = 0;
     the_rain_is_falling = 0;
+    return 1;
+}
+
+static const double REFLOW_SETTLE_SECONDS = 0.3;
+
+/* The window has a size the letters were not laid out for. The text is laid out
+ * again on this one, as it would have been had the command run here, and the cycle
+ * begins again from the text at rest: a letter in the air has nowhere to land on a
+ * grid that is gone. Waits until the size has held still for a moment, so that
+ * dragging a corner is not a layout a frame. Returns whether it laid out afresh. */
+static int reflow_the_letters(bird_t **birds, bird_t **snapshot) {
+    if (!letters_mode || the_text == NULL) return 0;
+    if (screen.cols == the_letters.cols && screen.rows == the_letters.rows) {
+        reflow_wait = 0;
+        return 0;
+    }
+    reflow_wait += frame_seconds;
+    if (reflow_wait < REFLOW_SETTLE_SECONDS) return 0;
+    reflow_wait = 0;
+
+    vt_t vt;
+    if (vt_init(&vt, screen.cols, screen.rows) != 0) return 0;
+    vt_feed(&vt, the_text, the_text_length);
+    vt_finish(&vt);
+    letters_t fresh;
+    int count = letters_build(&fresh, &vt, DEFAULT_CELL_WIDTH, DEFAULT_CELL_HEIGHT, MAX_LETTERS,
+                              random_unit);
+    vt_destroy(&vt);
+    bird_t *grown = count > 0 ? malloc(sizeof(**birds) * (size_t)count) : NULL;
+    bird_t *grown_snapshot = count > 0 ? malloc(sizeof(**snapshot) * (size_t)count) : NULL;
+    if (count <= 0 || grown == NULL || grown_snapshot == NULL) {
+        /* Nothing of it fits on the new screen, or no memory: what there is stays, and
+         * the size it was laid out for is the size to compare with from now on. */
+        free(grown);
+        free(grown_snapshot);
+        letters_destroy(&fresh);
+        the_letters.cols = screen.cols;
+        the_letters.rows = screen.rows;
+        return 0;
+    }
+    free(*birds);
+    free(*snapshot);
+    *birds = grown;
+    *snapshot = grown_snapshot;
+    letters_destroy(&the_letters);
+    the_letters = fresh;
+    config.birds = count;
+    place_the_letters(*birds);
+    memcpy(*snapshot, *birds, sizeof(**birds) * (size_t)count);
     return 1;
 }
 
@@ -4001,6 +4065,7 @@ static int run_cast_recording(void) {
     free_sprites(text_sprites);
     spatial_grid_destroy(&grid);
     letters_destroy(&the_letters);
+    forget_the_text();
     free(snapshot);
     free(birds);
     if (!closed) {
@@ -4141,6 +4206,7 @@ static int run_recording(void) {
     if (as_text) cells_destroy(&text_cells);
     spatial_grid_destroy(&grid);
     letters_destroy(&the_letters);
+    forget_the_text();
     free(snapshot);
     free(birds);
 
@@ -4223,6 +4289,7 @@ static int run_benchmark(void) {
     kitty_graphics_destroy(&graphics);
     spatial_grid_destroy(&grid);
     letters_destroy(&the_letters);
+    forget_the_text();
     free(snapshot);
     free(birds);
     return EXIT_SUCCESS;
@@ -4355,6 +4422,7 @@ int main(int argc, char **argv) {
             formation_clear();
         maybe_drift();
         update_screen_dimensions();
+        if (reflow_the_letters(&birds, &snapshot)) live_birds = config.birds;
         grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, config.birds);
         if (grid_status != SPATIAL_GRID_OK) {
             fprintf(stderr, "Cannot resize spatial grid: %s\n",
@@ -4451,6 +4519,7 @@ int main(int argc, char **argv) {
     spatial_grid_destroy(&grid);
     kitty_graphics_destroy(&graphics);
     letters_destroy(&the_letters);
+    forget_the_text();
     free(snapshot);
     free(birds);
     return outcome;

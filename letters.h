@@ -176,7 +176,10 @@ typedef enum {
  * `reading` holds, never blocking past them. The input is fed as it comes, so a
  * flood costs no more memory than a screen, and what is kept is the last screenful
  * of it, as a terminal would keep. Returns why it stopped, and the bytes read in
- * *bytes. The emulator is finished before it returns. */
-letters_read_end_t letters_read(vt_t *vt, int fd, const letters_reading_t *reading, size_t *bytes);
+ * *bytes. The emulator is finished before it returns. If `raw` is not NULL the bytes
+ * themselves are kept there, in memory the caller frees, so that the text can be laid
+ * out again on a screen of another size; NULL if there was no memory for them. */
+letters_read_end_t letters_read(vt_t *vt, int fd, const letters_reading_t *reading, size_t *bytes,
+                                uint8_t **raw);
 
 #endif

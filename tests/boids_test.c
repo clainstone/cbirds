@@ -3328,6 +3328,7 @@ static void world_close(world_t *world) {
     spatial_grid_destroy(&world->grid);
     cells_destroy(&text_cells);
     letters_destroy(&the_letters);
+    forget_the_text();
     letters_mode = 0;
     legend_enabled = 1;
     config.hawks = 0;
@@ -3940,6 +3941,87 @@ static void test_a_text_recording_as_a_gif_is_painted_with_the_font(void) {
     reset_test_config();
 }
 
+static void test_a_window_that_changes_size_lays_the_text_out_again(void) {
+    static const char LONG_LINE[] =
+        "0123456789012345678901234567890123456789012345678901234567890123456789\n"
+        "\033[31mred\033[0m end";
+    world_t world;
+    world_open(&world, LONG_LINE, 60, 6);
+    /* On sixty columns the first line wraps after sixty. */
+    assert(the_letters.letter[60].row == 1 && the_letters.letter[60].col == 0);
+    int before = config.birds;
+    assert(the_text != NULL && the_text_length == strlen(LONG_LINE));
+
+    /* The same size: nothing to do, however long it takes. */
+    for (int frame = 0; frame < 60; frame++)
+        assert(reflow_the_letters(&world.birds, &world.snapshot) == 0);
+
+    /* A new size is laid out once it has held still for a moment, not before. */
+    apply_screen_size(80, 8, 0, 0);
+    int frames = 0, laid_out = 0;
+    while (!laid_out && frames < 120) {
+        laid_out = reflow_the_letters(&world.birds, &world.snapshot);
+        frames++;
+    }
+    assert(laid_out && frames / (double)FRAME_RATE >= REFLOW_SETTLE_SECONDS - 0.02);
+    assert(the_letters.cols == 80 && the_letters.rows == 8);
+    assert(config.birds == before); /* The same letters, wrapped otherwise: */
+    assert(the_letters.letter[60].row == 0 && the_letters.letter[60].col == 60);
+    assert(the_letters.letter[70].glyph == 'r' && the_letters.letter[70].row == 1);
+    assert(the_letters.phase == LETTERS_AT_REST && world_all_home(&world));
+    assert(reflow_the_letters(&world.birds, &world.snapshot) == 0);
+
+    /* And the new letters fly: a whole cycle on the new screen, to be sure the
+     * arrays are the right size, which a sanitizer checks. */
+    assert(spatial_grid_prepare(&world.grid, screen.width, screen.height, config.birds) ==
+           SPATIAL_GRID_OK);
+    assert(text_renderer_fits_the_screen());
+    int count_before;
+    cell_t *picture = world_picture(&world, &count_before);
+    assert(count_before == 80 * 8);
+    feed_input("\r");
+    assert(world_run_until(&world, LETTERS_IN_FLIGHT, 60 * 6) > 0);
+    feed_input("\r");
+    int home = 0;
+    while (the_letters.phase != LETTERS_AT_REST && home < 60 * 8) {
+        world_step(&world);
+        home++;
+    }
+    int count_after;
+    cell_t *after = world_picture(&world, &count_after);
+    assert(memcmp(picture, after, (size_t)count_before * sizeof(cell_t)) == 0);
+    free(picture);
+    free(after);
+
+    /* A window with no room for any of it keeps what it has. */
+    apply_screen_size(80, 8, 0, 0);
+    forget_the_text();
+    assert(reflow_the_letters(&world.birds, &world.snapshot) == 0);
+    world_close(&world);
+}
+
+static void test_text_that_does_not_fit_the_screen_it_is_laid_out_on_scrolls(void) {
+    /* Forty lines on a screen of twelve: the last twelve are what is there, as they
+     * would be in a terminal that had printed them. */
+    static char lines[4096];
+    size_t at = 0;
+    for (int i = 0; i < 40; i++)
+        at += (size_t)snprintf(lines + at, sizeof(lines) - at, "line %02d\n", i);
+    world_t world;
+    world_open(&world, lines, 20, 12);
+    assert(the_letters.letter[0].glyph == 'l' && the_letters.letter[2].glyph == 'n');
+    int found_last = 0, found_first = 0;
+    for (int i = 0; i < config.birds; i++) {
+        if (the_letters.letter[i].row == 10 && the_letters.letter[i].glyph == '9') found_last = 1;
+        if (the_letters.letter[i].glyph == '0' && the_letters.letter[i + 1].glyph == '1' && i < 8)
+            found_first = 1;
+    }
+    assert(found_last && !found_first);
+    /* Line 39 is on the last row but one: the last line feed made a blank one. */
+    assert(the_letters.letter[config.birds - 1].row == 10);
+    world_close(&world);
+}
+
 static void test_a_benchmark_of_text_flies_it_from_the_first_frame(void) {
     char text_file[600];
     scratch_file(text_file, sizeof(text_file), "bench.txt");
@@ -4143,6 +4225,8 @@ int main(void) {
     test_how_the_flock_of_letters_looks_in_the_air();
     test_a_text_recording_is_the_text_flying();
     test_a_text_recording_as_a_gif_is_painted_with_the_font();
+    test_a_window_that_changes_size_lays_the_text_out_again();
+    test_text_that_does_not_fit_the_screen_it_is_laid_out_on_scrolls();
     test_a_benchmark_of_text_flies_it_from_the_first_frame();
     test_standard_input_that_is_not_a_terminal_leaves_the_keys_to_the_tty();
     test_keys_and_colour_questions_use_the_descriptor_that_was_chosen();

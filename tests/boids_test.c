@@ -3836,6 +3836,58 @@ static void test_a_pointer_whipped_through_the_flock_starts_a_wave(void) {
     reset_test_config();
 }
 
+/* A GIF is drawn in the colours its first frame had, and the light of a wave is
+ * on no first frame: a clip in which a wave can happen asks for it, and any
+ * other keeps the palette it always had. A wave can happen with hawks, and not in
+ * the three seconds the letters are being written. */
+static int palette_of_a_recording_has(const uint8_t colour[3], int hawks, int seconds) {
+    char path[600];
+    scratch_file(path, sizeof(path), "light.gif");
+    reset_test_config();
+    config.palette = palette_named("ice");
+    config.birds = 60;
+    config.hawks = hawks;
+    record_path = path;
+    record_fps = 25;
+    record_seconds = seconds;
+    record_columns = 96;
+    record_rows = 32;
+    fflush(stdout);
+    int saved = dup(STDOUT_FILENO);
+    FILE *quiet = freopen("/dev/null", "w", stdout);
+    assert(quiet != NULL);
+    int status = run_recording();
+    fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+    clearerr(stdout);
+    assert(status == EXIT_SUCCESS);
+    FILE *file = fopen(path, "rb");
+    assert(file != NULL);
+    uint8_t header[13 + 768];
+    assert(fread(header, 1, sizeof(header), file) == sizeof(header));
+    fclose(file);
+    remove(path);
+    record_path = NULL;
+    record_seconds = 6;
+    int found = 0;
+    for (int entry = 0; entry < 256; entry++)
+        if (memcmp(header + 13 + entry * 3, colour, 3) == 0) found = 1;
+    reset_test_config();
+    return found;
+}
+
+static void test_a_recording_with_hawks_has_the_light_in_its_palette(void) {
+    reset_test_config();
+    config.palette = palette_named("ice");
+    uint8_t light[3];
+    memcpy(light, highlight_colour(), 3);
+    assert(palette_of_a_recording_has(light, 2, 5));  /* A wave can happen. */
+    assert(!palette_of_a_recording_has(light, 0, 5)); /* No hawks, so none can. */
+    assert(!palette_of_a_recording_has(light, 2, 2)); /* All of it the letters. */
+    reset_test_config();
+}
+
 /* The light of a wave stands clear of the ramp, of the hawk and of the ground,
  * for every ramp, the terminal's own among them, on a dark ground and a light
  * one, and on artwork of somebody's own. */
@@ -4045,6 +4097,7 @@ int main(void) {
     test_the_letters_are_never_alarmed();
     test_a_wave_stays_in_its_flock_unless_the_flocks_are_kin();
     test_a_pointer_whipped_through_the_flock_starts_a_wave();
+    test_a_recording_with_hawks_has_the_light_in_its_palette();
     test_the_light_of_a_wave_stands_clear_of_everything();
     test_a_bird_in_a_wave_is_lit_in_every_renderer();
     /* Every test removes what it wrote, so this fails if one did not. */

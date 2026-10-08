@@ -36,12 +36,12 @@
 typedef enum { FIREFLIES_OK = 0, FIREFLIES_ERR_ARGUMENT, FIREFLIES_ERR_MEMORY } fireflies_status_t;
 
 typedef struct {
-    double x, y;   /* Where it is, as the caller last said. */
-    double phase;  /* Zero to one through its cycle. */
-    double period; /* Seconds for a whole cycle: its own, a little off the others'. */
-    double age;    /* Seconds since it last flashed. */
+    double x, y;    /* Where it is, as the caller last said. */
+    double phase;   /* Zero to one through its cycle. */
+    double period;  /* Seconds for a whole cycle: its own, a little off the others'. */
+    double age;     /* Seconds since it last flashed. */
     unsigned stamp; /* The step in which it last flashed. */
-    int sky;       /* Which plane: only fireflies in the same one see each other. */
+    int sky;        /* Which plane: only fireflies in the same one see each other. */
 } firefly_t;
 
 typedef struct {

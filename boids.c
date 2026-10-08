@@ -222,37 +222,90 @@ static const double WIND_WEIGHT = 0.5;
  * A swarm does not flock; it drifts and flashes, and the interest is in the
  * clocks (see fireflies.h). Everything here that is a distance is measured in
  * spacings, the distance between neighbours if the swarm were laid out evenly
- * on the screen: the same swarm on a small recording and on a large display has
- * the same number of fireflies in sight of each other, and so the same story.
- * A sight of 180 pixels that syncs four hundred fireflies in half a minute on a
- * 1600 by 800 screen syncs them in a second and a half at 768 by 416, where every
- * firefly sees a third of the swarm, and never on a 3000 by 1900 screen, where
- * each sees five.
+ * on the screen, so that the same swarm on a small recording and on a large
+ * display has the same number of fireflies in sight of each other and the same
+ * story to tell. In pixels it did not: a sight of 180, which fell 400 fireflies
+ * holding still into step in about half a minute on 1600 by 800, did it in a
+ * second and a half to 300 of them on 768 by 416, where each sees a third of the
+ * swarm, and not in ninety seconds on 3000 by 1900, where each sees seven.
+ *
+ * The times below are the order parameter passing 0.95, over sixteen seeds of
+ * 400 fireflies at 96 by 26 cells and 30 frames a second, as the mean and then
+ * the worst. The tests in boids_test.c measure the same thing.
  */
-enum { FIREFLY_COUNT = 400, FIREFLY_SIZE = 12 };
-static const double FIREFLY_PERIOD = 1.0;      /* Seconds a cycle, before the spread. */
-static const double FIREFLY_SPREAD = 0.04;     /* How far off each is: four percent. */
-static const double FIREFLY_PUSH = 0.0075;     /* How far a flash moves a clock, at the default. */
-static const double FIREFLY_BEND = 3.0;        /* How concave the clock is. */
-static const double FIREFLY_REFRACTORY = 0.15; /* Cycle after a flash that is not looking. */
-static const double FIREFLY_SIGHT = 3.2;       /* Spacings a flash is seen, at the default. */
-static const double FIREFLY_DRIFT = 1.0;       /* Spacings a second, at the default pace. */
-static const double FIREFLY_ROOM = 0.8;        /* Spacings of personal space. */
-static const double FIREFLY_WANDER = 1.0;      /* Radians the heading wanders by, per root second. */
-static const double FIREFLY_EDGE = 0.10;       /* Share of the screen at each edge that pushes back. */
-static const double FIREFLY_MEADOW = 0.35;     /* How hard the top third leans them down. */
+/* Four hundred, and fourteen pixels. Eight hundred read as a flock and these as a
+ * meadow; at 1600 by 800 they are a spacing of 57 pixels apart, which leaves the
+ * dark between them dark. The count does not move the story, because the sight
+ * follows it: 100, 200, 400, 800 and 1600 fireflies fall into step in 21, 25, 23,
+ * 28 and 29 seconds on average (eight seeds at 120 by 34). */
+enum { FIREFLY_COUNT = 400, FIREFLY_SIZE = 14 };
+/* A second a cycle and four percent either way: a few percent, so that unison
+ * has to be earned. At two percent it is 21.8 seconds (worst 32.9) and at eight
+ * it is 40.1 (61.5): the spread is what the coupling has to beat. */
+static const double FIREFLY_PERIOD = 1.0;
+static const double FIREFLY_SPREAD = 0.04;
+/* How far a flash seen close by moves a clock, in the state of the curve and not
+ * of the phase. This is the number that sets the time. At 0.004 it is 51.6
+ * seconds (worst 73), at 0.005 35.8 (63.7), here 22.2 (37.7), at 0.0085 15.7 and
+ * at 0.011 11.4: all sixteen seeds got there at every one of them, but below this
+ * the worst is more than a minute, and the viewer who has waited a minute for the
+ * unison has stopped waiting. The coupling slider multiplies it, from a fifteenth
+ * at the bottom of the bar, where nothing happens, to nearly three at the top. */
+static const double FIREFLY_PUSH = 0.0065;
+/* The concavity of the clock, which is what makes absorption work: the more bent
+ * it is the more a flash seen late in a cycle moves a firefly and a flash seen
+ * early does not. At 0.5, nearly straight, none of four swarms got past a sync of
+ * 0.45 in a minute. At 1.5 it was 57 seconds, and one in sixteen had not got
+ * there in a hundred; at 6 it was 10 seconds, which is a snap and not a climb. */
+static const double FIREFLY_BEND = 3.0;
+/* After its own flash a firefly does not see the others for this much of its
+ * cycle. It is the worst case it cuts: with none it is 27.1 seconds on average
+ * and 67.1 at worst, at 0.15 22.2 and 37.7, at 0.3 18.0 and 30.9. A firefly that
+ * has just flashed and is pushed again is being pushed by the very flashes it has
+ * just joined. */
+static const double FIREFLY_REFRACTORY = 0.15;
+/* Spacings a flash is seen, at the default perception. That is thirty or so of
+ * the others, whatever the screen. At 2.0 sixteen of sixteen never fell into step
+ * in 100 seconds, at 2.6 it was 55.1 (worst 99), at 4.0 10.8: below a sight of
+ * two spacings the swarm is not one swarm, and the slider's bottom notches are the
+ * way to watch that. */
+static const double FIREFLY_SIGHT = 3.2;
+/* A spacing a second at the shipped pace: slow, and a screen in about half a
+ * minute. It matters less than it looks, because the swarm mixes either way: at
+ * 0.4 it is 27.1 seconds and at 2.5 it is 20.0. */
+static const double FIREFLY_DRIFT = 1.0;
+/* Personal space, and how hard the others push. Pushing as hard as the heading
+ * itself, a firefly among five neighbours turned wherever their sum said and
+ * traced a tangle of loops the size of itself; at three tenths it bends round
+ * them and carries on. The wander is a heading that takes a random turn a step,
+ * in radians a root second: at 1.0 the paths still double back on themselves, at
+ * 0.6 they hover, and 0.7 is the meander between. */
+static const double FIREFLY_ROOM = 0.8;
+static const double FIREFLY_PUSH_APART = 0.3;
+static const double FIREFLY_PULL_TOGETHER = 0.01;
+static const double FIREFLY_WANDER = 0.7;
+/* The edges, and the meadow. A tenth of the screen at each side pushes back, and
+ * the top third leans the swarm down, softly: with the flock's own bands, a third
+ * of the screen at each side, the swarm sat in a box a third of the screen's area
+ * and fell into step in eight seconds. */
+static const double FIREFLY_EDGE = 0.10;
+static const double FIREFLY_MEADOW = 0.35;
 /* Between flashes a firefly is not quite dark: a small dot, the ramp's last shade
  * most of the way back to the ground, so that the swarm can be felt in the dark
  * and the dark is still dark. With nothing drawn at all, the quiet between two
  * synchronised flashes was an empty screen, and a swarm that had lost its
- * fireflies; with the last shade of the ramp it was a lawn, and the flash was a
- * brightening of it and not a light in the night. */
-static const double FIREFLY_BODY_SIZE = 0.55;  /* Of the firefly's size. */
-static const double FIREFLY_BODY_FADE = 0.60;  /* How far from the last shade to the ground. */
-static const double FIREFLY_PUSH_APART = 1.0;
-static const double FIREFLY_PULL_TOGETHER = 0.01;
-static const double FIREFLY_LANTERN = 4.0; /* Spacings the pointer reaches: a lantern, not a finger. */
-static const double FIREFLY_STARTLE = 4.0; /* Times a second a firefly in the lantern is thrown. */
+ * fireflies; with the last shade of the ramp itself it was a lawn, and the flash
+ * was a brightening of it and not a light in the night. At four fifths of the way
+ * to the ground it was gone on the GIF; at three fifths it is there when looked
+ * for. */
+static const double FIREFLY_BODY_SIZE = 0.55; /* Of the firefly's size. */
+static const double FIREFLY_BODY_FADE = 0.60; /* How far from the last shade to the ground. */
+/* The pointer is a lantern four spacings wide. At three, the fireflies it was
+ * held over fled it faster than it could scatter them, and the whole swarm's
+ * sync only fell to 0.94. A firefly in it is thrown to a new phase four times a
+ * second on average. */
+static const double FIREFLY_LANTERN = 4.0;
+static const double FIREFLY_STARTLE = 4.0;
 
 /* Needed in the config initializer, so macros rather than constants. */
 #define DEFAULT_SEPARATION_W 0.005
@@ -2336,7 +2389,8 @@ static double firefly_direction(const bird_t *birds, const spatial_grid_t *grid,
     double x = cos(heading) + apart.x * keep_apart + together.x * FIREFLY_PULL_TOGETHER +
                boundary.x * config.boundary + pointer.x * MOUSE_WEIGHT;
     double y = sin(heading) + apart.y * keep_apart + together.y * FIREFLY_PULL_TOGETHER +
-               boundary.y * config.boundary + pointer.y * MOUSE_WEIGHT + lean * lean * FIREFLY_MEADOW;
+               boundary.y * config.boundary + pointer.y * MOUSE_WEIGHT +
+               lean * lean * FIREFLY_MEADOW;
     return x == 0 && y == 0 ? target->direction : normalized_angle(y, x);
 }
 
@@ -2597,7 +2651,8 @@ static void build_legend(char lines[LEGEND_MAX_ROWS][LEGEND_LINE_MAX]) {
     legend_number(value, sizeof(value), config.alignment, 2);
     /* Matching neighbours' clocks and not their headings; as a factor on the push
      * the swarm ships with, like the speed is on its pace. */
-    if (fireflies_mode) snprintf(value, sizeof(value), "%.1f\u00d7", config.alignment / DEFAULT_ALIGNMENT_W);
+    if (fireflies_mode)
+        snprintf(value, sizeof(value), "%.1f\u00d7", config.alignment / DEFAULT_ALIGNMENT_W);
     legend_slider(lines[3], LEGEND_LINE_MAX, fireflies_mode ? "coupling" : "alignment",
                   config.alignment_notch, value, 'a', 'A');
     /* On the panel because it has keys: t and T used to change the banking with
@@ -2611,7 +2666,8 @@ static void build_legend(char lines[LEGEND_MAX_ROWS][LEGEND_LINE_MAX]) {
      * bird's: in thousands once it will not fit the column. */
     if (fireflies_mode) {
         double sight = firefly_law().sight;
-        snprintf(value, sizeof(value), sight < 1000 ? "%.0fpx" : "%.1fk", sight < 1000 ? sight : sight / 1000);
+        snprintf(value, sizeof(value), sight < 1000 ? "%.0fpx" : "%.1fk",
+                 sight < 1000 ? sight : sight / 1000);
     }
     legend_slider(lines[5], LEGEND_LINE_MAX, fireflies_mode ? "sight" : "perception",
                   config.vision_notch, value, 'p', 'P');

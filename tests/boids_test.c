@@ -3276,7 +3276,6 @@ static void test_flocks_avoid_each_other_as_much_as_asked(void) {
     assert(small_shun.outside <= small_shipped.outside * 1.5 + 0.005);
 }
 
-
 /* ---- Fireflies --------------------------------------------------------------- */
 
 /* A night to run, headless, a frame at a time: what main does each frame, without
@@ -3372,8 +3371,8 @@ static void test_fireflies_change_the_defaults_and_nothing_else(void) {
     int saved_preset = requested_preset;
     char *plain[] = {"cbirds", NULL};
     char *night_only[] = {"cbirds", "--fireflies", NULL};
-    char *asked[] = {"cbirds", "--fireflies", "-n",      "800",   "-s",
-                     "30",      "--shape",    "bird",    "--color", "theme", NULL};
+    char *asked[] = {"cbirds",  "--fireflies", "-n",      "800",   "-s", "30",
+                     "--shape", "bird",        "--color", "theme", NULL};
 
     reset_test_config();
     config.bird_size = 0;
@@ -3394,7 +3393,7 @@ static void test_fireflies_change_the_defaults_and_nothing_else(void) {
     assert(config.palette == palette_named("firefly"));
     settle_the_bird_size();
     assert(config.bird_size == FIREFLY_SIZE);
-    /* Smaller than a bird, in the range the brief gave. */
+    /* Smaller than a bird: ten to fourteen pixels. */
     assert(FIREFLY_SIZE >= 10 && FIREFLY_SIZE <= 14 && (int)FIREFLY_SIZE < (int)DEFAULT_BIRD_SIZE);
 
     /* What was asked for wins, even when it is the very thing a flock ships with. */
@@ -3407,7 +3406,7 @@ static void test_fireflies_change_the_defaults_and_nothing_else(void) {
     assert(config.shape == 0 && config.palette == 0);
 
     /* The ten ramps that were there are where they were, and the new one is last. */
-    static const char *const OLD[] = {"theme", "ember", "ice",    "acid", "matrix",
+    static const char *const OLD[] = {"theme",  "ember", "ice",    "acid", "matrix",
                                       "aurora", "prism", "potion", "dusk", "ash"};
     assert(PALETTE_COUNT == 11);
     for (int i = 0; i < 10; i++) assert(strcmp(PALETTES[i].name, OLD[i]) == 0);
@@ -3418,7 +3417,8 @@ static void test_fireflies_change_the_defaults_and_nothing_else(void) {
     for (int shade = 0; shade < 5; shade++) {
         assert(contrast_between(PALETTES[10].tints[shade], BLACK) >= 2.5);
         if (shade > 0)
-            assert(luminance_of(PALETTES[10].tints[shade]) < luminance_of(PALETTES[10].tints[shade - 1]));
+            assert(luminance_of(PALETTES[10].tints[shade]) <
+                   luminance_of(PALETTES[10].tints[shade - 1]));
     }
     /* Pale yellow to yellow green to dark green: red and green fall, in that order. */
     assert(PALETTES[10].tints[0][2] > 150 && PALETTES[10].tints[0][0] > 230);
@@ -3440,8 +3440,8 @@ static void test_fireflies_change_the_defaults_and_nothing_else(void) {
 static void test_a_night_leaves_the_flocks_switches_with_nothing_to_do(void) {
     char path[600], text[1024];
     int saved_preset = requested_preset;
-    char *argv[] = {"cbirds", "--fireflies", "--hawks", "2", "--flocks", "3", "--trails",
-                    "--preset", "storm", "--matrix", NULL};
+    char *argv[] = {"cbirds",   "--fireflies", "--hawks", "2",        "--flocks", "3",
+                    "--trails", "--preset",    "storm",   "--matrix", NULL};
 
     scratch_file(path, sizeof(path), "night_notes.txt");
     reset_test_config();
@@ -3508,10 +3508,10 @@ static void test_a_night_leaves_the_flocks_switches_with_nothing_to_do(void) {
 }
 
 /* The point of it: nothing in charge, and the swarm still falls into step. From a
- * random start the order is about a tenth or less, and it passes 0.95 in the time
- * the brief asks for, over several seeds, with the fireflies drifting and the
- * shipped push. Measured over eight seeds at 96 by 26 cells: 18.1 to 33.3 seconds,
- * 23.1 on average, at 30 frames a second; 18.9 to 26.7, 21.9 on average, at 60. */
+ * random start the order is about a tenth or less, and it passes 0.95 within the
+ * minute, over several seeds, with the fireflies drifting and the shipped push.
+ * Measured over eight seeds at 96 by 26 cells: 17.0 to 37.7 seconds, 26.3 on
+ * average, at 30 frames a second; 16.9 to 38.0, 25.6 on average, at 60. */
 static void test_the_swarm_falls_into_step_with_nothing_in_charge(void) {
     double sum = 0;
     for (int seed = 1; seed <= 5; seed++) {
@@ -3620,8 +3620,8 @@ static void test_the_lantern_scatters_the_phases_and_the_swarm_heals(void) {
         }
     }
     assert(under > 0 && away > 0);
-    assert(hypot(cx, cy) / under < 0.5);       /* Under it: thrown. */
-    assert(fireflies_order(&night) < 0.95);     /* So the swarm is out of step. */
+    assert(hypot(cx, cy) / under < 0.5);                  /* Under it: thrown. */
+    assert(fireflies_order(&night) < 0.95);               /* So the swarm is out of step. */
     assert(hypot(fx, fy) / away > hypot(cx, cy) / under); /* And the rest less so. */
 
     /* The pointer goes, and the swarm falls into step again. */
@@ -3756,10 +3756,12 @@ static void test_the_panel_says_what_a_night_does(void) {
     begin_the_night(&run, 200, 50, 60, 6);
     legend_enabled = 1;
     apply_screen_size(200, 50, 1600, 800);
-    assert(legend_rows() == LEGEND_MAX_ROWS && screen.legend_height == LEGEND_MAX_ROWS * screen.cell_height);
+    assert(legend_rows() == LEGEND_MAX_ROWS &&
+           screen.legend_height == LEGEND_MAX_ROWS * screen.cell_height);
     one_night_frame(&run);
     build_legend(lines);
-    for (int row = 0; row < LEGEND_MAX_ROWS; row++) assert(legend_cells(lines[row]) == LEGEND_COLUMNS);
+    for (int row = 0; row < LEGEND_MAX_ROWS; row++)
+        assert(legend_cells(lines[row]) == LEGEND_COLUMNS);
     assert(strstr(lines[1], "boundary") != NULL && strstr(lines[2], "separation") != NULL);
     assert(strstr(lines[3], "coupling") != NULL && strstr(lines[3], "a/A") != NULL);
     assert(strstr(lines[3], "alignment") == NULL);
@@ -3794,7 +3796,8 @@ static void test_the_panel_says_what_a_night_does(void) {
         sight_at[notch] = firefly_law().sight;
         build_legend(lines);
         assert(filled_cells(lines[3]) == notch && filled_cells(lines[5]) == notch);
-        for (int row = 0; row < LEGEND_MAX_ROWS; row++) assert(legend_cells(lines[row]) == LEGEND_COLUMNS);
+        for (int row = 0; row < LEGEND_MAX_ROWS; row++)
+            assert(legend_cells(lines[row]) == LEGEND_COLUMNS);
     }
     for (int notch = 1; notch <= LEGEND_BAR_CELLS; notch++) {
         assert(push_at[notch] > push_at[notch - 1] && sight_at[notch] > sight_at[notch - 1]);
@@ -3802,7 +3805,8 @@ static void test_the_panel_says_what_a_night_does(void) {
     /* At the default notches, the shipped push and three spacings and a bit of sight. */
     assert(fabs(push_at[DEFAULT_NOTCH] - FIREFLY_PUSH) < 1e-12);
     assert(fabs(sight_at[DEFAULT_VISION_NOTCH] - FIREFLY_SIGHT * firefly_spacing()) < 1e-9);
-    assert(push_at[0] < 0.1 * FIREFLY_PUSH); /* The floor of the bar is no coupling worth the name. */
+    assert(push_at[0] <
+           0.1 * FIREFLY_PUSH); /* The floor of the bar is no coupling worth the name. */
     config.alignment_notch = DEFAULT_NOTCH;
     config.vision_notch = DEFAULT_VISION_NOTCH;
     apply_notches();
@@ -3823,7 +3827,8 @@ static void test_the_panel_says_what_a_night_does(void) {
     apply_screen_size(1000, 250, 8000, 4000);
     build_legend(lines);
     assert(firefly_law().sight > 1000);
-    for (int row = 0; row < LEGEND_MAX_ROWS; row++) assert(legend_cells(lines[row]) == LEGEND_COLUMNS);
+    for (int row = 0; row < LEGEND_MAX_ROWS; row++)
+        assert(legend_cells(lines[row]) == LEGEND_COLUMNS);
     assert(strstr(lines[5], "k") != NULL);
     end_the_night(&run);
 
@@ -3853,7 +3858,8 @@ static void test_the_swarm_is_the_same_swarm_on_any_screen(void) {
         assert(reached > 5 && reached < 75);
         /* A flash is in sight of about thirty of the others, whatever the screen. */
         double sight = firefly_law().sight;
-        double neighbours = M_PI * sight * sight / ((double)screen.width * screen.height / config.birds);
+        double neighbours =
+            M_PI * sight * sight / ((double)screen.width * screen.height / config.birds);
         assert(neighbours > 28 && neighbours < 36);
         end_the_night(&run);
     }

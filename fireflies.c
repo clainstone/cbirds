@@ -176,7 +176,8 @@ int fireflies_step(fireflies_t *swarm, double seconds, int width, int height,
     /* The queue grows as it is read: a firefly absorbed by one flash is itself a
      * flash, seen by those round it in the same step, and the cascade runs until
      * nobody is left within reach of the end of their cycle. */
-    for (int head = 0; head < queued; head++) queued = be_seen(swarm, swarm->queue[head], law, queued);
+    for (int head = 0; head < queued; head++)
+        queued = be_seen(swarm, swarm->queue[head], law, queued);
     return queued;
 }
 

@@ -50,7 +50,7 @@ static void test_the_clock_is_concave(void) {
         for (int i = 1; i <= 100; i++) {
             double phase = i / 100.0;
             double state = fireflies_state(phase, bend);
-            assert(state > before); /* Rising. */
+            assert(state > before);             /* Rising. */
             if (i < 100) assert(state > phase); /* Above the straight line: concave. */
             before = state;
             assert(fabs(fireflies_phase(state, bend) - phase) < 1e-9);
@@ -161,7 +161,7 @@ static void line_up(fireflies_t *swarm, double flasher, double near_phase, doubl
     assert(fireflies_grow(swarm, 3, 1.0, 0.0, roll) == FIREFLIES_OK);
     firefly_t *f = swarm->fly;
     f[0].x = 800, f[0].y = 400, f[0].phase = flasher;
-    f[1].x = 850, f[1].y = 400, f[1].phase = near_phase; /* Fifty pixels off. */
+    f[1].x = 850, f[1].y = 400, f[1].phase = near_phase;                 /* Fifty pixels off. */
     f[2].x = 800 + LAW.sight + 20, f[2].y = 400, f[2].phase = far_phase; /* Beyond sight. */
     for (int i = 0; i < 3; i++) f[i].age = 10;
 }
@@ -171,7 +171,7 @@ static void test_a_flash_is_seen_within_sight_and_louder_nearby(void) {
     line_up(&swarm, 0.9999, 0.5, 0.5);
     assert(fireflies_step(&swarm, 0.001, WIDTH, HEIGHT, &LAW) == 1);
     double near_push = swarm.fly[1].phase - (0.5 + 0.001);
-    assert(near_push > 1e-4);                             /* Seen. */
+    assert(near_push > 1e-4);                                 /* Seen. */
     assert(fabs(swarm.fly[2].phase - (0.5 + 0.001)) < 1e-12); /* Not, out of sight. */
     fireflies_destroy(&swarm);
 
@@ -264,8 +264,8 @@ static void test_coupling_only_pushes_forward(void) {
     }
 }
 
-/* The brief: from a random start the order climbs from about a tenth to above
- * 0.95, nothing in charge. Measured here with the fireflies holding still, at
+/* The point of it: from a random start the order climbs from about a tenth to
+ * above 0.95, nothing in charge. Measured here with the fireflies holding still, at
  * the push this test uses; the program's own version, with the swarm drifting
  * and the shipped push, is in boids_test.c. */
 static double time_to_unison(uint64_t which, int rate, double *start) {

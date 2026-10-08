@@ -325,9 +325,10 @@ is a lantern: the fireflies it is held over are startled and their clocks
 thrown, and the swarm heals when it moves on.
 
 The panel keeps working. `alignment` becomes `coupling`, how far a flash moves a
-clock, and `perception` becomes `sight`, how far a flash is seen. A `sync` row
-reads out how much of the swarm is in step, from 0 to 1. Hawks, flocks, presets
-and tails have nothing to do on a night, and the program says so. A flash is the
+clock, and `perception` becomes `sight`, how far a flash is seen; `--alignment`
+and `--perception` set them. A `sync` row reads out how much of the swarm is in
+step, from 0 to 1. Hawks, flocks, presets and tails have nothing to do on a
+night, and the program says so. A flash is the
 pale yellow of the `firefly` ramp, dying through yellow green to dark green over
 half a second, and between flashes each firefly is a faint dot; `--birds`,
 `--size`, `--shape` and `--color` still work.

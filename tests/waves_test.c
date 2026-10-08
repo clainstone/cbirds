@@ -11,8 +11,9 @@ static int near(double a, double b) {
     return fabs(a - b) < 1e-9;
 }
 
-/* A bird is caught once, and then it is not catchable until it has swerved and
- * rested: waiting, swerving and resting each say no. */
+/* A bird is told once, and then it is not catchable until it has swerved and
+ * rested: swerving and resting each say no, and waiting says yes only to what is
+ * sooner, which is then what it copies. */
 static void test_a_bird_is_caught_once_until_it_has_rested(void) {
     wave_t bird;
     memset(&bird, 0, sizeof(bird));
@@ -22,11 +23,16 @@ static void test_a_bird_is_caught_once_until_it_has_rested(void) {
     assert(wave_catch(&bird, 0.9, 0.01));
     assert(wave_busy(&bird));
     assert(!wave_catchable(&bird));
-    assert(!wave_catch(&bird, -0.9, 0.01)); /* Waiting: left alone, and not changed. */
-    assert(bird.swerve == 0.9);
+    assert(wave_waiting(&bird));
+    /* Waiting, it takes what is sooner and nothing else, and copies it. */
+    assert(!wave_catch(&bird, -0.9, 0.02));
+    assert(!wave_catch(&bird, -0.9, 0.01));
+    assert(bird.swerve == 0.9 && near(bird.wait, 0.01));
+    assert(wave_catch(&bird, -0.5, 0.005));
+    assert(bird.swerve == -0.5 && near(bird.wait, 0.005));
 
-    assert(near(wave_waited(&bird, 0.02), 0.01)); /* It ran out inside the step. */
     wave_begin(&bird, 0, 0.01, 0.03, 1.0);
+    assert(!wave_waiting(&bird));
     assert(!wave_catchable(&bird));
     assert(!wave_catch(&bird, -0.9, 0.01)); /* Swerving. */
 
@@ -50,7 +56,6 @@ static void test_the_rest_is_counted_from_the_start_of_the_swerve(void) {
     wave_t bird;
     memset(&bird, 0, sizeof(bird));
     wave_catch(&bird, 0.5, 0.004);
-    assert(near(wave_waited(&bird, 0.01), 0.004));
     wave_begin(&bird, 1.0, 0.006, 0.03, 1.5);
     assert(near(bird.left, 0.024)); /* Six thousandths of it were in the step already. */
     assert(near(bird.rest, 1.494));
@@ -61,7 +66,8 @@ static void test_the_rest_is_counted_from_the_start_of_the_swerve(void) {
 }
 
 /* However the time is cut into steps, a wait ends at the same moment: the steps
- * before the one it ends in, and how far into that one, add up to the wait. */
+ * it is carried through before the one it ends in, and how far into that one,
+ * add up to the wait. */
 static void test_a_wait_ends_at_the_same_moment_at_any_frame_rate(void) {
     static const double rates[] = {25, 30, 33, 50, 60, 120};
     for (size_t r = 0; r < sizeof(rates) / sizeof(*rates); r++) {
@@ -69,14 +75,13 @@ static void test_a_wait_ends_at_the_same_moment_at_any_frame_rate(void) {
         wave_t bird;
         memset(&bird, 0, sizeof(bird));
         wave_catch(&bird, 0.5, 0.1);
-        double elapsed = 0, when = -1;
-        while (when < 0) {
-            when = wave_waited(&bird, step);
-            if (when < 0) elapsed += step;
+        double elapsed = 0;
+        while (bird.wait > step) {
+            wave_carry(&bird, step);
+            elapsed += step;
         }
-        assert(near(elapsed + when, 0.1));
-        assert(when >= 0 && when <= step);
-        assert(bird.wait == 0);
+        assert(bird.wait > 0 && bird.wait <= step);
+        assert(near(elapsed + bird.wait, 0.1));
     }
 }
 
@@ -89,7 +94,6 @@ static void test_the_swerve_and_the_rest_run_down_at_any_frame_rate(void) {
         wave_t bird;
         memset(&bird, 0, sizeof(bird));
         wave_catch(&bird, 0.5, 0.001);
-        wave_waited(&bird, 0.001);
         wave_begin(&bird, 0, 0, 0.5, 3.0);
         for (int step = 0; step < rates[r]; step++) wave_advance(&bird, 0.5 / rates[r]);
         left[r] = bird.left;
@@ -105,14 +109,12 @@ static void test_the_heading_is_the_direction_turned_by_the_swerve(void) {
     wave_t bird;
     memset(&bird, 0, sizeof(bird));
     wave_catch(&bird, 1.0, 0.01);
-    wave_waited(&bird, 0.02);
     wave_begin(&bird, 6.0, 0, 0.03, 1.0);
     assert(near(bird.heading, 7.0 - TURN));
     assert(bird.heading >= 0 && bird.heading < TURN);
 
     memset(&bird, 0, sizeof(bird));
     wave_catch(&bird, -1.0, 0.01);
-    wave_waited(&bird, 0.02);
     wave_begin(&bird, 0.25, 0, 0.03, 1.0);
     assert(near(bird.heading, TURN - 0.75));
 }
@@ -125,7 +127,6 @@ static void test_a_swerve_and_a_wait_never_vanish_in_the_step_they_begin(void) {
     memset(&bird, 0, sizeof(bird));
     assert(wave_catch(&bird, 0.5, 0));
     assert(bird.wait > 0 && !wave_catchable(&bird));
-    assert(wave_waited(&bird, 0.01) >= 0);
     wave_begin(&bird, 0, 0.5, 0.03, 1.0); /* Begun half a second ago in a step that long. */
     assert(bird.left > 0);
     assert(bird.rest >= bird.left);

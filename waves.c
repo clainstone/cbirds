@@ -9,28 +9,26 @@ int wave_catchable(const wave_t *wave) {
     return wave->wait <= 0 && wave->left <= 0 && wave->rest <= 0;
 }
 
+int wave_waiting(const wave_t *wave) {
+    return wave->wait > 0;
+}
+
 int wave_busy(const wave_t *wave) {
     return wave->wait > 0 || wave->left > 0 || wave->rest > 0;
 }
 
 int wave_catch(wave_t *wave, double swerve, double wait) {
-    if (!wave_catchable(wave)) return 0;
     /* A wait of nothing would be a bird that is caught and not waiting, which is
      * not a state this has: the least it can be is a hair above it. */
-    wave->wait = wait > 1e-9 ? wait : 1e-9;
+    if (wait < 1e-9) wait = 1e-9;
+    if (wave_waiting(wave) ? wait >= wave->wait : !wave_catchable(wave)) return 0;
+    wave->wait = wait;
     wave->swerve = swerve;
     return 1;
 }
 
-double wave_waited(wave_t *wave, double seconds) {
-    if (wave->wait <= 0) return -1;
-    if (wave->wait > seconds) {
-        wave->wait -= seconds;
-        return -1;
-    }
-    double when = wave->wait;
-    wave->wait = 0;
-    return when;
+void wave_carry(wave_t *wave, double seconds) {
+    if (wave->wait > seconds) wave->wait -= seconds;
 }
 
 void wave_begin(wave_t *wave, double direction, double late, double duration, double refractory) {

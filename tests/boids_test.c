@@ -3398,6 +3398,79 @@ static void test_the_wave_covers_the_same_ground_at_thirty_and_sixty_frames_a_se
     put_the_line_away();
 }
 
+/* The same on a flock and not a line: settled for a few seconds, held still, and
+ * one bird in the middle of it alarmed, at two frame rates. Birds are found by
+ * more than one that has begun, and told by the one that began soonest, not the
+ * one the step happened to look at first, so every bird begins at the same moment
+ * at either rate and the same birds are reached. */
+static int alarm_across_a_flock(bird_t *flock, int count, double frame_rate, double began[]) {
+    spatial_grid_t grid;
+    set_frame_seconds(1.0 / frame_rate);
+    reset_the_waves();
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, count) == SPATIAL_GRID_OK);
+    assert(spatial_grid_build(&grid, count, read_bird_position, flock) == SPATIAL_GRID_OK);
+    double middle_x = 0, middle_y = 0;
+    for (int i = 0; i < count; i++) {
+        middle_x += flock[i].x / count;
+        middle_y += flock[i].y / count;
+        began[i] = -1;
+    }
+    int nearest = 0;
+    for (int i = 1; i < count; i++)
+        if (hypot(flock[i].x - middle_x, flock[i].y - middle_y) <
+            hypot(flock[nearest].x - middle_x, flock[nearest].y - middle_y))
+            nearest = i;
+    assert(wave_catch(&waves[nearest], SWERVE_ANGLE, 1e-6));
+    waves_in_flight = 1;
+    double now = 0;
+    int reached = 0;
+    for (int step = 0; step < (int)(0.6 / flight_seconds()); step++) {
+        spread_the_alarm(flock, &grid);
+        for (int k = 0; k < wave_task_count; k++) {
+            began[wave_tasks[k].bird] = now + wave_tasks[k].at;
+            reached++;
+        }
+        now += flight_seconds();
+    }
+    spatial_grid_destroy(&grid);
+    return reached;
+}
+
+static void test_a_wave_crosses_a_flock_at_the_same_moments_at_any_frame_rate(void) {
+    enum { COUNT = 200 };
+    static bird_t flock[COUNT], snapshot[COUNT];
+    double slow[COUNT], fast[COUNT];
+    spatial_grid_t grid;
+
+    reset_test_config();
+    reset_the_waves();
+    legend_enabled = 0;
+    apply_screen_size(96, 32, 768, 512);
+    config.birds = COUNT;
+    config.bird_size = 14;
+    config.pace_notch = 0;
+    apply_notches();
+    seed_random(4);
+    for (int i = 0; i < COUNT; i++) place_one_bird(&flock[i], i);
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, COUNT) == SPATIAL_GRID_OK);
+    for (int frame = 0; frame < 200; frame++) {
+        memcpy(snapshot, flock, sizeof(flock));
+        assert(spatial_grid_build(&grid, COUNT, read_bird_position, snapshot) == SPATIAL_GRID_OK);
+        fly(flock, snapshot, &grid);
+    }
+    spatial_grid_destroy(&grid);
+    int reached = alarm_across_a_flock(flock, COUNT, 60, fast);
+    assert(reached > COUNT / 2); /* A wave that reached nobody would agree with itself. */
+    assert(alarm_across_a_flock(flock, COUNT, 30, slow) == reached);
+    for (int i = 0; i < COUNT; i++) assert(fabs(slow[i] - fast[i]) < 1e-9);
+    assert(alarm_across_a_flock(flock, COUNT, 25, slow) == reached);
+    for (int i = 0; i < COUNT; i++) assert(fabs(slow[i] - fast[i]) < 1e-9);
+    reset_the_waves();
+    reset_test_config();
+}
+
 /* A bird alarmed by a neighbour swerves the way the neighbour does, not the way
  * the hawk would have it: copying is what makes it a wave and not a burst. */
 static void test_a_bird_alarmed_by_a_neighbour_copies_its_swerve(void) {
@@ -3491,8 +3564,7 @@ static void test_a_dive_alarms_the_birds_in_its_way(void) {
     birds[5] = (bird_t){.x = 1500, .y = 100};
 
     /* Cruising, it alarms what it is heading at and nothing it is not. */
-    wave_task_count = 0;
-    alarm_the_birds_near(birds, 800, 400, 0, 0, radius, 1.0);
+    alarm_the_birds_near(birds, 800, 400, 0, 0, radius);
     assert(wave_busy(&waves[0]));
     assert(!wave_busy(&waves[1]) && !wave_busy(&waves[3]));
     assert(!wave_busy(&waves[2]) && !wave_busy(&waves[4]) && !wave_busy(&waves[5]));
@@ -3500,15 +3572,17 @@ static void test_a_dive_alarms_the_birds_in_its_way(void) {
     /* Diving, everything in the radius, behind it and beside it too, but never
      * the far sky. The nearer, the sooner. */
     reset_the_waves();
-    alarm_the_birds_near(birds, 800, 400, 0, 1, radius, 1e-9);
-    assert(wave_busy(&waves[0]) && wave_busy(&waves[1]) && wave_busy(&waves[3]));
+    alarm_the_birds_near(birds, 800, 400, 0, 1, radius);
+    assert(wave_waiting(&waves[0]) && wave_waiting(&waves[1]) && wave_waiting(&waves[3]));
     assert(!wave_busy(&waves[2]) && !wave_busy(&waves[4]) && !wave_busy(&waves[5]));
-    reset_the_waves();
-    alarm_the_birds_near(birds, 800, 400, 0, 1, radius, 1.0);
-    assert(waves[0].left > 0 && waves[3].left > 0); /* Both begin in a second's step... */
-    assert(waves[0].left == waves[3].left); /* ...at the same distance, at the same moment. */
+    /* Told how long to wait, by how far off it is: half of the reaction time under
+     * its wing and the whole of it at the edge of its sight, which is the time a
+     * wave takes to cross that at WAVE_PACE times the pace a bird flies at. */
+    assert(fabs(waves[0].wait - reaction_time(radius * 0.5, radius)) < 1e-12);
+    assert(waves[0].wait == waves[1].wait && waves[0].wait == waves[3].wait);
     assert(reaction_time(0, radius) < reaction_time(radius, radius));
-    assert(reaction_time(radius, radius) * 2 * WAVE_PACE * flight_pixels_per_second == 2 * radius);
+    assert(fabs(reaction_time(radius, radius) * WAVE_PACE * flight_pixels_per_second - radius) <
+           1e-9);
     reset_the_waves();
     reset_test_config();
 }
@@ -4087,6 +4161,7 @@ int main(void) {
     test_flocks_avoid_each_other_as_much_as_asked();
     test_a_wave_crosses_a_line_of_birds_faster_than_they_fly();
     test_the_wave_covers_the_same_ground_at_thirty_and_sixty_frames_a_second();
+    test_a_wave_crosses_a_flock_at_the_same_moments_at_any_frame_rate();
     test_a_bird_alarmed_by_a_neighbour_copies_its_swerve();
     test_the_refractory_time_holds();
     test_a_dive_alarms_the_birds_in_its_way();

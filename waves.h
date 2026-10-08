@@ -27,18 +27,21 @@ typedef struct {
 /* Not waiting, not swerving and not resting. */
 int wave_catchable(const wave_t *wave);
 
+/* Caught, and not yet swerving. */
+int wave_waiting(const wave_t *wave);
+
 /* Anything at all going on, which is what lets a flock with no alarm skip the lot. */
 int wave_busy(const wave_t *wave);
 
-/* Catches a bird that can be caught: it will begin to swerve through `swerve`
- * radians after `wait` seconds, which must be above zero. Returns whether it was
- * caught; a bird that is already waiting, swerving or resting is left alone. */
+/* Tells a bird to swerve through `swerve` radians after `wait` seconds, which
+ * must be above zero. A bird that is not doing anything takes it. A bird that is
+ * already waiting takes it only if it is sooner than what it has, and the sooner
+ * one is the one it copies: what reaches it first is what it saw first. A bird
+ * that is swerving or resting is left alone. Returns whether it took it. */
 int wave_catch(wave_t *wave, double swerve, double wait);
 
-/* Runs the wait down by `seconds`. If it ran out inside them, returns when, in
- * seconds from the start of them, and the wait is over; otherwise a negative
- * number, with the wait that much shorter. */
-double wave_waited(wave_t *wave, double seconds);
+/* A wait that has not run out, `seconds` on: for the bird's next step. */
+void wave_carry(wave_t *wave, double seconds);
 
 /* The swerve begins, `late` seconds ago, at a bird flying at `direction`: the
  * heading it swerves to is fixed here, and its swerve and its rest are counted

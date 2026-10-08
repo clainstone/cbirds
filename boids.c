@@ -1839,14 +1839,18 @@ static vector_t hawk_vector(const bird_t *bird) {
  * It is told as it happens, inside the step, rather than a hop a frame: with the
  * reaction time shorter than a frame a hop a frame would make the wave as fast
  * as the frame rate, and the same flock would be crossed in half the time at
- * thirty frames a second as at sixty. Done in order of time it crosses the same
- * pixels a second at any rate.
+ * thirty frames a second as at sixty. Done in order of time, which is what the
+ * heap below is for, it crosses the same pixels a second at any rate: a flock of
+ * two hundred, held still, is crossed at the same moment bird for bird at twenty
+ * five frames a second, thirty and sixty. Told in the order the birds were found
+ * instead, the worst of them began three milliseconds of flight out between
+ * thirty and sixty.
  *
  * A bird sees a swerve WAVE_SIGHT times as far as it feels its neighbours.
  * At the perception radius alone a wave stopped at the first gap, and a flock of
  * three hundred in a small terminal is several patches with gaps between them: a
- * wave reached 63% of the flock, on average over thirty seeds, where at one and a
- * half times it reached 74%, at twice 90%, at two and a half 98% and at three no
+ * wave reached 56% of the flock, on average over thirty seeds, where at one and a
+ * half times it reached 78%, at twice 87%, at two and a half 95% and at three no
  * more than that. A swerve is a big movement, and a bird watches the sky more
  * than it watches its neighbours.
  *
@@ -1858,14 +1862,15 @@ static vector_t hawk_vector(const bird_t *bird) {
  * birds the hawk alarms itself turn away from its line, to whichever side they
  * are on. The flock is otherwise as it was: at the hero's size, over twenty
  * seeds, 1.05% of the birds were off the screen with hawks and no waves and
- * 1.19% with them, and a hawk struck as often.
+ * 1.13% with them, and a hawk struck as often: 6.1 times in eight seconds
+ * against 6.4.
  *
  * A bird that has swerved is deaf to the next for WAVE_REFRACTORY, or the wave
  * would come back through the birds it had just crossed. It has to be longer than
  * it looks: a wave does not die at the far side of a flock, it finds a bird whose
  * rest has run out and goes round. At half a second, in the hero's flock, every
- * bird was alarmed six times in eight seconds and the wave never stopped; at a
- * second one bird in fifty was alarmed twice; at a second and a half, none. It
+ * bird was alarmed five times over and the wave never stopped; at a second one
+ * bird in seventeen was alarmed twice; at a second and a half, none. It
  * is three here, on the clock rather than in flight,
  * so that it is the same at any pace and a fast flock does not flash faster.
  * With a hawk in the sky a bird comes out of its rest into a fresh dive almost at
@@ -1900,8 +1905,8 @@ static wave_t waves[MAX_BIRDS];
  * alarmed pays for none of it. */
 static int waves_in_flight;
 
-/* Who has just begun to swerve, and when in this step: each of them looks round
- * for the neighbours to tell, once. A bird is on the list at most once a step,
+/* Who has begun to swerve in this step, and when in it: what a test can look at,
+ * and what a recording could be asked. A bird is on the list at most once a step,
  * because it can only begin once. */
 typedef struct {
     int bird;
@@ -1910,24 +1915,79 @@ typedef struct {
 static wave_task_t wave_tasks[MAX_BIRDS];
 static int wave_task_count;
 
-/* A bird is told at `at` seconds into the step of `seconds`. Told inside it, it
- * begins to swerve inside it; told too late for that, it carries the wait into
- * the next. */
-static void tell_the_bird(const bird_t *birds, int index, double swerve, double at,
-                          double seconds) {
-    if (!wave_catch(&waves[index], swerve, at)) return;
-    double when = wave_waited(&waves[index], seconds);
-    if (when < 0) return;
-    wave_begin(&waves[index], birds[index].direction, seconds - when, SWERVE_SECONDS,
-               WAVE_REFRACTORY * config.pace);
-    wave_tasks[wave_task_count++] = (wave_task_t){index, when};
+/*
+ * The birds that will begin to swerve before this step is over, soonest first.
+ *
+ * A bird begins when it is its turn, and what it tells the birds it can see
+ * reaches them later than it began, never sooner, so taking them in order of when
+ * they begin gives every bird the first thing that could have reached it, whatever
+ * the step is: a wave told in the order it was found would be told something
+ * different at thirty frames a second from at sixty, because a bird found first
+ * is not always a bird that began first. A heap on the wait each bird has, with
+ * each bird's place in it, so that a bird told something sooner than it was is
+ * moved up and not put in twice.
+ */
+static int wave_heap[MAX_BIRDS];
+static int wave_heap_place[MAX_BIRDS]; /* Where a bird is in it, or minus one. */
+static int wave_heap_count;
+
+static void wave_heap_swap(int i, int j) {
+    int bird = wave_heap[i];
+    wave_heap[i] = wave_heap[j];
+    wave_heap[j] = bird;
+    wave_heap_place[wave_heap[i]] = i;
+    wave_heap_place[wave_heap[j]] = j;
+}
+
+static void wave_heap_up(int at) {
+    while (at > 0 && waves[wave_heap[at]].wait < waves[wave_heap[(at - 1) / 2]].wait) {
+        wave_heap_swap(at, (at - 1) / 2);
+        at = (at - 1) / 2;
+    }
+}
+
+static void wave_heap_down(int at) {
+    for (;;) {
+        int soonest = at, left = 2 * at + 1, right = left + 1;
+        if (left < wave_heap_count && waves[wave_heap[left]].wait < waves[wave_heap[soonest]].wait)
+            soonest = left;
+        if (right < wave_heap_count &&
+            waves[wave_heap[right]].wait < waves[wave_heap[soonest]].wait)
+            soonest = right;
+        if (soonest == at) return;
+        wave_heap_swap(at, soonest);
+        at = soonest;
+    }
+}
+
+/* A bird that is not in it goes in; one that is has been told something sooner. */
+static void wave_heap_add(int bird) {
+    if (wave_heap_place[bird] < 0) {
+        wave_heap_place[bird] = wave_heap_count;
+        wave_heap[wave_heap_count++] = bird;
+    }
+    wave_heap_up(wave_heap_place[bird]);
+}
+
+static int wave_heap_take(void) {
+    int bird = wave_heap[0];
+    wave_heap_swap(0, --wave_heap_count);
+    wave_heap_place[bird] = -1;
+    wave_heap_down(0);
+    return bird;
+}
+
+/* A bird is told `swerve` at `at` seconds into the step of `seconds`: it will
+ * begin then, if that is inside the step and nothing has told it sooner. */
+static void tell_the_bird(int index, double swerve, double at, double seconds) {
+    if (wave_catch(&waves[index], swerve, at) && waves[index].wait <= seconds) wave_heap_add(index);
 }
 
 static int bird_can_be_alarmed(const bird_t *bird, int index) {
     double unused_x, unused_y;
     if (bird->layer > 0) return 0;
     if (formation_target_of(index, &unused_x, &unused_y)) return 0;
-    return wave_catchable(&waves[index]);
+    return wave_catchable(&waves[index]) || wave_waiting(&waves[index]);
 }
 
 /* How long a bird takes to follow what it has seen at `distance`, out of the
@@ -1948,18 +2008,18 @@ static double swerve_away_from(const bird_t *bird, double x, double y, double di
 }
 
 /* A hawk, or anything else that comes down on the flock: the birds within
- * `radius` of it are alarmed if it is coming at them, and all of them if it is
+ * `radius` of it are told if it is coming at them, and all of them if it is
  * diving. Closer is sooner. */
 static void alarm_the_birds_near(const bird_t *birds, double x, double y, double direction,
-                                 int diving, double radius, double seconds) {
+                                 int diving, double radius) {
     for (int i = 0; i < config.birds; i++) {
         double dx = birds[i].x - x, dy = birds[i].y - y;
         double squared = dx * dx + dy * dy;
         if (squared >= radius * radius || !bird_can_be_alarmed(&birds[i], i)) continue;
         double distance = sqrt(squared);
         if (!diving && dx * cos(direction) + dy * sin(direction) <= ALARM_CONE * distance) continue;
-        tell_the_bird(birds, i, swerve_away_from(&birds[i], x, y, direction),
-                      reaction_time(distance, radius), seconds);
+        wave_catch(&waves[i], swerve_away_from(&birds[i], x, y, direction),
+                   reaction_time(distance, radius));
     }
 }
 
@@ -2002,41 +2062,49 @@ static void tell_the_neighbours(const bird_t *birds, const spatial_grid_t *grid,
                 double dx = from->x - birds[i].x, dy = from->y - birds[i].y;
                 double squared = dx * dx + dy * dy;
                 if (squared >= sight * sight || !bird_can_be_alarmed(&birds[i], i)) continue;
-                tell_the_bird(birds, i, waves[source].swerve,
-                              at + reaction_time(sqrt(squared), sight), seconds);
+                tell_the_bird(i, waves[source].swerve, at + reaction_time(sqrt(squared), sight),
+                              seconds);
             }
         }
     }
 }
 
-/* One step of alarm: the clocks, the hawks that set a wave off, and the wave
- * itself as far as it gets in the time the step covers. */
+/* One step of alarm: the clocks, the hawks and the pointer that set a wave off,
+ * and the wave itself as far as it gets in the time the step covers. Every wait
+ * is counted from the start of the step while it is run, and what has not run
+ * out by the end is carried into the next. */
 static void spread_the_alarm(const bird_t *birds, const spatial_grid_t *grid) {
     double seconds = flight_seconds();
     int startled = pointer_startles();
     if (config.hawks == 0 && !waves_in_flight && !startled) return;
 
     wave_task_count = 0;
-    for (int i = 0; i < config.birds; i++) {
-        wave_advance(&waves[i], seconds);
-        double when = wave_waited(&waves[i], seconds);
-        if (when < 0) continue;
-        wave_begin(&waves[i], birds[i].direction, seconds - when, SWERVE_SECONDS,
-                   WAVE_REFRACTORY * config.pace);
-        wave_tasks[wave_task_count++] = (wave_task_t){i, when};
-    }
+    for (int i = 0; i < config.birds; i++) wave_advance(&waves[i], seconds);
     for (int h = 0; h < config.hawks; h++)
         alarm_the_birds_near(birds, hawks[h].x, hawks[h].y, hawks[h].direction, hawks[h].diving,
-                             ALARM_SHARE * hawk_reach(), seconds);
+                             ALARM_SHARE * hawk_reach());
     if (startled)
         alarm_the_birds_near(birds, mouse.x, mouse.y, atan2(mouse.velocity_y, mouse.velocity_x), 1,
-                             ALARM_SHARE * MOUSE_REACH, seconds);
-    for (int next = 0; next < wave_task_count; next++)
-        tell_the_neighbours(birds, grid, wave_tasks[next].bird, wave_tasks[next].at, seconds);
+                             ALARM_SHARE * MOUSE_REACH);
+    wave_heap_count = 0;
+    for (int i = 0; i < config.birds; i++) {
+        wave_heap_place[i] = -1;
+        if (waves[i].wait > 0 && waves[i].wait <= seconds) wave_heap_add(i);
+    }
+    while (wave_heap_count > 0) {
+        int bird = wave_heap_take();
+        double at = waves[bird].wait;
+        wave_begin(&waves[bird], birds[bird].direction, seconds - at, SWERVE_SECONDS,
+                   WAVE_REFRACTORY * config.pace);
+        wave_tasks[wave_task_count++] = (wave_task_t){bird, at};
+        tell_the_neighbours(birds, grid, bird, at, seconds);
+    }
 
     waves_in_flight = 0;
-    for (int i = 0; i < config.birds && !waves_in_flight; i++)
-        waves_in_flight = wave_busy(&waves[i]);
+    for (int i = 0; i < config.birds; i++) {
+        wave_carry(&waves[i], seconds);
+        if (wave_busy(&waves[i])) waves_in_flight = 1;
+    }
 }
 
 /* The swerve as a pull, towards the heading the bird was told to take. */

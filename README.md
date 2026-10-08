@@ -151,6 +151,9 @@ cbirds --flocks 3 --color ember     three flocks that keep to their own
 cbirds --color prism                a turn runs a rainbow through the flock
 cbirds --depth --trails             a second sky behind the first
 cbirds --matrix                     it is raining birds
+cbirds --say "back in five"         the flock writes it, and holds it as a sign
+cbirds --clock                      the flock tells the time
+cbirds --screensaver --clock        a lock screen that tells the time; any key quits
 ```
 
 It opens by writing BOIDS, lets go, and flocks. Move the pointer into the
@@ -190,6 +193,57 @@ fps.
 | `0` | back to the defaults | `Tab` | next preset |
 | `+` `-` | more birds, fewer | `k` `K` | a hawk more, one fewer |
 | `e` | tails | `q` | quit |
+
+## Signs
+
+`--say TEXT` has the flock write TEXT where it would write BOIDS, and keep it
+up. A sign is for reading, so it is held for thirty to forty-five seconds, and
+then the flock lets go for ten to fifteen, flies as a murmuration, and writes
+it again. The birds that write do not stand still: each hovers round its place
+in a small loop of its own, so the strokes shimmer and stay sharp. The rest of
+the flock flies round the sign, not through it. Lower case is written in
+capitals and characters the font lacks are left out. Text too long for one line
+wraps at its spaces onto two or three, as large as fits, and a text the flock
+has too few birds to write is said so on stderr and left unwritten. A key does
+not end a sign. Move the pointer through it and the birds it reaches scatter,
+and come back when it has gone.
+
+`--clock` writes the time, HH:MM, in local time, and follows the locale for the
+hour: twelve hours, with no AM or PM, if `LC_TIME` has a time format that shows
+the hour on a twelve hour clock, and twenty four otherwise. The colon rises and
+settles once a second. At each new minute the digits let go for a few seconds
+and the flock writes the next time.
+
+A sign picks a bird as wide as the distance between the cells of its letters
+unless you give `--size`, so a short text is written with the usual bird and a
+long one on a small terminal with a smaller one. `--shape dot` is the
+crispest, and more birds make thicker strokes.
+
+A recording runs on its own clock, not the wall's, so the time a recorded
+`--clock` tells is the local time at which the recording started, moved on by
+its frames. `--clock-at 10:09:50` starts it from a time you choose instead,
+which is how to record a change of minute.
+
+## Screensaver
+
+`--screensaver` quits at once on any key, mouse click or pointer movement, with
+no flight out. Input in the first half second is ignored, because it is
+whatever started the lock. It goes with everything else, so
+`cbirds --screensaver --clock` is a lock screen that tells the time. For tmux,
+which locks a client after that many idle seconds and runs the command on it:
+
+```
+set -g lock-after-time 300
+set -g lock-command "cbirds --screensaver --clock"
+```
+
+And in zsh, which sends itself an alarm after `TMOUT` idle seconds at the
+prompt and runs `TRAPALRM`:
+
+```
+TMOUT=300
+TRAPALRM() { cbirds --screensaver --clock }
+```
 
 ## Terminals
 
@@ -237,6 +291,11 @@ Look
   -l, --panel                   the sliders in the corner from the start; h toggles them
       --render HOW              braille by default; sextants, blocks, or kitty in Kitty and Ghostty
 
+Sign
+      --say TEXT                the flock writes TEXT and holds it as a sign
+      --clock                   the flock tells the time, HH:MM, in local time
+      --clock-at TIME           start the clock at HH:MM or HH:MM:SS, not now
+
 Oddities
       --matrix                  it is raining birds
 
@@ -251,6 +310,7 @@ Output
 
 General
       --unlock-fps              render as fast as the terminal allows
+      --screensaver             quit at once on any key, click or movement, for tmux's lock-command
   -h, --help                    the one-screen help
       --completion SHELL        completions for bash, zsh or fish
   -V, --version                 print the version and quit

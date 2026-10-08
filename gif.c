@@ -26,6 +26,8 @@ struct gif_writer {
     size_t written;
     gif_status_t status;
     int have_palette;
+    uint8_t reserved[GIF_RESERVED_MAX][3];
+    int reserved_count;
     uint8_t palette[GIF_COLOURS][3];
     uint8_t bucket_to_index[QUANT_BUCKETS]; /* Nearest palette entry, per bucket. */
     uint8_t *indices;                       /* One frame's worth. */
@@ -92,11 +94,19 @@ static gif_status_t build_palette(gif_writer_t *w, const png_image_t *frame) {
         for (int c = 0; c < 3; c++) sums[(size_t)bucket * 3 + (size_t)c] += rgb[c];
     }
 
-    /* The top entries by count, chosen by repeated selection: two hundred and
-     * fifty six passes over the buckets is nothing next to the pixels. */
+    /* The colours the first frame does not have come first, exactly as given,
+     * and what else is in their buckets is drawn in them: a bucket is too small
+     * for anyone to tell. */
     int chosen[GIF_COLOURS];
     int used = 0;
-    for (int slot = 0; slot < GIF_COLOURS; slot++) {
+    for (int r = 0; r < w->reserved_count; r++) {
+        memcpy(w->palette[used], w->reserved[r], 3);
+        counts[bucket_of(w->reserved[r])] = 0;
+        used++;
+    }
+    /* The top entries by count, chosen by repeated selection: two hundred and
+     * fifty six passes over the buckets is nothing next to the pixels. */
+    for (int slot = w->reserved_count; slot < GIF_COLOURS; slot++) {
         int best = -1;
         uint32_t best_count = 0;
         for (int bucket = 0; bucket < QUANT_BUCKETS; bucket++)
@@ -256,6 +266,14 @@ gif_status_t gif_open(gif_writer_t **out, const char *path, int width, int heigh
     if (delay_hundredths < 1) delay_hundredths = 1;
     w->delay = delay_hundredths;
     *out = w;
+    return w->status;
+}
+
+gif_status_t gif_reserve_colours(gif_writer_t *w, const uint8_t (*colours)[3], int count) {
+    if (w == NULL || colours == NULL || count < 0 || count > GIF_RESERVED_MAX || w->have_palette)
+        return GIF_ERR_ARGUMENT;
+    memcpy(w->reserved, colours, (size_t)count * 3);
+    w->reserved_count = count;
     return w->status;
 }
 

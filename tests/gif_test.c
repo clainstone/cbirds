@@ -266,11 +266,104 @@ static void test_flat_frames_compress(void) {
     remove(path);
 }
 
+/* A colour that is not in the first frame has no place in a palette made from
+ * the first frame, and is drawn in the nearest colour that has: a clip's one
+ * bright thing comes out grey. Reserved, it is in the table exactly, and nothing
+ * else is any different. */
+static void test_a_colour_the_first_frame_lacks_can_be_reserved(void) {
+    enum { W = 48, H = 32 };
+    static const uint8_t GOLD[3] = {255, 226, 120};
+    static const uint8_t RESERVED[2][3] = {{255, 226, 120}, {136, 122, 72}};
+    gif_writer_t *writer = NULL;
+    png_image_t first = {0, 0, NULL}, second = {0, 0, NULL};
+    reading_t read;
+
+    assert(png_image_alloc(&first, W, H) == PNG_OK);
+    assert(png_image_alloc(&second, W, H) == PNG_OK);
+    for (size_t i = 0; i < (size_t)W * H; i++) {
+        int right = (int)(i % W) >= W / 2;
+        uint8_t *a = first.pixels + i * 4, *b = second.pixels + i * 4;
+        a[0] = right ? 60 : 18; /* Ground and blue, and gold nowhere. */
+        a[1] = right ? 120 : 18;
+        a[2] = right ? 220 : 24;
+        a[3] = 255;
+        memcpy(b, a, 4);
+        if (i % W < 8) memcpy(b, GOLD, 3); /* Gold in the second frame only. */
+    }
+
+    /* As it always was: gold comes out as whatever the table has nearest. */
+    char plain[600];
+    snprintf(plain, sizeof(plain), "%s/plain.gif", scratch);
+    assert(gif_open(&writer, plain, W, H, 5) == GIF_OK);
+    assert(gif_add_frame(writer, &first) == GIF_OK);
+    assert(gif_add_frame(writer, &second) == GIF_OK);
+    assert(gif_close(writer, NULL, NULL) == GIF_OK);
+    assert(read_gif(plain, &read));
+    const uint8_t *got = read.palette[read.indices[0]];
+    assert(abs(got[0] - GOLD[0]) + abs(got[1] - GOLD[1]) + abs(got[2] - GOLD[2]) > 100);
+    free(read.indices);
+
+    /* Asking for nothing is the same file, byte for byte. */
+    char none[600];
+    snprintf(none, sizeof(none), "%s/none.gif", scratch);
+    assert(gif_open(&writer, none, W, H, 5) == GIF_OK);
+    assert(gif_reserve_colours(writer, NULL, 0) == GIF_ERR_ARGUMENT);
+    assert(gif_reserve_colours(writer, RESERVED, 0) == GIF_OK);
+    assert(gif_add_frame(writer, &first) == GIF_OK);
+    assert(gif_add_frame(writer, &second) == GIF_OK);
+    assert(gif_close(writer, NULL, NULL) == GIF_OK);
+    FILE *a = fopen(plain, "rb"), *b = fopen(none, "rb");
+    assert(a != NULL && b != NULL);
+    int same = 1, ca, cb;
+    do {
+        ca = fgetc(a);
+        cb = fgetc(b);
+        if (ca != cb) same = 0;
+    } while (ca != EOF && cb != EOF);
+    fclose(a);
+    fclose(b);
+    assert(same);
+
+    /* Reserved, it is there, exactly, and what was in the first frame still is. */
+    char reserved[600];
+    snprintf(reserved, sizeof(reserved), "%s/reserved.gif", scratch);
+    assert(gif_open(&writer, reserved, W, H, 5) == GIF_OK);
+    assert(gif_reserve_colours(writer, RESERVED, 2) == GIF_OK);
+    assert(gif_add_frame(writer, &first) == GIF_OK);
+    /* Too late once the table is written, and too many at any time. */
+    assert(gif_reserve_colours(writer, RESERVED, 2) == GIF_ERR_ARGUMENT);
+    assert(gif_add_frame(writer, &second) == GIF_OK);
+    assert(gif_close(writer, NULL, NULL) == GIF_OK);
+    assert(read_gif(reserved, &read));
+    got = read.palette[read.indices[0]];
+    for (int c = 0; c < 3; c++) assert(abs(got[c] - GOLD[c]) <= 8);
+    got = read.palette[read.indices[W - 1]]; /* The blue, on the other side. */
+    assert(abs(got[0] - 60) <= 8 && abs(got[1] - 120) <= 8 && abs(got[2] - 220) <= 8);
+    got = read.palette[read.indices[(H - 1) * W + 20]]; /* And the ground. */
+    assert(abs(got[0] - 18) <= 8 && abs(got[2] - 24) <= 8);
+    free(read.indices);
+
+    uint8_t too_many[GIF_RESERVED_MAX + 1][3] = {{0}};
+    assert(gif_open(&writer, reserved, W, H, 5) == GIF_OK);
+    assert(gif_reserve_colours(writer, (const uint8_t(*)[3])too_many, GIF_RESERVED_MAX + 1) ==
+           GIF_ERR_ARGUMENT);
+    assert(gif_reserve_colours(writer, (const uint8_t(*)[3])too_many, GIF_RESERVED_MAX) == GIF_OK);
+    assert(gif_reserve_colours(NULL, RESERVED, 2) == GIF_ERR_ARGUMENT);
+    assert(gif_close(writer, NULL, NULL) == GIF_OK);
+
+    png_image_free(&first);
+    png_image_free(&second);
+    remove(plain);
+    remove(none);
+    remove(reserved);
+}
+
 int main(void) {
     make_scratch();
     test_round_trip();
     test_refusals();
     test_flat_frames_compress();
+    test_a_colour_the_first_frame_lacks_can_be_reserved();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);
     return 0;

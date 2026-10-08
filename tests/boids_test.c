@@ -3362,7 +3362,8 @@ static void test_an_edge_with_a_neighbour_is_a_door_and_pushes_nothing(void) {
 
     /* Shut again, it is the wall it was, bit for bit. */
     open_edges.left = 0;
-    assert(boundary_vector(&at_left).x == wall_left.x && boundary_vector(&at_right).x == wall_right.x);
+    assert(boundary_vector(&at_left).x == wall_left.x &&
+           boundary_vector(&at_right).x == wall_right.x);
     reset_test_config();
 }
 
@@ -3442,8 +3443,9 @@ static void test_taking_a_bird_out_keeps_everything_that_points_at_birds_valid(v
     assert(birds[4].x == 80 && birds[4].y == 40);
     assert(birds[4].trail_x[1] == 801);
     assert(birds[3].x == 30 && birds[5].x == 50 && birds[7].x == 70); /* Nobody else moved. */
-    assert(hawks[0].prey == -1 && hawks[0].commitment == 0); /* Its bird has gone. */
-    assert(hawks[1].prey == 4 && hawks[1].commitment == 0.5); /* Its bird is where the last one went. */
+    assert(hawks[0].prey == -1 && hawks[0].commitment == 0);          /* Its bird has gone. */
+    assert(hawks[1].prey == 4 &&
+           hawks[1].commitment == 0.5); /* Its bird is where the last one went. */
     assert(hawks[2].prey == 2 && hawks[3].prey == -1);
     /* Both places keep tails (every fourth bird): the ring came with the bird. */
     assert(birds[4].trail_held == 3 && birds[4].trail_at == 2);
@@ -3483,8 +3485,15 @@ static void test_birds_that_fly_out_of_a_door_are_posted_whole(void) {
     config.birds = 5;
     for (int i = 0; i < 5; i++) birds[i] = (bird_t){.x = 100.0 * (i + 1), .y = 100, .direction = 1};
     /* The middle of a bird is half its size from its corner: 15 pixels. */
-    birds[1] = (bird_t){.x = 800 - 15 + 3, .y = 120, .direction = 0.25, .flock = 0, .shade = 3,
-                        .layer = 0, .wing = 2, .wing_clock = 0.4, .gliding = 0.7};
+    birds[1] = (bird_t){.x = 800 - 15 + 3,
+                        .y = 120,
+                        .direction = 0.25,
+                        .flock = 0,
+                        .shade = 3,
+                        .layer = 0,
+                        .wing = 2,
+                        .wing_clock = 0.4,
+                        .gliding = 0.7};
     birds[3] = (bird_t){.x = 800 - 15 - 0.5, .y = 50, .direction = 0.1}; /* Not yet. */
     birds[4] = (bird_t){.x = 830, .y = 479, .direction = 6.0, .layer = 1, .wing_clock = 0.9};
     config.hawks = 4;
@@ -3530,13 +3539,20 @@ static void test_birds_that_fly_out_of_a_door_are_posted_whole(void) {
 
 static void test_birds_come_in_by_the_facing_edge_at_the_same_height(void) {
     static bird_t birds[16];
-    link_traveller_t post = {.kind = LINK_BIRD, .height = 0.5, .reach = 10, .direction = 1.0,
-                             .flock = 2, .shade = 7, .layer = 1, .wing = 3, .wing_clock = 0.6,
+    link_traveller_t post = {.kind = LINK_BIRD,
+                             .height = 0.5,
+                             .reach = 10,
+                             .direction = 1.0,
+                             .flock = 2,
+                             .shade = 7,
+                             .layer = 1,
+                             .wing = 3,
+                             .wing_clock = 0.6,
                              .holding = 0.9};
 
     reset_test_config();
     render_mode = RENDER_UNSET; /* Which clips at the edge, as the text renderers do. */
-    set_test_screen(900, 400); /* A different size from the sender's: only the share counts. */
+    set_test_screen(900, 400);  /* A different size from the sender's: only the share counts. */
     formation_clear();
     join_the_sky(0); /* The neighbour is on the left. */
     assert(open_edges.left && !open_edges.right);
@@ -3651,8 +3667,14 @@ static void test_a_hawk_crosses_with_what_it_was_doing(void) {
     config.birds = 0;
     config.hawks = 2;
     hawks[0] = (hawk_t){.x = 300, .y = 100, .prey = -1};
-    hawks[1] = (hawk_t){.x = 801.5, .y = 240, .direction = 0.5, .prey = 7, .commitment = 0.3,
-                        .passing = 0.2, .wing = 2, .wing_clock = 0.3};
+    hawks[1] = (hawk_t){.x = 801.5,
+                        .y = 240,
+                        .direction = 0.5,
+                        .prey = 7,
+                        .commitment = 0.3,
+                        .passing = 0.2,
+                        .wing = 2,
+                        .wing_clock = 0.3};
     int live = 0;
     sky_hand_over(birds, &live);
     assert(config.hawks == 1 && hawks[0].x == 300);
@@ -3813,7 +3835,8 @@ static void test_a_window_with_no_birds_flies(void) {
     place_hawks();
     assert(grid_items() == 1);
     assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
-    assert(spatial_grid_prepare(&grid, screen.width, screen.height, grid_items()) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, grid_items()) ==
+           SPATIAL_GRID_OK);
     assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
     render_mode = RENDER_KITTY;
     for (int frame = 0; frame < 30; frame++) {

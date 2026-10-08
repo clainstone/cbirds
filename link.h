@@ -43,14 +43,14 @@ typedef enum { LINK_BIRD = 1, LINK_HAWK = 2 } link_kind_t;
 /* A bird or a hawk in the post. The numbers are the sender's own, as they were
  * when it left; the receiver decides what they mean in its window. */
 typedef struct {
-    int kind;       /* LINK_BIRD or LINK_HAWK. */
-    int enters;     /* The receiver's edge it comes in by: LINK_LEFT or LINK_RIGHT. */
-    double height;  /* Where it left, as a share of the window's height, 0 to 1. */
-    double reach;   /* How far past the edge its middle had gone, in pixels. */
+    int kind;         /* LINK_BIRD or LINK_HAWK. */
+    int enters;       /* The receiver's edge it comes in by: LINK_LEFT or LINK_RIGHT. */
+    double height;    /* Where it left, as a share of the window's height, 0 to 1. */
+    double reach;     /* How far past the edge its middle had gone, in pixels. */
     double direction; /* Radians. */
     int flock, shade, layer, wing; /* Small numbers, 0 to 15, whose meaning is the program's. */
-    double wing_clock; /* 0 to 1. */
-    double holding;    /* Seconds left of whatever it was in the middle of, 0 to 60. */
+    double wing_clock;             /* 0 to 1. */
+    double holding;                /* Seconds left of whatever it was in the middle of, 0 to 60. */
 } link_traveller_t;
 
 /* Who sent a message: the order in which they joined, and the process. */

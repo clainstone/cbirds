@@ -414,8 +414,8 @@ static int post(link_t *link, int side, const uint8_t *bytes) {
         !address_of(path, &address, &length))
         return ENAMETOOLONG;
     for (;;) {
-        ssize_t sent = sendto(link->fd, bytes, LINK_MESSAGE_SIZE, flags,
-                              (struct sockaddr *)&address, length);
+        ssize_t sent =
+            sendto(link->fd, bytes, LINK_MESSAGE_SIZE, flags, (struct sockaddr *)&address, length);
         if (sent == LINK_MESSAGE_SIZE) return 0;
         if (sent < 0 && errno == EINTR) continue;
         return sent < 0 ? errno : EMSGSIZE;
@@ -623,7 +623,8 @@ int link_receive(link_t *link, link_traveller_t *traveller) {
             return 0;
         }
         link_message_t message;
-        if (!link_decode(bytes, (size_t)length, &message) || same_sender(&message.from, &link->me)) {
+        if (!link_decode(bytes, (size_t)length, &message) ||
+            same_sender(&message.from, &link->me)) {
             if (++without_a_bird >= NO_BIRD_LIMIT) return 0;
             continue;
         }
@@ -633,7 +634,8 @@ int link_receive(link_t *link, link_traveller_t *traveller) {
             if (++without_a_bird >= NO_BIRD_LIMIT) return 0;
             continue;
         }
-        memcpy(link->waiting, message.travellers, sizeof(message.travellers[0]) * (size_t)message.count);
+        memcpy(link->waiting, message.travellers,
+               sizeof(message.travellers[0]) * (size_t)message.count);
         link->waiting_count = message.count;
         link->waiting_at = 0;
     }

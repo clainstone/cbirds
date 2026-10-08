@@ -2619,11 +2619,16 @@ static double post_reach(double reach) {
     return reach < screen.width ? reach : screen.width;
 }
 
+/* Where a thing is, as a share of the window, kept inside it. */
+static double share_of(double position, double length) {
+    double share = length > 0 ? position / length : 0;
+    return share < 0 ? 0 : share > 1 ? 1 : share;
+}
+
 static link_traveller_t traveller_of_bird(const bird_t *bird, double reach) {
-    double height = screen.height > 0 ? bird->y / screen.height : 0;
     link_traveller_t traveller = {
         .kind = LINK_BIRD,
-        .height = height < 0 ? 0 : height > 1 ? 1 : height,
+        .height = share_of(bird->y, screen.height),
         .reach = post_reach(reach),
         .direction = bird->direction,
         .flock = bird->flock,
@@ -2637,10 +2642,9 @@ static link_traveller_t traveller_of_bird(const bird_t *bird, double reach) {
 }
 
 static link_traveller_t traveller_of_hawk(const hawk_t *hawk, double reach) {
-    double height = screen.height > 0 ? hawk->y / screen.height : 0;
     link_traveller_t traveller = {
         .kind = LINK_HAWK,
-        .height = height < 0 ? 0 : height > 1 ? 1 : height,
+        .height = share_of(hawk->y, screen.height),
         .reach = post_reach(reach),
         .direction = hawk->direction,
         .wing = hawk->wing,
@@ -2823,9 +2827,10 @@ static void sky_leave(void) {
 static void sky_join(void) {
     char directory[LINK_PATH_SIZE];
     if (!share_the_sky) return;
-    if (!link_directory_for(directory, sizeof(directory), getenv("XDG_RUNTIME_DIR"), getenv("TMPDIR"),
-                            geteuid())) {
-        fprintf(stderr, "%s: --link: the directory for the sky would be too long a path for a socket\n",
+    if (!link_directory_for(directory, sizeof(directory), getenv("XDG_RUNTIME_DIR"),
+                            getenv("TMPDIR"), geteuid())) {
+        fprintf(stderr,
+                "%s: --link: the directory for the sky would be too long a path for a socket\n",
                 program_name);
         exit(EXIT_FAILURE);
     }
@@ -2836,20 +2841,25 @@ static void sky_join(void) {
     }
     /* The words for the ones a person can put right. */
     if (status == LINK_ERR_NOT_PRIVATE)
-        fprintf(stderr, "%s: --link: %s can be written to by others, so it cannot hold the sky; "
-                        "chmod 700 it or remove it\n", program_name, directory);
+        fprintf(stderr,
+                "%s: --link: %s can be written to by others, so it cannot hold the sky; "
+                "chmod 700 it or remove it\n",
+                program_name, directory);
     else if (status == LINK_ERR_NOT_YOURS)
         fprintf(stderr, "%s: --link: %s belongs to somebody else, so it cannot hold the sky\n",
                 program_name, directory);
     else if (status == LINK_ERR_NOT_A_DIRECTORY)
-        fprintf(stderr, "%s: --link: %s is not a directory (a link to one will not do); remove it\n",
+        fprintf(stderr,
+                "%s: --link: %s is not a directory (a link to one will not do); remove it\n",
                 program_name, directory);
     else if (status == LINK_ERR_PATH_TOO_LONG)
-        fprintf(stderr, "%s: --link: %s is too long a path for a socket; point TMPDIR or "
-                        "XDG_RUNTIME_DIR at a shorter one\n", program_name, directory);
+        fprintf(stderr,
+                "%s: --link: %s is too long a path for a socket; point TMPDIR or "
+                "XDG_RUNTIME_DIR at a shorter one\n",
+                program_name, directory);
     else
-        fprintf(stderr, "%s: --link: %s %s: %s\n", program_name, directory, link_status_string(status),
-                strerror(errno));
+        fprintf(stderr, "%s: --link: %s %s: %s\n", program_name, directory,
+                link_status_string(status), strerror(errno));
     exit(EXIT_FAILURE);
 }
 
@@ -3705,7 +3715,8 @@ static void read_options(int argc, char **argv) {
     }
     /* A shared sky is a live thing: it is the other windows, as they are now. */
     if (share_the_sky && (bench_frames > 0 || record_path != NULL)) {
-        fprintf(stderr, "%s: --link joins the windows that are open, so it cannot be used with %s\n",
+        fprintf(stderr,
+                "%s: --link joins the windows that are open, so it cannot be used with %s\n",
                 program_name, bench_frames > 0 ? "--bench" : "--record");
         exit(EXIT_USAGE);
     }

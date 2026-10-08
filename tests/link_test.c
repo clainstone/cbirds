@@ -227,11 +227,11 @@ static void test_malformed_datagrams_are_not_ours(void) {
         int at;
         double outside[4];
     } fields[] = {
-        {24 + 8, {NAN, INFINITY, -0.001, 1.001}},             /* height */
-        {24 + 16, {NAN, -INFINITY, -1, 10000.5}},             /* reach */
-        {24 + 24, {NAN, INFINITY, -0.1, 6.2832}},             /* direction */
-        {24 + 32, {NAN, INFINITY, -0.1, 1.5}},                /* wing clock */
-        {24 + 40, {NAN, -INFINITY, -0.5, 60.5}},              /* holding */
+        {24 + 8, {NAN, INFINITY, -0.001, 1.001}}, /* height */
+        {24 + 16, {NAN, -INFINITY, -1, 10000.5}}, /* reach */
+        {24 + 24, {NAN, INFINITY, -0.1, 6.2832}}, /* direction */
+        {24 + 32, {NAN, INFINITY, -0.1, 1.5}},    /* wing clock */
+        {24 + 40, {NAN, -INFINITY, -0.5, 60.5}},  /* holding */
     };
     for (size_t f = 0; f < sizeof(fields) / sizeof(*fields); f++) {
         for (int v = 0; v < 4; v++) {
@@ -452,7 +452,8 @@ static void test_a_late_clock_does_not_put_a_newcomer_first(void) {
      * clock had since been set back. */
     far_ahead = a.me.joined + 365ULL * 24 * 3600 * 1000000000ULL;
     char name[LINK_NAME_SIZE], path[400];
-    snprintf(name, sizeof(name), "%016llx-%lu", (unsigned long long)far_ahead, (unsigned long)getpid());
+    snprintf(name, sizeof(name), "%016llx-%lu", (unsigned long long)far_ahead,
+             (unsigned long)getpid());
     snprintf(path, sizeof(path), "%s/%s", sky, name);
     struct sockaddr_un address;
     memset(&address, 0, sizeof(address));
@@ -835,7 +836,7 @@ static void test_a_socket_that_was_taken_away_is_made_again(void) {
     assert(link_open(&b, sky, 0) == LINK_OK);
     settle(both, 2);
     assert(unlink(b.path) == 0); /* A tidy up of the temporary directory. */
-    settle(both, 2); /* b makes its socket again... */
+    settle(both, 2);             /* b makes its socket again... */
     assert(access(b.path, F_OK) == 0);
     settle(both, 2); /* ...and a finds it where it was. */
     assert(link_edge_open(&a, LINK_RIGHT, LINK_BIRD));
@@ -850,9 +851,16 @@ static void test_a_socket_that_was_taken_away_is_made_again(void) {
 static void test_files_that_are_not_windows_are_left_alone(void) {
     link_t a, b;
     link_t *both[] = {&a, &b};
-    const char *names[] = {"README", "0123456789abcdef", "0123456789abcdef-", "0123456789abcdef-0",
-                           "0123456789ABCDEF-12", "0123456789abcdef-12x", "0123456789abcdef-012",
-                           "0123456789abcdef-99999999999", ".hidden", "zzzz"};
+    const char *names[] = {"README",
+                           "0123456789abcdef",
+                           "0123456789abcdef-",
+                           "0123456789abcdef-0",
+                           "0123456789ABCDEF-12",
+                           "0123456789abcdef-12x",
+                           "0123456789abcdef-012",
+                           "0123456789abcdef-99999999999",
+                           ".hidden",
+                           "zzzz"};
 
     assert(link_open(&a, sky, 0) == LINK_OK);
     for (size_t i = 0; i < sizeof(names) / sizeof(*names); i++) {

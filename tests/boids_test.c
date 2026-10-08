@@ -1683,6 +1683,12 @@ static void reset_sign_state(void) {
     clock_mode = 0;
     clock_start = NULL;
     screensaver_mode = 0;
+    picture_path = NULL;
+    picture_colours_in_use = 0;
+    palette_was_asked_for = 0;
+    picture_palette.shades = 0;
+    png_image_free(&picture_image);
+    sprite_path = NULL;
     mouse.present = 0;
     mouse.moved_at = 0;
     clock_state.seconds = 0;
@@ -2456,6 +2462,226 @@ static void test_the_options_that_make_a_sign(void) {
     reset_sign_state();
 }
 
+/* A picture of two colours side by side, as a PNG file in the test's own
+ * directory: red on the left, blue on the right, wide, with a margin of nothing
+ * round it so that only the ink is drawn. */
+static void write_a_picture(const char *name, int red_on_the_left, int ink_alpha) {
+    png_image_t image = {0, 0, NULL};
+    assert(png_image_alloc(&image, 120, 60) == PNG_OK);
+    for (int y = 0; y < 60; y++)
+        for (int x = 0; x < 120; x++) {
+            uint8_t *pixel = image.pixels + ((size_t)y * 120 + (size_t)x) * 4;
+            int inside = x >= 10 && x < 110 && y >= 5 && y < 55;
+            int left = x < 60;
+            pixel[0] = (uint8_t)(left == red_on_the_left ? 220 : 30);
+            pixel[1] = 30;
+            pixel[2] = (uint8_t)(left == red_on_the_left ? 30 : 220);
+            pixel[3] = (uint8_t)(inside ? ink_alpha : 0);
+        }
+    uint8_t *encoded = NULL;
+    size_t length = 0;
+    assert(png_encode(&image, &encoded, &length) == PNG_OK);
+    char path[512];
+    scratch_file(path, sizeof(path), name);
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL && fwrite(encoded, 1, length, file) == length && fclose(file) == 0);
+    free(encoded);
+    png_image_free(&image);
+}
+
+static void settle_the_picture_quietly(void) {
+    fflush(stderr);
+    int kept = dup(STDERR_FILENO), quiet = open("/dev/null", O_WRONLY);
+    assert(kept >= 0 && quiet >= 0 && dup2(quiet, STDERR_FILENO) == STDERR_FILENO);
+    close(quiet);
+    settle_the_sign();
+    assert(dup2(kept, STDERR_FILENO) == STDERR_FILENO);
+    close(kept);
+}
+
+static void test_a_picture_gives_every_bird_a_place_and_a_colour(void) {
+    char path[512];
+    reset_sign_state();
+    write_a_picture("two.png", 1, 255);
+    scratch_file(path, sizeof(path), "two.png");
+    picture_path = path;
+    settle_the_picture_quietly();
+
+    /* Its own colours are the palette of the run: two of them, lightest first. */
+    assert(the_sign.kind == SIGN_PICTURE && picture_colours_in_use);
+    assert(picture_palette.shades == 2 && palette_shades() == 2);
+    assert(palette() == &picture_palette && !palette_follows_the_theme());
+    assert(picture_tints[0][0] == 220 || picture_tints[1][0] == 220);
+    int red = picture_tints[0][0] == 220 ? 0 : 1;
+    assert(picture_ink > 0.69 && picture_ink < 0.70); /* 100 by 50 of 120 by 60. */
+
+    apply_screen_size(200, 50, 1600, 800);
+    world_t world;
+    begin_the_intro();
+    open_the_world(&world, 600, 8);
+    sign_advance(world.birds);
+    assert(the_sign.up && formation.writing && formation.sign);
+
+    /* As many targets as birds, one to each, in the picture's own proportions and
+     * on its ink: nobody is left to flock and nobody is kept out. */
+    assert(formation.count == config.birds && !formation.keep_out);
+    double least_x = 1e9, most_x = 0, least_y = 1e9, most_y = 0;
+    for (int i = 0; i < config.birds; i++) {
+        assert(formation.slot[i] == i);
+        double x = formation.x[i], y = formation.y[i];
+        if (x < least_x) least_x = x;
+        if (x > most_x) most_x = x;
+        if (y < least_y) least_y = y;
+        if (y > most_y) most_y = y;
+    }
+    assert(fabs((most_x - least_x) / (most_y - least_y) - 2.0) < 0.15);
+    double middle = (least_x + most_x) / 2;
+    int on_the_left = 0;
+    for (int i = 0; i < config.birds; i++) {
+        /* The colour of the picture where it is, red to the left of the middle. */
+        int wants_red = formation.x[i] < middle;
+        on_the_left += wants_red;
+        if (fabs(formation.x[i] - middle) < 8) continue; /* On the seam. */
+        assert(picture_shade[i] == (wants_red ? red : 1 - red));
+    }
+    assert(on_the_left > 270 && on_the_left < 330);
+
+    /* A bird wears the colour it was given, flying in and at home. */
+    int first_colour[600];
+    for (int i = 0; i < config.birds; i++) first_colour[i] = picture_shade[i];
+    fly_the_world(&world, 0, 4, 60);
+    for (int i = 0; i < config.birds; i++) {
+        assert(world.birds[i].shade == first_colour[i]);
+        assert(home_distance(&world, i) <= formation.hover + 1e-6);
+    }
+
+    /* Let go, it flies and keeps its colour, and when it writes again every bird is
+     * home with the colour it had. */
+    double hold = sign_hold_seconds(0), flight = sign_flight_seconds(0);
+    fly_the_world(&world, 4, hold + 1, 25);
+    assert(!formation.writing);
+    for (int i = 0; i < config.birds; i++) assert(world.birds[i].shade == first_colour[i]);
+    fly_the_world(&world, hold + 1, hold + flight + 6, 25);
+    assert(formation.writing && formation.count == config.birds);
+    for (int i = 0; i < config.birds; i++) {
+        assert(world.birds[i].shade == first_colour[i]);
+        assert(home_distance(&world, i) <= formation.hover + 1e-6);
+    }
+    close_the_world(&world);
+    reset_sign_state();
+}
+
+static void test_a_picture_wears_a_ramp_somebody_chose(void) {
+    char path[512];
+    reset_sign_state();
+    write_a_picture("two.png", 1, 255);
+    scratch_file(path, sizeof(path), "two.png");
+    picture_path = path;
+    palette_was_asked_for = 1;
+    config.palette = palette_named("ice");
+    settle_the_picture_quietly();
+
+    /* The ramp is the one asked for, and the picture only says where on it. */
+    assert(the_sign.kind == SIGN_PICTURE && !picture_colours_in_use);
+    assert(palette() == &PALETTES[palette_named("ice")]);
+    assert(palette_shades() == 5);
+    const uint8_t light[3] = {255, 255, 255}, dark[3] = {0, 0, 0};
+    const uint8_t red[3] = {220, 30, 30}, blue[3] = {30, 30, 220};
+    /* Light is the light end of the ramp, dark is the dark end, and in between the
+     * shade follows the lightness: the red of this picture is lighter than its blue. */
+    assert(picture_shade_of(light) == 0 && picture_shade_of(dark) == palette_shades() - 1);
+    assert(picture_luminance(red) > picture_luminance(blue));
+    assert(picture_shade_of(red) < picture_shade_of(blue));
+    int previous = 0;
+    for (int grey = 255; grey >= 0; grey -= 5) {
+        const uint8_t colour[3] = {(uint8_t)grey, (uint8_t)grey, (uint8_t)grey};
+        int shade = picture_shade_of(colour);
+        assert(shade >= previous && shade < palette_shades()); /* Darker never goes lighter. */
+        previous = shade;
+    }
+    /* A sprite of one's own keeps its colours, and the picture is drawn in them. */
+    sprite_path = path;
+    assert(palette_shades() == 1 && picture_shade_of(red) == 0);
+    reset_sign_state();
+}
+
+static void test_a_picture_that_cannot_be_drawn_says_so(void) {
+    char good[512], broken[512], empty[512], missing[512];
+    reset_sign_state();
+    write_a_picture("good.png", 1, 255);
+    write_a_picture("empty.png", 1, 0);
+    scratch_file(good, sizeof(good), "good.png");
+    scratch_file(empty, sizeof(empty), "empty.png");
+    scratch_file(broken, sizeof(broken), "broken.png");
+    scratch_file(missing, sizeof(missing), "missing.png");
+    FILE *file = fopen(broken, "wb");
+    assert(file != NULL && fputs("this is not a PNG", file) >= 0 && fclose(file) == 0);
+
+    /* Nothing opaque: not a mistake, only nothing to draw, and the flock flies. */
+    picture_path = empty;
+    settle_the_picture_quietly();
+    assert(the_sign.kind == SIGN_NONE && !picture_colours_in_use);
+    reset_sign_state();
+
+    /* A file that is not a PNG, and one that is not there, are errors, said the way
+     * a bad --sprite is said and exiting as it does. */
+    char *not_a_png[] = {"cbirds", "--picture", broken, NULL};
+    assert(exit_status_of(3, not_a_png) == EXIT_FAILURE);
+    char *not_there[] = {"cbirds", "--picture", missing, NULL};
+    assert(exit_status_of(3, not_there) == EXIT_FAILURE);
+    char *fine[] = {"cbirds", "--picture", good, NULL};
+    assert(exit_status_of(3, fine) == 0);
+
+    /* Over four megabytes, like a sprite. */
+    char big[512];
+    scratch_file(big, sizeof(big), "big.png");
+    file = fopen(big, "wb");
+    assert(file != NULL);
+    static char block[1 << 16];
+    for (int i = 0; i < 65; i++) assert(fwrite(block, 1, sizeof(block), file) == sizeof(block));
+    assert(fclose(file) == 0);
+    char *too_big[] = {"cbirds", "--picture", big, NULL};
+    assert(exit_status_of(3, too_big) == EXIT_FAILURE);
+
+    /* Three things that each take the whole sign: only one at a time. */
+    char *twice[] = {"cbirds", "--picture", good, "--say", "hi", NULL};
+    assert(exit_status_of(5, twice) == EXIT_USAGE);
+    char *and_a_clock[] = {"cbirds", "--picture", good, "--clock", NULL};
+    assert(exit_status_of(4, and_a_clock) == EXIT_USAGE);
+    assert(unlink(good) == 0 && unlink(empty) == 0 && unlink(broken) == 0 && unlink(big) == 0);
+    reset_sign_state();
+}
+
+static void test_a_colour_given_is_told_from_the_default(void) {
+    char path[512];
+    write_a_picture("two.png", 1, 255);
+    scratch_file(path, sizeof(path), "two.png");
+
+    /* Not given: the picture's own. Given, even as the default's own name: the
+     * ramp that was named. */
+    reset_sign_state();
+    char *plain[] = {"cbirds", "--picture", path, "--seed", "4", NULL};
+    read_options(5, plain);
+    assert(!palette_was_asked_for && picture_colours_in_use && config.palette == 0);
+    assert(the_sign.seed == 4);
+    reset_sign_state();
+    char *named[] = {"cbirds", "--picture", path, "--color", "ice", NULL};
+    read_options(5, named);
+    assert(palette_was_asked_for && !picture_colours_in_use);
+    assert(PALETTES[config.palette].name[0] == 'i');
+    reset_sign_state();
+    char *theme[] = {"cbirds", "--picture", path, "-c", "theme", NULL};
+    read_options(5, theme);
+    assert(palette_was_asked_for && !picture_colours_in_use && palette_follows_the_theme());
+    reset_sign_state();
+    /* With no picture, none of it matters, and the default is what it was. */
+    char *nothing[] = {"cbirds", NULL};
+    read_options(1, nothing);
+    assert(config.palette == 0 && !picture_colours_in_use && palette_follows_the_theme());
+    assert(unlink(path) == 0);
+    reset_sign_state();
+}
+
 static void test_a_sign_has_a_bird_as_wide_as_its_cells_unless_it_is_told(void) {
     reset_sign_state();
     /* The usual thirty on a roomy screen, and smaller on a small one, where a bird
@@ -2484,13 +2710,21 @@ static void test_a_sign_has_a_bird_as_wide_as_its_cells_unless_it_is_told(void) 
 }
 
 static void test_a_sign_records_in_a_gif_and_a_cast(void) {
-    char gif[512], cast[512];
+    char gif[512], cast[512], picture[512], picture_gif[512];
     scratch_file(gif, sizeof(gif), "sign.gif");
     scratch_file(cast, sizeof(cast), "sign.cast");
+    scratch_file(picture, sizeof(picture), "recorded.png");
+    scratch_file(picture_gif, sizeof(picture_gif), "picture.gif");
+    write_a_picture("recorded.png", 0, 255);
 
     /* Headless, in both formats, with the clock on its own time: the same flags the
      * README gives, run in a child because a recording is a whole run. */
-    for (int which = 0; which < 2; which++) {
+    struct {
+        const char *file, *option, *value;
+    } runs[] = {{gif, "--say", "hi there"},
+                {cast, "--clock-at", "10:09:55"},
+                {picture_gif, "--picture", picture}};
+    for (size_t which = 0; which < sizeof(runs) / sizeof(*runs); which++) {
         reset_sign_state();
         fflush(NULL);
         pid_t child = fork();
@@ -2499,11 +2733,9 @@ static void test_a_sign_records_in_a_gif_and_a_cast(void) {
             int quiet = open("/dev/null", O_WRONLY);
             if (quiet < 0 || dup2(quiet, STDOUT_FILENO) < 0 || dup2(quiet, STDERR_FILENO) < 0)
                 _exit(99);
-            char *argv[] = {"cbirds",         "--record",    which == 0 ? gif : cast,
-                            "--record-seconds", "2",         "--record-size",
-                            "64x18",          "-n",          "200",
-                            "--seed",         "3",           which == 0 ? "--say" : "--clock-at",
-                            which == 0 ? "hi there" : "10:09:55", NULL};
+            char *argv[] = {"cbirds",   "--record", (char *)runs[which].file, "--record-seconds",
+                            "2",        "--record-size", "64x18", "-n", "200", "--seed", "3",
+                            (char *)runs[which].option, (char *)runs[which].value, NULL};
             alarm(60);
             _exit(cbirds_application_main(13, argv));
         }
@@ -2511,12 +2743,14 @@ static void test_a_sign_records_in_a_gif_and_a_cast(void) {
         assert(waitpid(child, &status, 0) == child);
         assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS);
     }
-    FILE *file = fopen(gif, "rb");
-    assert(file != NULL);
-    char magic[6];
-    assert(fread(magic, 1, 6, file) == 6 && memcmp(magic, "GIF89a", 6) == 0);
-    fclose(file);
-    file = fopen(cast, "r");
+    for (int which = 0; which < 3; which += 2) {
+        FILE *file = fopen(runs[which].file, "rb");
+        assert(file != NULL);
+        char magic[6];
+        assert(fread(magic, 1, 6, file) == 6 && memcmp(magic, "GIF89a", 6) == 0);
+        fclose(file);
+    }
+    FILE *file = fopen(cast, "r");
     assert(file != NULL);
     char line[256];
     assert(fgets(line, sizeof(line), file) != NULL && strstr(line, "\"version\": 2") != NULL);
@@ -2524,7 +2758,8 @@ static void test_a_sign_records_in_a_gif_and_a_cast(void) {
     while (fgets(line, sizeof(line), file) != NULL) frames++;
     assert(frames > 40);
     fclose(file);
-    assert(unlink(gif) == 0 && unlink(cast) == 0);
+    assert(unlink(gif) == 0 && unlink(cast) == 0 && unlink(picture_gif) == 0 &&
+           unlink(picture) == 0);
     reset_sign_state();
 }
 
@@ -4171,6 +4406,10 @@ int main(void) {
     test_the_intro_birds_are_never_scattered();
     test_a_screensaver_quits_at_the_first_sign_of_anybody();
     test_the_options_that_make_a_sign();
+    test_a_picture_gives_every_bird_a_place_and_a_colour();
+    test_a_picture_wears_a_ramp_somebody_chose();
+    test_a_picture_that_cannot_be_drawn_says_so();
+    test_a_colour_given_is_told_from_the_default();
     test_a_sign_has_a_bird_as_wide_as_its_cells_unless_it_is_told();
     test_a_sign_records_in_a_gif_and_a_cast();
     test_presets_set_every_notch();

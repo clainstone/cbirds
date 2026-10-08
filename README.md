@@ -153,6 +153,7 @@ cbirds --depth --trails             a second sky behind the first
 cbirds --matrix                     it is raining birds
 cbirds --say "back in five"         the flock writes it, and holds it as a sign
 cbirds --clock                      the flock tells the time
+cbirds --picture logo.png           the flock draws a PNG; --shape dot and -n 2000 suit it
 cbirds --screensaver --clock        a lock screen that tells the time; any key quits
 ```
 
@@ -213,6 +214,16 @@ hour: twelve hours, with no AM or PM, if `LC_TIME` has a time format that shows
 the hour on a twelve hour clock, and twenty four otherwise. The colon rises and
 settles once a second. At each new minute the digits let go for a few seconds
 and the flock writes the next time.
+
+`--picture FILE` has the flock draw a PNG instead. Every bird takes a place in
+the opaque part of the picture, where a pixel with an alpha above half is ink,
+the places spread evenly over it, and wears the picture's colour there. The
+picture is cut down to at most eight colours, which are the palette of the
+run; with `--color` given they are not, and the light and dark of the picture
+pick shades of that ramp. A bird keeps its colour while it flies, and the
+picture is held, let go of and drawn again as a sign is. `--shape dot` and more
+birds, `-n 2000`, draw it best. The file is read as `--sprite` reads one: a PNG
+of up to 4 MB, in any of the colour types PNG has.
 
 A sign picks a bird as wide as the distance between the cells of its letters
 unless you give `--size`, so a short text is written with the usual bird and a
@@ -295,6 +306,7 @@ Sign
       --say TEXT                the flock writes TEXT and holds it as a sign
       --clock                   the flock tells the time, HH:MM, in local time
       --clock-at TIME           start the clock at HH:MM or HH:MM:SS, not now
+      --picture FILE            the flock draws a PNG, in its colours unless --color is given
 
 Oddities
       --matrix                  it is raining birds

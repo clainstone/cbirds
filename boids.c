@@ -24,6 +24,7 @@
 #include "gif.h"
 #include "kitty_graphics.h"
 #include "options.h"
+#include "picture.h"
 #include "png.h"
 #include "sign.h"
 #include "spatial_grid.h"
@@ -833,6 +834,17 @@ static const char *PALETTE_NAMES[PALETTE_COUNT + 1];
  * given, so the flock used to come out flat ember whatever the artwork was. */
 static const char *sprite_path;
 
+/* --picture: a PNG the flock draws. Its colours, cut down to a ramp of the
+ * program's own kind, are the palette of the run unless --color was given, and
+ * then the picture's light and dark pick shades of that. See the sign, below. */
+static const char *picture_path;
+static png_image_t picture_image;
+static int picture_colours_in_use;
+static int palette_was_asked_for;
+static uint8_t picture_tints[MAX_PALETTE_SHADES][3];
+static palette_t picture_palette = {"picture", "the colours of the picture", 0, NULL,
+                                    PNG_TINT_REPLACE};
+
 /* Named rather than numbered: the table's order is a presentation choice and
  * should not be load bearing. */
 static int palette_named(const char *name) {
@@ -842,7 +854,7 @@ static int palette_named(const char *name) {
 }
 
 static int palette_follows_the_theme(void) {
-    return strcmp(PALETTES[config.palette].name, "theme") == 0;
+    return !picture_colours_in_use && strcmp(PALETTES[config.palette].name, "theme") == 0;
 }
 
 #define FALLBACK_PALETTE palette_named("ember")
@@ -853,7 +865,7 @@ static void name_the_palettes(void) {
 }
 
 static const palette_t *palette(void) {
-    return &PALETTES[config.palette];
+    return picture_colours_in_use ? &picture_palette : &PALETTES[config.palette];
 }
 
 static int palette_shades(void) {
@@ -1026,31 +1038,35 @@ static png_status_t draw_shape(int which, int size, png_image_t *out) {
 
 static const char *program_name = "cbirds"; /* As invoked, for every message. */
 
+/* A PNG of somebody's own, for a sprite or a picture: up to four megabytes of
+ * it, and every way it can go wrong said as it is. */
+static png_status_t load_png_file(const char *path, const char *what, png_image_t *out) {
+    FILE *file = fopen(path, "rb");
+    if (file == NULL) {
+        fprintf(stderr, "%s: cannot open %s\n", program_name, path);
+        exit(EXIT_FAILURE);
+    }
+    static uint8_t buffer[1 << 22]; /* Four megabytes of PNG is a generous bird. */
+    size_t length = fread(buffer, 1, sizeof(buffer), file);
+    /* Said as it is, rather than decoding the first four megabytes and
+     * reporting a truncated file the user knows is whole. */
+    int too_large = length == sizeof(buffer) && fgetc(file) != EOF;
+    int unreadable = ferror(file);
+    fclose(file);
+    if (too_large || unreadable) {
+        if (too_large)
+            fprintf(stderr, "%s: %s is over 4 MB, too large for %s\n", program_name, path, what);
+        else
+            fprintf(stderr, "%s: cannot read %s\n", program_name, path);
+        exit(EXIT_FAILURE);
+    }
+    return png_decode(buffer, length, out);
+}
+
 /* Whichever the user asked for: a PNG of their own, one of the drawn shapes, or
  * the drawing compiled into the binary. */
 static png_status_t load_sprite(png_image_t *out) {
-    if (sprite_path != NULL) {
-        FILE *file = fopen(sprite_path, "rb");
-        if (file == NULL) {
-            fprintf(stderr, "%s: cannot open %s\n", program_name, sprite_path);
-            exit(EXIT_FAILURE);
-        }
-        static uint8_t buffer[1 << 22]; /* Four megabytes of PNG is a generous bird. */
-        size_t length = fread(buffer, 1, sizeof(buffer), file);
-        /* Said as it is, rather than decoding the first four megabytes and
-         * reporting a truncated file the user knows is whole. */
-        int too_large = length == sizeof(buffer) && fgetc(file) != EOF;
-        int unreadable = ferror(file);
-        fclose(file);
-        if (too_large || unreadable) {
-            fprintf(stderr,
-                    too_large ? "%s: %s is over 4 MB, too large for a sprite\n"
-                              : "%s: cannot read %s\n",
-                    program_name, sprite_path);
-            exit(EXIT_FAILURE);
-        }
-        return png_decode(buffer, length, out);
-    }
+    if (sprite_path != NULL) return load_png_file(sprite_path, "a sprite", out);
     if (config.shape != 0) return draw_shape(config.shape, SPRITE_WORK_MAX, out);
     return png_decode(sprite_png, sprite_png_len, out);
 }
@@ -1168,7 +1184,8 @@ static int legend_repels(const bird_t *bird, vector_t *boundary) {
  * birds off the panel is unanswerable and a target in there could never be
  * reached.
  */
-enum { FORMATION_MAX_TARGETS = 2048 };
+/* A target for every bird there can be: a picture sends them all. */
+enum { FORMATION_MAX_TARGETS = MAX_BIRDS };
 
 static struct {
     int count;
@@ -1298,7 +1315,7 @@ static int formation_target_for(const bird_t *bird, int index, double *x, double
  * of a short word and leave nobody to fly; a sign gives a lit cell a few birds,
  * and the rest keep flocking round it, kept out of the box the text is in.
  */
-typedef enum { SIGN_NONE, SIGN_SAY, SIGN_CLOCK } sign_kind_t;
+typedef enum { SIGN_NONE, SIGN_SAY, SIGN_CLOCK, SIGN_PICTURE } sign_kind_t;
 
 static const char *say_text;          /* --say, as it was typed. */
 static char sign_words[SIGN_TEXT_MAX]; /* And as the font can draw it. */
@@ -1348,6 +1365,13 @@ static const double SCATTER_STAGGER = 1.0;
  * first half second is whatever started it. */
 static const double SCREENSAVER_GRACE = 0.5;
 
+/* What a picture brings: the share of it that is ink, which says how far apart
+ * the birds that draw it are, the light and the dark of its colours, which say
+ * where on a ramp of somebody else's choosing each of them goes, and the shade
+ * every bird wears from the moment the picture is laid out. */
+static double picture_ink, picture_dark, picture_light;
+static int picture_shade[MAX_BIRDS];
+
 static struct {
     sign_kind_t kind;
     int up;           /* Being held, as far as the flock is concerned. */
@@ -1356,6 +1380,7 @@ static struct {
     double last_tick;
     char written[SIGN_TEXT_MAX]; /* What is up now. */
     int twelve_hours;
+    unsigned seed;     /* --seed, for what a picture picks without the flock's numbers. */
     int virtual_clock; /* The time is the start time and the run's clock, not the wall's. */
     time_t origin;
     /* The screen it was laid out for: a sign that outlives a window resize or the
@@ -1400,6 +1425,27 @@ static int sign_layout_is_current(void) {
            the_sign.key_birds == config.birds && the_sign.key_size == config.bird_size;
 }
 
+/* A layout starts from nothing, and remembers the screen it is for. */
+static void sign_begin_layout(void) {
+    formation_clear();
+    formation.sign = 1;
+    the_sign.key_width = screen.width;
+    the_sign.key_height = screen.height;
+    the_sign.key_legend_width = screen.legend_width;
+    the_sign.key_legend_height = screen.legend_height;
+    the_sign.key_birds = config.birds;
+    the_sign.key_size = config.bird_size;
+}
+
+/* How far a bird loops, for targets this far apart. */
+static double sign_hover_for(double cell) {
+    double hover = SIGN_HOVER_SIZE * config.bird_size;
+    if (SIGN_HOVER_CELL * cell < hover) hover = SIGN_HOVER_CELL * cell;
+    if (hover < SIGN_HOVER_MIN) hover = SIGN_HOVER_MIN;
+    if (hover > SIGN_HOVER_MAX) hover = SIGN_HOVER_MAX;
+    return hover;
+}
+
 /* Lays the cleaned text out as a sign and picks its writers from the birds.
  * Returns whether it fits: the screen may be too small, or the flock too small
  * for the text, and then the flock simply flocks. */
@@ -1415,14 +1461,7 @@ static int sign_place(const char *clean, int reference_columns, int lift_the_col
     double cell;
     int line_count = sign_fit(clean, reference_columns, width, height,
                               SIGN_LARGEST_CELL * config.bird_size, &lines, &cell);
-    formation_clear();
-    formation.sign = 1;
-    the_sign.key_width = screen.width;
-    the_sign.key_height = screen.height;
-    the_sign.key_legend_width = screen.legend_width;
-    the_sign.key_legend_height = screen.legend_height;
-    the_sign.key_birds = config.birds;
-    the_sign.key_size = config.bird_size;
+    sign_begin_layout();
     if (line_count == 0) return 0;
 
     int lit = 0;
@@ -1444,11 +1483,7 @@ static int sign_place(const char *clean, int reference_columns, int lift_the_col
     if (formation.count == 0) return 0;
 
     formation.cell = cell;
-    double hover = SIGN_HOVER_SIZE * config.bird_size;
-    if (SIGN_HOVER_CELL * cell < hover) hover = SIGN_HOVER_CELL * cell;
-    if (hover < SIGN_HOVER_MIN) hover = SIGN_HOVER_MIN;
-    if (hover > SIGN_HOVER_MAX) hover = SIGN_HOVER_MAX;
-    formation.hover = hover;
+    formation.hover = sign_hover_for(cell);
 
     /* A few birds to a lit cell, as many as the flock can spare. */
     int per_cell = (int)(near_birds * SIGN_WRITER_SHARE) / formation.count;
@@ -1479,6 +1514,59 @@ static int sign_place(const char *clean, int reference_columns, int lift_the_col
     return 1;
 }
 
+/* Which shade of the run's ramp a colour of the picture is: the nearest of the
+ * picture's own colours when they are the ramp, and otherwise its light and dark
+ * stretched along the ramp somebody chose, light at the light end of it. */
+static int picture_shade_of(const uint8_t rgb[3]) {
+    int shades = palette_shades();
+    if (shades <= 1) return 0;
+    if (picture_colours_in_use) {
+        int nearest = picture_nearest((const uint8_t(*)[3])picture_tints, picture_palette.shades, rgb);
+        return nearest < shades ? nearest : shades - 1;
+    }
+    double span = picture_light - picture_dark;
+    double lightness = span > 1e-6 ? (picture_luminance(rgb) - picture_dark) / span : 0.5;
+    if (lightness < 0) lightness = 0;
+    if (lightness > 1) lightness = 1;
+    int shade = (int)((1.0 - lightness) * shades);
+    return shade >= shades ? shades - 1 : shade;
+}
+
+/* The picture, fitted into the free rectangle as the intro's letters are, and a
+ * place in it for every bird there is: they are spread evenly over the ink, and
+ * each of them wears the colour of the picture where it goes. */
+static int sign_place_picture(void) {
+    static picture_point_t points[MAX_BIRDS];
+    double pad = config.bird_size * 2.0;
+    double left = pad, top = pad, right = screen.width - pad, bottom = screen.height - pad;
+    if (screen.legend_width > 0) left = screen.legend_width + SIGN_PANEL_GAP + pad;
+
+    sign_begin_layout();
+    if (right - left < 1 || bottom - top < 1) return 0;
+    /* Centred by where a bird is drawn, as a sign is: from its top left corner. */
+    double shift = config.bird_size / 2.0;
+    picture_fit_t fit =
+        picture_fit(&picture_image, left - shift, top - shift, right - left, bottom - top);
+    int made = picture_sample(&picture_image, &fit, config.birds,
+                              the_sign.seed, points);
+    if (made == 0) return 0;
+    for (int i = 0; i < made; i++) {
+        formation.x[i] = points[i].x;
+        formation.y[i] = points[i].y;
+        formation.lift[i] = 0;
+        formation.shift_y[i] = 0;
+        formation.slot[i] = i;
+        picture_shade[i] = picture_shade_of(points[i].rgb);
+    }
+    for (int i = made; i < MAX_BIRDS; i++) formation.slot[i] = -1;
+    formation.count = made;
+    formation.writing = 1;
+    /* The distance between two birds that are neighbours in the picture. */
+    formation.cell = sqrt(fit.width * fit.height * picture_ink / made);
+    formation.hover = sign_hover_for(formation.cell);
+    return 1;
+}
+
 /* Where every writer is in its loop, and how far the colon has risen, this frame. */
 static void sign_move_the_letters(void) {
     for (int i = 0; i < config.birds; i++)
@@ -1493,12 +1581,17 @@ static void sign_move_the_letters(void) {
 }
 
 static int sign_write(const bird_t *birds) {
-    char text[SIGN_TEXT_MAX];
+    char text[SIGN_TEXT_MAX] = "";
     char clean[SIGN_TEXT_MAX];
-    sign_text_now(text, sizeof(text));
-    sign_clean(text, clean, sizeof(clean));
-    int fits = sign_place(clean, the_sign.kind == SIGN_CLOCK ? sign_columns("00:00") : 0,
+    int fits;
+    if (the_sign.kind == SIGN_PICTURE) {
+        fits = sign_place_picture();
+    } else {
+        sign_text_now(text, sizeof(text));
+        sign_clean(text, clean, sizeof(clean));
+        fits = sign_place(clean, the_sign.kind == SIGN_CLOCK ? sign_columns("00:00") : 0,
                           the_sign.kind == SIGN_CLOCK, birds);
+    }
     if (!fits) {
         formation_clear();
         the_sign.up = 0;
@@ -2610,7 +2703,9 @@ static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_gr
         /* A writer of a sign keeps one colour from the moment it is sent: its
          * heading goes round the loop of its hover once or twice a second, and a
          * colour that went round the ramp with it would make the letters flicker. */
-        if (writing && formation.sign && config.flocks == 1 && palette_shades() > 1)
+        if (the_sign.kind == SIGN_PICTURE)
+            birds[i].shade = picture_shade[i]; /* The picture's colour, flying or home. */
+        else if (writing && formation.sign && config.flocks == 1 && palette_shades() > 1)
             birds[i].shade = (int)(sign_unit((unsigned)i) * palette_shades()) % palette_shades();
         beat_wings(&birds[i]);
         if (config.trails && i % TRAIL_EVERY == 0) {
@@ -3138,6 +3233,8 @@ static const option_t OPTIONS[] = {
      "the flock tells the time, HH:MM, in local time", "Sign", 0},
     {0, "clock-at", NULL, OPTION_STRING, &clock_start, 0, 0, NULL, "TIME",
      "start the clock at HH:MM or HH:MM:SS, not now", "Sign", 0},
+    {0, "picture", NULL, OPTION_STRING, &picture_path, 0, 0, NULL, "FILE",
+     "the flock draws a PNG, in its colours unless --color is given", "Sign", 0},
 
     {0, "matrix", NULL, OPTION_FLAG, &matrix_mode, 0, 0, NULL, NULL, "it is raining birds",
      "Oddities", 0},
@@ -3629,6 +3726,14 @@ static int sign_bird_size(void) {
     sign_lines_t lines;
     double cell;
     const double margin = 40;
+    if (the_sign.kind == SIGN_PICTURE) {
+        /* The distance between neighbours, as the picture will have them. */
+        picture_fit_t fit = picture_fit(&picture_image, margin, margin, screen.width - 2 * margin,
+                                        screen.height - 2 * margin);
+        int size = (int)(sqrt(fit.width * fit.height * picture_ink / config.birds) + 0.5);
+        return size < MIN_BIRD_SIZE ? MIN_BIRD_SIZE
+                                    : (size > DEFAULT_BIRD_SIZE ? DEFAULT_BIRD_SIZE : size);
+    }
     if (the_sign.kind == SIGN_CLOCK)
         sign_clean("00:00", clean, sizeof(clean));
     else
@@ -3812,6 +3917,40 @@ static int read_clock_start(const char *text, int *hour, int *minute, int *secon
     return *at == '\0' && *hour < 24 && *minute < 60 && *second < 60;
 }
 
+/* The picture, read once and for the whole run, and its colours worked out: cut
+ * down to a ramp by median cut, and either they are the palette, or, when --color
+ * was given, they are only how light and how dark the picture goes. A file that
+ * is not a PNG, or too large, is an error like a bad --sprite, said the same way;
+ * a picture with no ink in it is only a picture the flock has nothing to draw. */
+static void settle_the_picture(void) {
+    png_status_t status = load_png_file(picture_path, "a picture", &picture_image);
+    if (status != PNG_OK) {
+        fprintf(stderr, "%s: %s: %s\n", program_name, picture_path, png_status_string(status));
+        exit(EXIT_FAILURE);
+    }
+    uint8_t colours[MAX_PALETTE_SHADES][3];
+    int made = picture_quantise(&picture_image, MAX_PALETTE_SHADES, colours);
+    if (made == 0) {
+        fprintf(stderr, "%s: %s has nothing opaque in it, so the flock flies as usual\n",
+                program_name, picture_path);
+        png_image_free(&picture_image);
+        return;
+    }
+    size_t pixels = (size_t)picture_image.width * (size_t)picture_image.height, ink = 0;
+    for (size_t i = 0; i < pixels; i++) ink += picture_image.pixels[i * 4 + 3] > 127;
+    picture_ink = (double)ink / (double)pixels;
+    memcpy(picture_tints, colours, sizeof(picture_tints));
+    picture_palette.shades = made;
+    picture_palette.tints = (const uint8_t(*)[3])picture_tints;
+    picture_dark = picture_luminance(colours[made - 1]);
+    picture_light = picture_luminance(colours[0]); /* Lightest first. */
+    picture_colours_in_use = !palette_was_asked_for;
+    if (sprite_path != NULL)
+        fprintf(stderr, "%s: --sprite keeps its own colours, so the picture is drawn in them\n",
+                program_name);
+    the_sign.kind = SIGN_PICTURE;
+}
+
 /* The options that make the flock a sign, settled together: which one it is,
  * whether the font can draw it, and what the clock is going by. Said out loud
  * and then ignored where the flock can simply fly as usual, and refused where
@@ -3826,11 +3965,13 @@ static void settle_the_sign(void) {
         }
         clock_mode = 1;
     }
-    if ((say_text != NULL) + clock_mode > 1) {
-        fprintf(stderr, "%s: --say and --clock each write the whole sign, so only one of them\n",
+    if ((say_text != NULL) + clock_mode + (picture_path != NULL) > 1) {
+        fprintf(stderr, "%s: --say, --clock and --picture each take the whole sign, so only one\n",
                 program_name);
         exit(EXIT_USAGE);
     }
+    the_sign.seed = requested_seed >= 0 ? (unsigned)requested_seed : 0u;
+    if (picture_path != NULL) settle_the_picture();
     if (say_text != NULL) {
         int kept = sign_clean(say_text, sign_words, sizeof(sign_words));
         int needs = font_text_cells(sign_words);
@@ -3878,6 +4019,9 @@ static void read_options(int argc, char **argv) {
     name_the_palettes();
     name_the_presets();
     name_the_shapes();
+    /* Not given until it is: a picture draws in its own colours unless --color
+     * says otherwise, and the ramp it names is index zero, theme, by default. */
+    config.palette = -1;
     options_status_t status =
         options_parse(OPTIONS, OPTION_COUNT, argc, argv, error, sizeof(error));
 
@@ -3903,6 +4047,8 @@ static void read_options(int argc, char **argv) {
         fprintf(stderr, "Try '%s --help'.\n", program_name);
         exit(EXIT_USAGE);
     }
+    palette_was_asked_for = config.palette >= 0;
+    if (!palette_was_asked_for) config.palette = 0;
     /* A preset is expanded first so that a slider given after it still wins: the
      * table cannot express that order, so the parser's left to right reading is
      * honoured by putting the broad stroke before the fine ones. */

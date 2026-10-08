@@ -368,6 +368,408 @@ static void test_ink_becomes_sextants_too(void) {
     cells_destroy(&cells);
 }
 
+/* --- Cells filled in by hand ------------------------------------------------- */
+
+static cell_t *put(cells_t *cells, int col, int row, uint32_t glyph) {
+    cell_t *cell = cells_at(cells, col, row);
+    assert(cell != NULL);
+    memset(cell, 0, sizeof(*cell));
+    cell->glyph = glyph;
+    return cell;
+}
+
+static void colour(cell_t *cell, int background, uint8_t kind, uint8_t a, uint8_t b, uint8_t c) {
+    uint8_t *rgb = background ? cell->bg : cell->fg;
+    rgb[0] = a;
+    rgb[1] = b;
+    rgb[2] = c;
+    if (background) {
+        cell->has_bg = 1;
+        cell->bg_kind = kind;
+    } else {
+        cell->has_fg = 1;
+        cell->fg_kind = kind;
+    }
+}
+
+static void test_cells_can_be_filled_in_by_hand(void) {
+    cells_t cells;
+    assert(cells_init(&cells, 1) == CELLS_OK);
+    assert(cells_resize(&cells, 3, 2) == CELLS_OK);
+    assert(cells_at(&cells, 3, 0) == NULL && cells_at(&cells, 0, 2) == NULL);
+    assert(cells_at(&cells, -1, 0) == NULL && cells_at(NULL, 0, 0) == NULL);
+    put(&cells, 1, 1, 'x');
+    assert(cells_at(&cells, 1, 1)->glyph == 'x');
+    cells_clear(&cells);
+    assert(cells_at(&cells, 1, 1)->glyph == 0);
+    cells_clear(NULL);
+    cells_destroy(&cells);
+}
+
+static void test_a_palette_colour_is_written_as_the_terminals_own(void) {
+    cells_t cells;
+    assert(cells_init(&cells, 1) == CELLS_OK);
+    assert(cells_resize(&cells, 8, 1) == CELLS_OK);
+    colour(put(&cells, 0, 0, 'a'), 0, CELLS_COLOUR_ANSI, 1, 0, 0);
+    colour(put(&cells, 1, 0, 'b'), 0, CELLS_COLOUR_ANSI, 7, 0, 0);
+    colour(put(&cells, 2, 0, 'c'), 0, CELLS_COLOUR_ANSI, 12, 0, 0);
+    cell_t *both = put(&cells, 3, 0, 'd');
+    colour(both, 0, CELLS_COLOUR_ANSI, 15, 0, 0);
+    colour(both, 1, CELLS_COLOUR_ANSI, 4, 9, 9);
+    colour(put(&cells, 4, 0, 'e'), 1, CELLS_COLOUR_ANSI, 9, 0, 0);
+    assert(cells_emit(&cells) == CELLS_OK);
+    /* 30 to 37 and 90 to 97, 40 to 47 and 100 to 107: no 24 bit colour anywhere,
+     * so the terminal's theme decides what they look like. */
+    assert(strstr(cells.text, "\033[31ma") != NULL);
+    assert(strstr(cells.text, "\033[37mb") != NULL);
+    assert(strstr(cells.text, "\033[94mc") != NULL);
+    assert(strstr(cells.text, "\033[97m\033[44md") != NULL);
+    assert(strstr(cells.text, "\033[101me") != NULL);
+    assert(strstr(cells.text, "38;2") == NULL && strstr(cells.text, "38;5") == NULL);
+    cells_destroy(&cells);
+}
+
+static void test_a_256_colour_index_is_written_as_an_index(void) {
+    cells_t cells;
+    assert(cells_init(&cells, 0) == CELLS_OK); /* A terminal with no 24 bit colour. */
+    assert(cells_resize(&cells, 4, 1) == CELLS_OK);
+    cell_t *a = put(&cells, 0, 0, 'a');
+    colour(a, 0, CELLS_COLOUR_INDEXED, 208, 0, 0);
+    colour(a, 1, CELLS_COLOUR_INDEXED, 17, 0, 0);
+    assert(cells_emit(&cells) == CELLS_OK);
+    assert(strstr(cells.text, "\033[38;5;208m\033[48;5;17ma") != NULL);
+    cells_destroy(&cells);
+}
+
+static void test_exact_colour_is_24_bit_whatever_the_terminal_admits_to(void) {
+    cells_t cells;
+    assert(cells_init(&cells, 0) == CELLS_OK);
+    assert(cells_resize(&cells, 4, 1) == CELLS_OK);
+    colour(put(&cells, 0, 0, 'a'), 0, CELLS_COLOUR_EXACT, 10, 20, 30);
+    colour(put(&cells, 1, 0, 'b'), 0, CELLS_COLOUR_RGB, 10, 20, 30);
+    assert(cells_emit(&cells) == CELLS_OK);
+    /* Input that used 24 bit asked for it, and the terminal that was shown it is
+     * shown it again; the colours we made up ourselves follow what COLORTERM says. */
+    assert(strstr(cells.text, "\033[38;2;10;20;30ma") != NULL);
+    assert(strstr(cells.text, "\033[38;5;") != NULL);
+    cells_destroy(&cells);
+}
+
+static void test_attributes_are_added_without_a_reset_and_dropped_with_one(void) {
+    cells_t cells;
+    assert(cells_init(&cells, 1) == CELLS_OK);
+    assert(cells_resize(&cells, 6, 1) == CELLS_OK);
+    put(&cells, 0, 0, 'a')->attributes = CELLS_BOLD;
+    put(&cells, 1, 0, 'b')->attributes = CELLS_BOLD | CELLS_UNDERLINE;
+    put(&cells, 2, 0, 'c')->attributes = CELLS_BOLD | CELLS_UNDERLINE;
+    put(&cells, 3, 0, 'd')->attributes = CELLS_REVERSE | CELLS_ITALIC | CELLS_DIM;
+    put(&cells, 4, 0, 'e');
+    assert(cells_emit(&cells) == CELLS_OK);
+    /* Bold, then underline added on top of it, then nothing for the same again. */
+    assert(strstr(cells.text, "\033[1ma\033[4mbc") != NULL);
+    /* Dropping bold and underline is a reset and then what the next one wants. */
+    assert(strstr(cells.text, "c\033[0m\033[2;3;7md") != NULL);
+    assert(strstr(cells.text, "d\033[0me") != NULL);
+    cells_destroy(&cells);
+}
+
+static void test_a_cell_that_only_changes_attribute_is_sent_again(void) {
+    cells_t cells;
+    assert(cells_init(&cells, 1) == CELLS_OK);
+    assert(cells_resize(&cells, 3, 1) == CELLS_OK);
+    put(&cells, 1, 0, 'x');
+    assert(cells_emit(&cells) == CELLS_OK);
+    put(&cells, 1, 0, 'x')->attributes = CELLS_UNDERLINE;
+    assert(cells_emit(&cells) == CELLS_OK);
+    assert(strstr(cells.text, "\033[4mx") != NULL);
+    /* The same again, nothing. */
+    put(&cells, 1, 0, 'x')->attributes = CELLS_UNDERLINE;
+    assert(cells_emit(&cells) == CELLS_OK);
+    assert(cells.length == 0);
+    /* A palette index differs by its index and not by the bytes around it. */
+    cell_t *y = put(&cells, 1, 0, 'x');
+    y->attributes = CELLS_UNDERLINE;
+    colour(y, 0, CELLS_COLOUR_ANSI, 2, 99, 99);
+    assert(cells_emit(&cells) == CELLS_OK);
+    assert(cells.length > 0);
+    y = put(&cells, 1, 0, 'x');
+    y->attributes = CELLS_UNDERLINE;
+    colour(y, 0, CELLS_COLOUR_ANSI, 2, 7, 7);
+    assert(cells_emit(&cells) == CELLS_OK);
+    assert(cells.length == 0);
+    cells_destroy(&cells);
+}
+
+static void test_a_wide_glyph_is_sent_once_and_its_tail_never(void) {
+    cells_t cells;
+    assert(cells_init(&cells, 1) == CELLS_OK);
+    assert(cells_resize(&cells, 6, 1) == CELLS_OK);
+    put(&cells, 0, 0, 'a');
+    put(&cells, 1, 0, 0x4E2D)->wide = CELLS_WIDE_HEAD;
+    put(&cells, 2, 0, 0)->wide = CELLS_WIDE_TAIL;
+    put(&cells, 3, 0, 'b');
+    assert(cells_emit(&cells) == CELLS_OK);
+    /* a, the wide character, b: the cursor needs no move between them, because the
+     * terminal advanced two columns by itself. */
+    assert(strstr(cells.text,
+                  "a\xE4\xB8\xAD"
+                  "b") != NULL);
+    cells_destroy(&cells);
+}
+
+static void test_a_wide_glyph_is_redrawn_whole_when_half_of_it_changes(void) {
+    cells_t cells;
+    assert(cells_init(&cells, 1) == CELLS_OK);
+    assert(cells_resize(&cells, 6, 1) == CELLS_OK);
+    put(&cells, 1, 0, 0x4E2D)->wide = CELLS_WIDE_HEAD;
+    put(&cells, 2, 0, 0)->wide = CELLS_WIDE_TAIL;
+    assert(cells_emit(&cells) == CELLS_OK);
+
+    /* Nothing changed: nothing sent. */
+    put(&cells, 1, 0, 0x4E2D)->wide = CELLS_WIDE_HEAD;
+    put(&cells, 2, 0, 0)->wide = CELLS_WIDE_TAIL;
+    assert(cells_emit(&cells) == CELLS_OK);
+    assert(cells.length == 0);
+
+    /* Only its second cell is different, in colour: the character is drawn again. */
+    put(&cells, 1, 0, 0x4E2D)->wide = CELLS_WIDE_HEAD;
+    colour(put(&cells, 2, 0, 0), 1, CELLS_COLOUR_ANSI, 1, 0, 0);
+    cells_at(&cells, 2, 0)->wide = CELLS_WIDE_TAIL;
+    assert(cells_emit(&cells) == CELLS_OK);
+    assert(strstr(cells.text, "\xE4\xB8\xAD") != NULL);
+
+    /* Something narrow lands on its second cell: the old glyph is gone from the
+     * grid, so both cells of it are written, the first as what it now is. */
+    put(&cells, 1, 0, 'x');
+    put(&cells, 2, 0, 'y');
+    assert(cells_emit(&cells) == CELLS_OK);
+    assert(strstr(cells.text, "xy") != NULL);
+    cells_destroy(&cells);
+}
+
+static void test_the_default_bytes_have_not_changed(void) {
+    /* The shape of everything cells_read makes, which is plain 24 bit colour and
+     * no attributes: what a terminal was sent before styles existed. */
+    cells_t cells;
+    assert(cells_init(&cells, 1) == CELLS_OK);
+    assert(cells_resize(&cells, 3, 1) == CELLS_OK);
+    png_image_t canvas = blank(3, 1);
+    paint(&canvas, 0, 0, 4, 4, 255, 0, 0);
+    paint(&canvas, 8, 0, 4, 4, 0, 255, 0);
+    cells_read(&cells, CELLS_BRAILLE, &canvas, 8, 16);
+    assert(cells_emit(&cells) == CELLS_OK);
+    assert(strcmp(cells.text,
+                  "\033[1;1H\033[38;2;255;0;0m\xE2\xA0\x81\033[38;2;0;255;0m\xE2\xA0\x81"
+                  "\033[0m \033[0m") == 0);
+    png_image_free(&canvas);
+    cells_destroy(&cells);
+}
+
+/* --- Painting text ------------------------------------------------------------ */
+
+static const uint8_t *pixel(const png_image_t *picture, int x, int y) {
+    return &picture->pixels[((size_t)y * (size_t)picture->width + (size_t)x) * 4];
+}
+
+static int lit_pixels(const png_image_t *picture, int x0, int y0, int width, int height,
+                      const uint8_t ground[3]) {
+    int lit = 0;
+    for (int y = y0; y < y0 + height; y++)
+        for (int x = x0; x < x0 + width; x++)
+            if (memcmp(pixel(picture, x, y), ground, 3) != 0) lit++;
+    return lit;
+}
+
+static void emit_and_paint(cells_t *cells, png_image_t *picture, const uint8_t ground[3]) {
+    assert(cells_emit(cells) == CELLS_OK);
+    assert(cells_paint(cells, CELLS_TEXT, picture, 12, 20, ground) == CELLS_OK);
+}
+
+static void test_text_is_painted_with_the_font_in_its_colour(void) {
+    static const uint8_t ground[3] = {10, 10, 10};
+    cells_t cells;
+    assert(cells_init(&cells, 1) == CELLS_OK);
+    assert(cells_resize(&cells, 3, 1) == CELLS_OK);
+    colour(put(&cells, 0, 0, 'A'), 0, CELLS_COLOUR_EXACT, 200, 10, 10);
+    put(&cells, 1, 0, 'B'); /* The default colour. */
+    png_image_t picture = {0, 0, NULL};
+    emit_and_paint(&cells, &picture, ground);
+    assert(picture.width == 36 && picture.height == 20);
+
+    /* An A has ink in the first row of its glyph, at the two pixels the font puts
+     * there, doubled: the cell is 12 by 20 and the glyph 5 by 7 at scale 2. */
+    int ink = lit_pixels(&picture, 0, 0, 12, 20, ground);
+    assert(ink > 40 && ink < 200);
+    int found_red = 0;
+    for (int y = 0; y < 20; y++)
+        for (int x = 0; x < 12; x++) {
+            const uint8_t *p = pixel(&picture, x, y);
+            if (memcmp(p, ground, 3) != 0) {
+                assert(p[0] == 200 && p[1] == 10 && p[2] == 10);
+                found_red = 1;
+            }
+        }
+    assert(found_red);
+    /* The B beside it is the default light grey, and nothing spills across. */
+    assert(lit_pixels(&picture, 12, 0, 12, 20, ground) > 40);
+    const uint8_t *grey = NULL;
+    for (int x = 12; x < 24 && grey == NULL; x++)
+        if (memcmp(pixel(&picture, x, 10), ground, 3) != 0) grey = pixel(&picture, x, 10);
+    assert(grey != NULL && grey[0] == 204 && grey[1] == 204 && grey[2] == 204);
+    assert(lit_pixels(&picture, 24, 0, 12, 20, ground) == 0);
+    png_image_free(&picture);
+    cells_destroy(&cells);
+}
+
+static void test_painted_text_has_lower_case_and_the_rest_of_ascii(void) {
+    static const uint8_t ground[3] = {0, 0, 0};
+    cells_t cells;
+    assert(cells_init(&cells, 1) == CELLS_OK);
+    assert(cells_resize(&cells, 1, 1) == CELLS_OK);
+    png_image_t picture = {0, 0, NULL};
+    int sizes[2];
+    uint32_t pair[2] = {'a', 'A'};
+    for (int i = 0; i < 2; i++) {
+        cells_clear(&cells);
+        put(&cells, 0, 0, pair[i]);
+        emit_and_paint(&cells, &picture, ground);
+        sizes[i] = lit_pixels(&picture, 0, 0, 12, 20, ground);
+        png_image_free(&picture);
+    }
+    /* An a is not an A: lower case has its own glyph, with its own ink. */
+    assert(sizes[0] > 0 && sizes[1] > 0 && sizes[0] != sizes[1]);
+    /* Every printable ASCII character has a picture. */
+    for (uint32_t c = '!'; c <= '~'; c++) {
+        cells_clear(&cells);
+        put(&cells, 0, 0, c);
+        emit_and_paint(&cells, &picture, ground);
+        assert(lit_pixels(&picture, 0, 0, 12, 20, ground) > 0);
+        png_image_free(&picture);
+    }
+    /* A space has none. */
+    cells_clear(&cells);
+    put(&cells, 0, 0, ' ');
+    emit_and_paint(&cells, &picture, ground);
+    assert(lit_pixels(&picture, 0, 0, 12, 20, ground) == 0);
+    png_image_free(&picture);
+    cells_destroy(&cells);
+}
+
+static void test_painted_attributes(void) {
+    static const uint8_t ground[3] = {10, 20, 30};
+    cells_t cells;
+    assert(cells_init(&cells, 1) == CELLS_OK);
+    assert(cells_resize(&cells, 5, 1) == CELLS_OK);
+    put(&cells, 0, 0, 'l');
+    put(&cells, 1, 0, 'l')->attributes = CELLS_BOLD;
+    put(&cells, 2, 0, 'l')->attributes = CELLS_UNDERLINE;
+    put(&cells, 3, 0, 'l')->attributes = CELLS_REVERSE;
+    put(&cells, 4, 0, 'l')->attributes = CELLS_DIM;
+    png_image_t picture = {0, 0, NULL};
+    emit_and_paint(&cells, &picture, ground);
+    int plain = lit_pixels(&picture, 0, 0, 12, 20, ground);
+    int bold = lit_pixels(&picture, 12, 0, 12, 20, ground);
+    int underlined = lit_pixels(&picture, 24, 0, 12, 20, ground);
+    assert(bold > plain);
+    assert(underlined == plain + 12);
+    /* Reverse paints the whole cell in the foreground, and the glyph in the ground. */
+    assert(lit_pixels(&picture, 36, 0, 12, 20, ground) > 12 * 20 / 2);
+    assert(memcmp(pixel(&picture, 36, 0), (uint8_t[3]){204, 204, 204}, 3) == 0);
+    /* Dim is the foreground halfway to the background. */
+    const uint8_t *dim = NULL;
+    for (int y = 0; y < 20 && dim == NULL; y++)
+        for (int x = 48; x < 60; x++)
+            if (memcmp(pixel(&picture, x, y), ground, 3) != 0) {
+                dim = pixel(&picture, x, y);
+                break;
+            }
+    assert(dim != NULL && dim[0] == (204 + 10) / 2 && dim[1] == (204 + 20) / 2);
+    png_image_free(&picture);
+    cells_destroy(&cells);
+}
+
+static void test_painted_palette_colours_are_the_pictures_own(void) {
+    static const uint8_t ground[3] = {0, 0, 0};
+    cells_t cells;
+    assert(cells_init(&cells, 1) == CELLS_OK);
+    assert(cells_resize(&cells, 3, 1) == CELLS_OK);
+    colour(put(&cells, 0, 0, 'l'), 0, CELLS_COLOUR_ANSI, 1, 0, 0);
+    cell_t *bold = put(&cells, 1, 0, 'l');
+    colour(bold, 0, CELLS_COLOUR_ANSI, 1, 0, 0);
+    bold->attributes = CELLS_BOLD;
+    colour(put(&cells, 2, 0, 'l'), 0, CELLS_COLOUR_INDEXED, 232, 0, 0);
+    png_image_t picture = {0, 0, NULL};
+    emit_and_paint(&cells, &picture, ground);
+    const uint8_t *red = NULL, *bright = NULL, *grey = NULL;
+    for (int y = 0; y < 20; y++)
+        for (int x = 0; x < 12; x++) {
+            if (!red && memcmp(pixel(&picture, x, y), ground, 3) != 0) red = pixel(&picture, x, y);
+            if (!bright && memcmp(pixel(&picture, 12 + x, y), ground, 3) != 0)
+                bright = pixel(&picture, 12 + x, y);
+            if (!grey && memcmp(pixel(&picture, 24 + x, y), ground, 3) != 0)
+                grey = pixel(&picture, 24 + x, y);
+        }
+    assert(red && bright && grey);
+    assert(red[0] == 205 && red[1] == 49);       /* Red, in the picture's palette. */
+    assert(bright[0] == 241 && bright[1] == 76); /* Bold makes it the bright red. */
+    assert(grey[0] == 8 && grey[1] == 8);        /* The first grey of the 256. */
+    png_image_free(&picture);
+    cells_destroy(&cells);
+}
+
+static void test_painted_blocks_boxes_and_braille_fill_the_cell(void) {
+    static const uint8_t ground[3] = {0, 0, 0};
+    cells_t cells;
+    assert(cells_init(&cells, 1) == CELLS_OK);
+    assert(cells_resize(&cells, 6, 1) == CELLS_OK);
+    put(&cells, 0, 0, 0x2588); /* Full block. */
+    put(&cells, 1, 0, 0x2580); /* Upper half. */
+    put(&cells, 2, 0, 0x2502); /* Vertical line. */
+    put(&cells, 3, 0, 0x253C); /* Cross. */
+    put(&cells, 4, 0, 0x28FF); /* Every braille dot. */
+    put(&cells, 5, 0, 0x2593); /* Dark shade. */
+    png_image_t picture = {0, 0, NULL};
+    emit_and_paint(&cells, &picture, ground);
+    assert(lit_pixels(&picture, 0, 0, 12, 20, ground) == 12 * 20);
+    assert(lit_pixels(&picture, 12, 0, 12, 20, ground) == 12 * 10);
+    assert(lit_pixels(&picture, 12, 0, 12, 10, ground) == 12 * 10);
+    /* A vertical line touches the top and bottom edges, so a column of them joins. */
+    assert(memcmp(pixel(&picture, 24 + 5, 0), ground, 3) != 0);
+    assert(memcmp(pixel(&picture, 24 + 5, 19), ground, 3) != 0);
+    assert(memcmp(pixel(&picture, 24 + 0, 10), ground, 3) == 0);
+    /* A cross reaches all four edges. */
+    assert(memcmp(pixel(&picture, 36 + 5, 0), ground, 3) != 0);
+    assert(memcmp(pixel(&picture, 36 + 5, 19), ground, 3) != 0);
+    assert(memcmp(pixel(&picture, 36 + 0, 9), ground, 3) != 0);
+    assert(memcmp(pixel(&picture, 36 + 11, 9), ground, 3) != 0);
+    assert(lit_pixels(&picture, 48, 0, 12, 20, ground) > 40);
+    int dark = lit_pixels(&picture, 60, 0, 12, 20, ground);
+    assert(dark > 12 * 20 / 2 && dark < 12 * 20);
+    png_image_free(&picture);
+    cells_destroy(&cells);
+}
+
+static void test_painted_accents_fall_back_and_the_unknown_is_a_box(void) {
+    static const uint8_t ground[3] = {0, 0, 0};
+    cells_t cells;
+    assert(cells_init(&cells, 1) == CELLS_OK);
+    assert(cells_resize(&cells, 4, 1) == CELLS_OK);
+    put(&cells, 0, 0, 'e');
+    put(&cells, 1, 0, 0xE9);                           /* é, which is an e in a 5 by 7. */
+    put(&cells, 2, 0, 0x4E2D)->wide = CELLS_WIDE_HEAD; /* CJK, which the font cannot draw. */
+    put(&cells, 3, 0, 0)->wide = CELLS_WIDE_TAIL;
+    png_image_t picture = {0, 0, NULL};
+    emit_and_paint(&cells, &picture, ground);
+    int plain = lit_pixels(&picture, 0, 0, 12, 20, ground);
+    assert(plain > 0 && lit_pixels(&picture, 12, 0, 12, 20, ground) == plain);
+    /* The box is hollow and spans both cells. */
+    assert(lit_pixels(&picture, 24, 0, 24, 20, ground) > 40);
+    assert(memcmp(pixel(&picture, 24 + 12, 10), ground, 3) == 0);
+    assert(memcmp(pixel(&picture, 24 + 12, 3), ground, 3) != 0);
+    png_image_free(&picture);
+    cells_destroy(&cells);
+}
+
 int main(void) {
     test_sextant_code_points();
     test_ink_becomes_sextants_too();
@@ -383,5 +785,20 @@ int main(void) {
     test_the_pen_is_not_reset_between_cells_of_one_colour();
     test_without_truecolor_the_cube_is_used();
     test_a_resize_redraws_everything();
+    test_cells_can_be_filled_in_by_hand();
+    test_a_palette_colour_is_written_as_the_terminals_own();
+    test_a_256_colour_index_is_written_as_an_index();
+    test_exact_colour_is_24_bit_whatever_the_terminal_admits_to();
+    test_attributes_are_added_without_a_reset_and_dropped_with_one();
+    test_a_cell_that_only_changes_attribute_is_sent_again();
+    test_a_wide_glyph_is_sent_once_and_its_tail_never();
+    test_a_wide_glyph_is_redrawn_whole_when_half_of_it_changes();
+    test_the_default_bytes_have_not_changed();
+    test_text_is_painted_with_the_font_in_its_colour();
+    test_painted_text_has_lower_case_and_the_rest_of_ascii();
+    test_painted_attributes();
+    test_painted_palette_colours_are_the_pictures_own();
+    test_painted_blocks_boxes_and_braille_fill_the_cell();
+    test_painted_accents_fall_back_and_the_unknown_is_a_box();
     return 0;
 }

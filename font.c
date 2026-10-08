@@ -67,6 +67,49 @@ static const glyph_t GLYPHS[] = {
     {'%', "#...#" "#..#." "..#.." ".#..." "..#.." ".#..#" "#...#"},
     {'&', ".##.." "#..#." "#.#.." ".#..." "#.#.#" "#..#." ".##.#"},
     {'_', "....." "....." "....." "....." "....." "....." "#####"},
+    /* The rest of ASCII, for text that is not a banner: the symbols, and lower case,
+     * which font_glyph folds to upper and font_glyph_for does not. A lower case
+     * letter sits on the same baseline as the capitals, five rows tall where it has
+     * no stem and seven where it has, and the five with a tail (g j p q y) are lifted
+     * a row so the tail has somewhere to go: seven rows leave no room below. */
+    {'"', ".#.#." ".#.#." ".#.#." "....." "....." "....." "....."},
+    {'$', "..#.." ".####" "#.#.." ".###." "..#.#" "####." "..#.."},
+    {';', "....." "..#.." "..#.." "....." "..#.." "..#.." ".#..."},
+    {'[', ".###." ".#..." ".#..." ".#..." ".#..." ".#..." ".###."},
+    {'\\', "#...." "#...." ".#..." "..#.." "...#." "....#" "....#"},
+    {']', ".###." "...#." "...#." "...#." "...#." "...#." ".###."},
+    {'^', "..#.." ".#.#." "#...#" "....." "....." "....." "....."},
+    {'`', ".#..." "..#.." "....." "....." "....." "....." "....."},
+    {'{', "...##" "..#.." "..#.." ".#..." "..#.." "..#.." "...##"},
+    {'|', "..#.." "..#.." "..#.." "..#.." "..#.." "..#.." "..#.."},
+    {'}', "##..." "..#.." "..#.." "...#." "..#.." "..#.." "##..."},
+    {'~', "....." "....." ".##.#" "#.##." "....." "....." "....."},
+    {'a', "....." "....." ".###." "....#" ".####" "#...#" ".####"},
+    {'b', "#...." "#...." "####." "#...#" "#...#" "#...#" "####."},
+    {'c', "....." "....." ".####" "#...." "#...." "#...." ".####"},
+    {'d', "....#" "....#" ".####" "#...#" "#...#" "#...#" ".####"},
+    {'e', "....." "....." ".###." "#...#" "#####" "#...." ".###."},
+    {'f', "..##." ".#..#" ".#..." "###.." ".#..." ".#..." ".#..."},
+    {'g', "....." ".####" "#...#" "#...#" ".####" "....#" ".###."},
+    {'h', "#...." "#...." "#.##." "##..#" "#...#" "#...#" "#...#"},
+    {'i', "..#.." "....." ".##.." "..#.." "..#.." "..#.." ".###."},
+    {'j', "...#." "....." "..##." "...#." "...#." "#..#." ".##.."},
+    {'k', "#...." "#...." "#..#." "#.#.." "##..." "#.#.." "#..#."},
+    {'l', ".##.." "..#.." "..#.." "..#.." "..#.." "..#.." ".###."},
+    {'m', "....." "....." "##.#." "#.#.#" "#.#.#" "#.#.#" "#.#.#"},
+    {'n', "....." "....." "#.##." "##..#" "#...#" "#...#" "#...#"},
+    {'o', "....." "....." ".###." "#...#" "#...#" "#...#" ".###."},
+    {'p', "....." "####." "#...#" "#...#" "####." "#...." "#...."},
+    {'q', "....." ".####" "#...#" "#...#" ".####" "....#" "....#"},
+    {'r', "....." "....." "#.##." "##..#" "#...." "#...." "#...."},
+    {'s', "....." "....." ".####" "#...." ".###." "....#" "####."},
+    {'t', ".#..." ".#..." "###.." ".#..." ".#..." ".#..#" "..##."},
+    {'u', "....." "....." "#...#" "#...#" "#...#" "#..##" ".##.#"},
+    {'v', "....." "....." "#...#" "#...#" "#...#" ".#.#." "..#.."},
+    {'w', "....." "....." "#...#" "#...#" "#.#.#" "#.#.#" ".#.#."},
+    {'x', "....." "....." "#...#" ".#.#." "..#.." ".#.#." "#...#"},
+    {'y', "....." "#...#" "#...#" "#...#" ".####" "....#" ".###."},
+    {'z', "....." "....." "#####" "...#." "..#.." ".#..." "#####"},
 };
 /* clang-format on */
 enum { GLYPH_COUNT = sizeof(GLYPHS) / sizeof(*GLYPHS) };
@@ -76,6 +119,49 @@ const char *font_glyph(char character) {
     for (int i = 0; i < GLYPH_COUNT; i++)
         if (GLYPHS[i].character == wanted) return GLYPHS[i].rows;
     return NULL;
+}
+
+const char *font_glyph_for(uint32_t glyph) {
+    if (glyph >= 0x80) return NULL;
+    for (int i = 0; i < GLYPH_COUNT; i++)
+        if ((uint32_t)(unsigned char)GLYPHS[i].character == glyph) return GLYPHS[i].rows;
+    return NULL;
+}
+
+/* U+00C0 to U+00FF, the letters of Latin-1 with the accents taken off. A byte for
+ * each: the multiplication and division signs, which are not letters, stand for
+ * themselves, and so do the few that have no plain letter (the thorn, the sharp
+ * s). Enough that "café" and "naïve" read as what they are in a picture. */
+static const char LATIN1_BASE[] =
+    "AAAAAAACEEEEIIII"  /* C0 */
+    "DNOOOOOxOUUUUYTs"  /* D0 */
+    "aaaaaaaceeeeiiii"  /* E0 */
+    "dnooooo/ouuuuyty"; /* F0 */
+
+uint32_t font_plain_letter(uint32_t glyph) {
+    if (glyph >= 0xC0 && glyph <= 0xFF) return (unsigned char)LATIN1_BASE[glyph - 0xC0];
+    /* Typographic quotes and dashes, which text is full of. */
+    switch (glyph) {
+        case 0x2018:
+        case 0x2019:
+            return '\'';
+        case 0x201C:
+        case 0x201D:
+            return '"';
+        case 0x2010:
+        case 0x2011:
+        case 0x2012:
+        case 0x2013:
+        case 0x2014:
+        case 0x2212:
+            return '-';
+        case 0x2026:
+            return '.';
+        case 0x00A0:
+            return ' ';
+        default:
+            return 0;
+    }
 }
 
 int font_text_cells(const char *text) {

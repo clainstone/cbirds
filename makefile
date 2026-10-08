@@ -61,8 +61,8 @@ $(TESTDIR)/png_test: $(TESTDIR)/png_test.c png.c png.h
 $(TESTDIR)/gif_test: $(TESTDIR)/gif_test.c gif.c gif.h png.c png.h
 	$(CC) $(BUILD) $@.c gif.c png.c -o $@ $(LDFLAGS) $(LDLIBS)
 
-$(TESTDIR)/cells_test: $(TESTDIR)/cells_test.c cells.c cells.h png.c png.h
-	$(CC) $(BUILD) $@.c cells.c png.c -o $@ $(LDFLAGS) $(LDLIBS)
+$(TESTDIR)/cells_test: $(TESTDIR)/cells_test.c cells.c cells.h font.c font.h png.c png.h
+	$(CC) $(BUILD) $@.c cells.c font.c png.c -o $@ $(LDFLAGS) $(LDLIBS)
 
 $(TESTDIR)/spatial_grid_test: $(TESTDIR)/spatial_grid_test.c spatial_grid.c spatial_grid.h
 	$(CC) $(BUILD) $@.c spatial_grid.c -o $@ $(LDFLAGS) $(LDLIBS)

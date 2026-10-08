@@ -21,6 +21,7 @@
 #include "font.h"
 #include "gif.h"
 #include "kitty_graphics.h"
+#include "link.h"
 #include "options.h"
 #include "png.h"
 #include "spatial_grid.h"
@@ -128,7 +129,14 @@ enum {
     LEGEND_MIN_COLS = 76,
     LEGEND_MIN_ROWS = 22,
     LEGEND_LINE_MAX = 128,
-    SPAWN_ATTEMPTS = 32
+    SPAWN_ATTEMPTS = 32,
+    /* A linked window says it is full a little before it is, so that the birds
+     * already on their way when it says so still find room. */
+    SKY_HEADROOM = 16,
+    /* And at most this many leave by one edge in a frame, which bounds what a
+     * frame spends on the post however thick the flock is at the door; the rest
+     * go in the next, a frame further out. */
+    SKY_PER_FRAME = 64
 };
 
 /* The same scale as the original bottom edge turn: large enough that it settles
@@ -464,6 +472,23 @@ static volatile sig_atomic_t terminal_restored;
 static volatile sig_atomic_t alt_screen_is_on;
 static volatile sig_atomic_t sprites_uploaded;
 
+/*
+ * One sky, shared (--link).
+ *
+ * The window joins a row of them, and where a neighbour stands behind an edge the
+ * edge is a door: no band pushes the flock back from it, and a bird or a hawk
+ * that flies out is posted to the neighbour, to fly in by the facing edge. The
+ * flags are all zero unless the neighbour is there and has said it has room, so
+ * that every edge is the wall it always was, and a run without --link never
+ * looks at any of this.
+ */
+static int share_the_sky;
+static link_t sky;
+static struct {
+    int left, right;           /* For birds. */
+    int hawk_left, hawk_right; /* A hawk needs room of its own. */
+} open_edges;
+
 static void write_all(const void *data, size_t length) {
     const char *bytes = data;
     while (length > 0) {
@@ -499,6 +524,7 @@ static void restore_terminal(void) {
 
 static void signal_handler(int signal_number) {
     restore_terminal();
+    link_close(&sky); /* Nothing but unlink and close, so it is fit for here. */
     _exit(128 + signal_number);
 }
 
@@ -1519,9 +1545,9 @@ static vector_t hawk_wall_vector(const hawk_t *hawk) {
     double band_x = band < screen.width / 3.0 ? band : screen.width / 3.0;
     double band_y = band < screen.height / 3.0 ? band : screen.height / 3.0;
     if (band_x >= 1) {
-        if (hawk->x < band_x)
+        if (hawk->x < band_x && !open_edges.hawk_left)
             wall.x = (band_x - hawk->x) / band_x;
-        else if (hawk->x > screen.width - band_x)
+        else if (hawk->x > screen.width - band_x && !open_edges.hawk_right)
             wall.x = -(hawk->x - (screen.width - band_x)) / band_x;
     }
     if (band_y >= 1) {
@@ -1669,7 +1695,9 @@ static void hunt(const bird_t *birds) {
         double last_x = screen.width - 1 - margin, last_y = screen.height - 1 - margin;
         if (last_x < margin) last_x = margin;
         if (last_y < margin) last_y = margin;
-        if (hawk->x < margin || hawk->x > last_x) {
+        /* Not at a door: it flies on through, and is posted once it is out. */
+        if ((hawk->x < margin && !open_edges.hawk_left) ||
+            (hawk->x > last_x && !open_edges.hawk_right)) {
             hawk->x = hawk->x < margin ? margin : last_x;
             hawk->direction = normalized_angle(sin(hawk->direction), -cos(hawk->direction));
             hawk->prey = -1; /* Whatever it was after, it is not that way now. */
@@ -1816,13 +1844,27 @@ static void initialize_birds(bird_t *birds) {
     for (int i = 0; i < config.birds; i++) place_one_bird(&birds[i], i);
 }
 
+/* How many birds the arrays have room for when `wanted` are flying. A window in a
+ * shared sky takes birds in between one key and the next, so it has room for all
+ * it could ever hold from the start, and never has to grow in the middle of a
+ * frame; the few hundred kilobytes that cost are nothing next to the sprites. */
+static int bird_room(int wanted) {
+    return share_the_sky ? MAX_BIRDS : wanted;
+}
+
+/* The grid will not be prepared for nothing, and a window in a shared sky may be
+ * empty for a while: it is prepared for one, which it never uses. */
+static int grid_items(void) {
+    return config.birds > 0 ? config.birds : 1;
+}
+
 /* Grown or shrunk by a keypress: the birds already flying carry on and only the
  * new ones are placed. Both arrays change or neither does. A realloc each could
  * leave one resized and the other not, and one count cannot describe two
  * lengths, so both are built new and swapped in only once both exist. */
 static int resize_the_flock(bird_t **birds, bird_t **snapshot, int from, int to) {
-    bird_t *grown = malloc(sizeof(**birds) * (size_t)to);
-    bird_t *grown_snapshot = malloc(sizeof(**snapshot) * (size_t)to);
+    bird_t *grown = malloc(sizeof(**birds) * (size_t)bird_room(to));
+    bird_t *grown_snapshot = malloc(sizeof(**snapshot) * (size_t)bird_room(to));
     if (grown == NULL || grown_snapshot == NULL) {
         free(grown);
         free(grown_snapshot);
@@ -1894,9 +1936,11 @@ static vector_t boundary_vector(const bird_t *bird) {
     vector_t boundary = {0, 0};
     if (legend_repels(bird, &boundary)) return boundary;
     if (the_rain_is_falling) return boundary; /* A door, so no wall. */
-    if (bird->x < screen.turn_x)
+    /* An edge with a neighbour behind it pushes nothing: there is no wall there to
+     * turn away from, and a band would keep the flock from the door. */
+    if (bird->x < screen.turn_x && !open_edges.left)
         boundary.x = edge_push(screen.turn_x - bird->x, screen.turn_x);
-    else if (bird->x > screen.width - screen.turn_x)
+    else if (bird->x > screen.width - screen.turn_x && !open_edges.right)
         boundary.x = -edge_push(bird->x - (screen.width - screen.turn_x), screen.turn_x);
     if (bird->y < screen.turn_y)
         boundary.y = edge_push(screen.turn_y - bird->y, screen.turn_y);
@@ -2169,8 +2213,9 @@ static int shade_for(const bird_t *bird) {
  * on, because a wall and a door in the same place is neither. */
 static void wrap_position(bird_t *bird) {
     double width = screen.width, height = screen.height;
-    if (bird->x < 0) bird->x += width;
-    if (bird->x >= width) bird->x -= width;
+    /* An edge that is a door to another window is not also a way round. */
+    if (bird->x < 0 && !open_edges.left) bird->x += width;
+    if (bird->x >= width && !open_edges.right) bird->x -= width;
     if (bird->y < 0) bird->y += height;
     if (bird->y >= height) bird->y -= height;
 }
@@ -2556,6 +2601,236 @@ static void fly_away(bird_t *birds) {
     }
 }
 
+/*
+ * The post.
+ *
+ * Everything that crosses between windows is a traveller: where it left, as a
+ * share of the height, so that windows of any size line up; how far past the edge
+ * its middle had gone, so that a bird going fast lands as far in as it would have
+ * gone; and the rest as it was. It is handed over when its middle crosses the
+ * edge, a bird being drawn from its corner: at that moment the half of the sprite
+ * the window loses is the half the next one gains, and a bird crossing two windows
+ * side by side is never wholly in neither.
+ */
+static link_traveller_t traveller_of_bird(const bird_t *bird, double reach) {
+    double height = screen.height > 0 ? bird->y / screen.height : 0;
+    link_traveller_t traveller = {
+        .kind = LINK_BIRD,
+        .height = height < 0 ? 0 : height > 1 ? 1 : height,
+        .reach = reach,
+        .direction = bird->direction,
+        .flock = bird->flock,
+        .shade = bird->shade,
+        .layer = bird->layer,
+        .wing = bird->wing,
+        .wing_clock = bird->wing_clock,
+        .holding = bird->gliding,
+    };
+    return traveller;
+}
+
+static link_traveller_t traveller_of_hawk(const hawk_t *hawk, double reach) {
+    double height = screen.height > 0 ? hawk->y / screen.height : 0;
+    link_traveller_t traveller = {
+        .kind = LINK_HAWK,
+        .height = height < 0 ? 0 : height > 1 ? 1 : height,
+        .reach = reach,
+        .direction = hawk->direction,
+        .wing = hawk->wing,
+        .wing_clock = hawk->wing_clock,
+        .holding = hawk->passing,
+    };
+    return traveller;
+}
+
+/* The numbers came from another window, which may be a different size, with other
+ * flocks and another palette, so each is made to mean something here. */
+static double landing_reach(const link_traveller_t *traveller) {
+    double most = screen.width / 4.0;
+    return traveller->reach < most ? traveller->reach : most;
+}
+
+static double landing_height(const link_traveller_t *traveller) {
+    double y = traveller->height * screen.height;
+    double last = screen.height - 1.0;
+    if (y > last) y = last;
+    return y < 0 ? 0 : y;
+}
+
+static void land_a_bird(bird_t *bird, const link_traveller_t *traveller) {
+    double half = config.bird_size / 2.0;
+    *bird = (bird_t){0};
+    bird->x = traveller->enters == LINK_LEFT ? landing_reach(traveller) - half
+                                             : screen.width - landing_reach(traveller) - half;
+    bird->y = landing_height(traveller);
+    /* The panel is a rectangle no bird enters; one that would come in behind it
+     * comes in beneath it instead. */
+    if (legend_turn_zone(bird->x, bird->y)) bird->y = screen.legend_height + config.speed + 1;
+    bird->direction = traveller->direction < 2 * M_PI ? traveller->direction : 0;
+    bird->frame = direction_frame(bird->direction);
+    bird->flock = traveller->flock % config.flocks;
+    bird->layer = deep_look && traveller->layer > 0 ? 1 : 0;
+    bird->shade = traveller->shade % palette_shades();
+    bird->wing = traveller->wing % WING_CYCLE;
+    bird->wing_clock = traveller->wing_clock;
+    bird->gliding = traveller->holding;
+}
+
+static void land_a_hawk(hawk_t *hawk, const link_traveller_t *traveller) {
+    *hawk = (hawk_t){0};
+    hawk->x = traveller->enters == LINK_LEFT ? landing_reach(traveller)
+                                             : screen.width - landing_reach(traveller);
+    hawk->y = landing_height(traveller);
+    hawk->direction = traveller->direction < 2 * M_PI ? traveller->direction : 0;
+    hawk->frame = direction_frame(hawk->direction);
+    hawk->prey = -1; /* It looks for its own, among this sky's birds. */
+    hawk->passing = traveller->holding;
+    hawk->wing = traveller->wing % WING_CYCLE;
+    hawk->wing_clock = traveller->wing_clock;
+}
+
+/* A bird leaves the flock and the last one fills the gap, which moves one bird
+ * and not all that come after it. Everything that remembers a bird by its place
+ * in the array is made good: a hawk after the bird that has gone loses it, and one
+ * after the bird that has moved follows it. The tail behind a bird goes with it,
+ * but only where the place it lands keeps tails (every fourth), and starts again
+ * where it was a place that did not: a ring from nowhere would draw ghosts of
+ * where the bird was never. */
+static void take_out_bird(bird_t *birds, int index) {
+    int last = config.birds - 1;
+    for (int h = 0; h < config.hawks; h++) {
+        if (hawks[h].prey == index) {
+            hawks[h].prey = -1;
+            hawks[h].commitment = 0;
+        } else if (hawks[h].prey == last) {
+            hawks[h].prey = index;
+        }
+    }
+    if (index != last) {
+        birds[index] = birds[last];
+        if (index % TRAIL_EVERY == 0 && last % TRAIL_EVERY != 0)
+            birds[index].trail_at = birds[index].trail_held = 0;
+    }
+    config.birds = last;
+}
+
+static void take_out_hawk(int index) {
+    for (int h = index; h + 1 < config.hawks; h++) hawks[h] = hawks[h + 1];
+    config.hawks--;
+}
+
+/* What the neighbours can be told about this window, and what this window can do
+ * with what they say: once a frame. */
+static void sky_look_at_the_doors(void) {
+    open_edges.left = link_edge_open(&sky, LINK_LEFT, LINK_BIRD);
+    open_edges.right = link_edge_open(&sky, LINK_RIGHT, LINK_BIRD);
+    open_edges.hawk_left = link_edge_open(&sky, LINK_LEFT, LINK_HAWK);
+    open_edges.hawk_right = link_edge_open(&sky, LINK_RIGHT, LINK_HAWK);
+}
+
+static void sky_keep_up(void) {
+    if (!sky.opened) return;
+    link_update(&sky, clock_state.seconds);
+    link_set_room(&sky, config.birds < MAX_BIRDS - SKY_HEADROOM, config.hawks < MAX_HAWKS);
+    sky_look_at_the_doors();
+}
+
+/* Whoever has come in since the last frame, at the end of the flock. A bird for a
+ * window that has filled in the meantime is let go: the window said so a frame
+ * ago, and a bird that crossed in the dark is one nobody will miss. */
+static void sky_take_in(bird_t *birds, int *live) {
+    link_traveller_t traveller;
+    if (!sky.opened) return;
+    for (int taken = 0; taken < MAX_BIRDS && link_receive(&sky, &traveller); taken++) {
+        if (traveller.kind == LINK_HAWK) {
+            if (config.hawks >= MAX_HAWKS) continue;
+            land_a_hawk(&hawks[config.hawks], &traveller);
+            config.hawks++;
+        } else {
+            if (config.birds >= MAX_BIRDS) continue;
+            land_a_bird(&birds[config.birds], &traveller);
+            config.birds++;
+        }
+    }
+    *live = config.birds;
+}
+
+/* Everything that has flown out through a door since the last frame is posted, the
+ * frame having been drawn with it still in: it is on the screen of the window it
+ * is leaving for the last time, and on the next one's in its next frame. A bird the
+ * neighbour will not take stays where it is, and tries again. */
+static void sky_hand_over(bird_t *birds, int *live) {
+    double half = config.bird_size / 2.0;
+    if (!sky.opened || formation.writing) return;
+    for (int side = LINK_LEFT; side <= LINK_RIGHT; side++) {
+        int door = side == LINK_LEFT ? open_edges.left : open_edges.right;
+        int hawk_door = side == LINK_LEFT ? open_edges.hawk_left : open_edges.hawk_right;
+        link_traveller_t post[SKY_PER_FRAME];
+        int at[SKY_PER_FRAME], count = 0;
+
+        /* From the end, so that taking one out moves nothing still to be sent. */
+        for (int i = config.birds - 1; door && i >= 0 && count < SKY_PER_FRAME; i--) {
+            double middle = birds[i].x + half;
+            double reach = side == LINK_RIGHT ? middle - screen.width : -middle;
+            if (side == LINK_LEFT ? middle >= 0 : middle < screen.width) continue;
+            at[count] = i;
+            post[count++] = traveller_of_bird(&birds[i], reach);
+        }
+        int sent = link_send(&sky, side, post, count);
+        for (int k = 0; k < sent; k++) take_out_bird(birds, at[k]);
+
+        for (int h = config.hawks - 1; hawk_door && h >= 0; h--) {
+            double x = hawks[h].x;
+            double reach = side == LINK_RIGHT ? x - screen.width : -x;
+            if (side == LINK_LEFT ? x >= 0 : x < screen.width) continue;
+            link_traveller_t traveller = traveller_of_hawk(&hawks[h], reach);
+            if (link_send(&sky, side, &traveller, 1) == 1) take_out_hawk(h);
+        }
+    }
+    *live = config.birds;
+    sky_look_at_the_doors(); /* A neighbour that would not take one is not a door. */
+}
+
+/* Joins the row of windows, or says why it cannot and ends the run: before the
+ * terminal is touched, so that the words are read where they are written. */
+static void sky_leave(void) {
+    link_close(&sky);
+    memset(&open_edges, 0, sizeof(open_edges));
+}
+
+static void sky_join(void) {
+    char directory[LINK_PATH_SIZE];
+    if (!share_the_sky) return;
+    if (!link_directory_for(directory, sizeof(directory), getenv("XDG_RUNTIME_DIR"), getenv("TMPDIR"),
+                            geteuid())) {
+        fprintf(stderr, "%s: --link: the directory for the sky would be too long a path for a socket\n",
+                program_name);
+        exit(EXIT_FAILURE);
+    }
+    link_status_t status = link_open(&sky, directory, 0);
+    if (status == LINK_OK) {
+        atexit(sky_leave);
+        return;
+    }
+    /* The words for the ones a person can put right. */
+    if (status == LINK_ERR_NOT_PRIVATE)
+        fprintf(stderr, "%s: --link: %s can be written to by others, so it cannot hold the sky; "
+                        "chmod 700 it or remove it\n", program_name, directory);
+    else if (status == LINK_ERR_NOT_YOURS)
+        fprintf(stderr, "%s: --link: %s belongs to somebody else, so it cannot hold the sky\n",
+                program_name, directory);
+    else if (status == LINK_ERR_NOT_A_DIRECTORY)
+        fprintf(stderr, "%s: --link: %s is not a directory (a link to one will not do); remove it\n",
+                program_name, directory);
+    else if (status == LINK_ERR_PATH_TOO_LONG)
+        fprintf(stderr, "%s: --link: %s is too long a path for a socket; point TMPDIR or "
+                        "XDG_RUNTIME_DIR at a shorter one\n", program_name, directory);
+    else
+        fprintf(stderr, "%s: --link: %s %s: %s\n", program_name, directory, link_status_string(status),
+                strerror(errno));
+    exit(EXIT_FAILURE);
+}
+
 /* Move first, then draw, and move both the flock and the hawks before drawing
  * either. Drawing first meant the frame on the screen held the birds from before
  * the step and the hawks from after it — a hawk a whole step, forty pixels, ahead
@@ -2764,6 +3039,8 @@ static const option_t OPTIONS[] = {
 
     {0, "unlock-fps", NULL, OPTION_FLAG, &unlock_fps, 0, 0, NULL, NULL,
      "render as fast as the terminal allows", "General", 0},
+    {0, "link", NULL, OPTION_FLAG, &share_the_sky, 0, 0, NULL, NULL,
+     "share one sky with other cbirds --link windows", "General", 0},
 };
 enum { OPTION_COUNT = sizeof(OPTIONS) / sizeof(*OPTIONS) };
 
@@ -2783,6 +3060,7 @@ static const option_example_t EXAMPLES[] = {
     {"cbirds --flocks 3 --color ember", "three of them, keeping to their own"},
     {"cbirds --depth --trails", "a second sky behind the first"},
     {"cbirds --render kitty", "sprites, in Kitty or Ghostty"},
+    {"cbirds --link", "one sky across several terminals"},
     {"cbirds --record flock.gif", "a GIF, with no terminal in the way"},
     {NULL, NULL},
 };
@@ -3403,6 +3681,12 @@ static void read_options(int argc, char **argv) {
         fprintf(stderr, "Try '%s --help'.\n", program_name);
         exit(EXIT_USAGE);
     }
+    /* A shared sky is a live thing: it is the other windows, as they are now. */
+    if (share_the_sky && (bench_frames > 0 || record_path != NULL)) {
+        fprintf(stderr, "%s: --link joins the windows that are open, so it cannot be used with %s\n",
+                program_name, bench_frames > 0 ? "--bench" : "--record");
+        exit(EXIT_USAGE);
+    }
     /* A preset is expanded first so that a slider given after it still wins: the
      * table cannot express that order, so the parser's left to right reading is
      * honoured by putting the broad stroke before the fine ones. */
@@ -3850,6 +4134,7 @@ int main(int argc, char **argv) {
     if (record_path != NULL) return run_recording();
     install_signal_handlers();
     atexit(restore_terminal);
+    sky_join();
 
     /* The terminal is asked its questions before anything is built for it: can
      * you draw this at all, and what colours do you use? The sprites are then
@@ -3894,8 +4179,8 @@ int main(int argc, char **argv) {
     set_frame_seconds(1.0 / FRAME_RATE);
     hawk_sets_built = 1;
 
-    bird_t *birds = calloc((size_t)config.birds, sizeof(*birds));
-    bird_t *snapshot = malloc(sizeof(*snapshot) * (size_t)config.birds);
+    bird_t *birds = calloc((size_t)bird_room(config.birds), sizeof(*birds));
+    bird_t *snapshot = malloc(sizeof(*snapshot) * (size_t)bird_room(config.birds));
     if (!birds || !snapshot) {
         perror("Out of memory");
         exit(EXIT_FAILURE);
@@ -3936,6 +4221,7 @@ int main(int argc, char **argv) {
              * the flock leaving rather than the screen blinking out. */
             leaving = (double)OUTRO_FRAMES_AT_SIXTY / FRAME_RATE;
             formation_clear();
+            sky_leave(); /* Its neighbours need not wait for the flock to be gone. */
         }
 
         clock_gettime(CLOCK_MONOTONIC, &frame_start);
@@ -3954,7 +4240,7 @@ int main(int argc, char **argv) {
             formation_clear();
         maybe_drift();
         update_screen_dimensions();
-        grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, config.birds);
+        grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, grid_items());
         if (grid_status != SPATIAL_GRID_OK) {
             fprintf(stderr, "Cannot resize spatial grid: %s\n",
                     spatial_grid_status_string(grid_status));
@@ -3967,7 +4253,19 @@ int main(int argc, char **argv) {
                 live_birds = config.birds;
             else
                 config.birds = live_birds; /* Keep what we have rather than lose it. */
-            grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, config.birds);
+            grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, grid_items());
+            if (grid_status != SPATIAL_GRID_OK) {
+                fprintf(stderr, "Cannot resize spatial grid: %s\n",
+                        spatial_grid_status_string(grid_status));
+                exit(EXIT_FAILURE);
+            }
+        }
+        if (sky.opened) {
+            /* The birds that have come in, after the keys have had their say about
+             * how many there are, and before the grid is built from all of them. */
+            sky_keep_up();
+            sky_take_in(birds, &live_birds);
+            grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, grid_items());
             if (grid_status != SPATIAL_GRID_OK) {
                 fprintf(stderr, "Cannot resize spatial grid: %s\n",
                         spatial_grid_status_string(grid_status));
@@ -3989,6 +4287,7 @@ int main(int argc, char **argv) {
                     kitty_graphics_status_string(graphics_status));
             exit(EXIT_FAILURE);
         }
+        if (leaving <= 0) sky_hand_over(birds, &live_birds);
         size_t frame_bytes = graphics.length;
         while (running && graphics.length > 0) {
             graphics_status = kitty_graphics_flush_nonblocking(&graphics);
@@ -4047,6 +4346,7 @@ int main(int argc, char **argv) {
             outcome = EXIT_FAILURE;
         }
     }
+    sky_leave();
     spatial_grid_destroy(&grid);
     kitty_graphics_destroy(&graphics);
     free(snapshot);

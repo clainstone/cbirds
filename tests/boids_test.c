@@ -11539,9 +11539,13 @@ static void test_nothing_crosses_while_the_intro_is_written(void) {
  * hawk if asked, which sets waves off among the free birds. The writers hold their
  * places and none crosses; the free birds come and go; the sign is not laid out
  * again for any of it. */
-static void fly_a_sign_through_a_busy_door(int with_a_hawk) {
-    enum { FRAMES = 60 * 14 };
+static void fly_a_sign_through_a_busy_door(int with_a_hawk, int a_clock) {
+    enum { FRAMES = 60 * 14, PENDING = 1024 };
     static bird_t birds[MAX_BIRDS], snapshot[MAX_BIRDS];
+    static struct {
+        link_traveller_t bird;
+        int due;
+    } pending[PENDING];
     spatial_grid_t grid;
     link_traveller_t got;
 
@@ -11552,31 +11556,54 @@ static void fly_a_sign_through_a_busy_door(int with_a_hawk) {
     update_speed();
     config.birds = 600;
     config.hawks = with_a_hawk;
-    ask_for_a_sign("HELLO");
+    if (a_clock) {
+        /* Four seconds from the minute: it changes in the middle of the run. */
+        the_sign.kind = SIGN_CLOCK;
+        the_sign.virtual_clock = 1;
+        the_sign.origin = local_time(10, 9, 55);
+        apply_screen_size(200, 50, 1600, 800);
+    } else {
+        ask_for_a_sign("HELLO");
+    }
     begin_the_sign();
     join_the_sky(1); /* A neighbour on the right: the door is there. */
     seed_random(5);
     initialize_birds(birds);
     place_hawks();
+    static char was_writing[MAX_BIRDS * 8];
+    int next_tag = 0, minute_changed = 0, writers_kept = 0, writers_then = 0, let_go = 0;
+    for (int i = 0; i < config.birds; i++) birds[i].trail_x[1] = next_tag++;
+    memset(was_writing, 0, sizeof(was_writing));
     assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
 
+    for (int p = 0; p < PENDING; p++) pending[p].due = -1;
     int live = config.birds, writers = 0, lit_birds = 0, crossed_out = 0, crossed_in = 0;
     int relaid = 0, held_frames = 0, at_home = 0, counted = 0;
     for (int frame = 0; frame < FRAMES; frame++) {
         clock_state.seconds = 1.1 + frame / 60.0;
         link_update(&beside, clock_state.seconds);
         link_set_room(&beside, 1, 1);
-        /* The neighbour sends back what it is sent, turned round, a frame later, so
-         * that the flock is not drained and the door is busy both ways. */
-        link_traveller_t back[SKY_PER_FRAME];
-        int coming_back = 0;
+        /* The neighbour sends back what it is sent, turned round, some frames later
+         * and not all at once, so that the flock is not drained, the door is busy
+         * both ways and the number of birds here wanders instead of coming back to
+         * what it was. */
         while (link_receive(&beside, &got)) {
             crossed_out++;
-            if (got.kind == LINK_BIRD && coming_back < SKY_PER_FRAME) {
-                back[coming_back] = got;
-                back[coming_back++].direction = fmod(M_PI - got.direction + 4 * M_PI, 2 * M_PI);
-            }
+            for (int p = 0; p < PENDING && got.kind == LINK_BIRD; p++)
+                if (pending[p].due < 0) {
+                    pending[p].bird = got;
+                    pending[p].bird.direction = fmod(M_PI - got.direction + 4 * M_PI, 2 * M_PI);
+                    pending[p].due = frame + 1 + (int)(random_unit() * 40);
+                    got.kind = 0;
+                }
         }
+        link_traveller_t back[SKY_PER_FRAME];
+        int coming_back = 0;
+        for (int p = 0; p < PENDING && coming_back < SKY_PER_FRAME; p++)
+            if (pending[p].due >= 0 && pending[p].due <= frame) {
+                back[coming_back++] = pending[p].bird;
+                pending[p].due = -1;
+            }
         if (coming_back > 0) link_send(&beside, LINK_LEFT, back, coming_back);
         sky_keep_up();
         /* And a hawk, now and then, when there is none: it crossed out before. */
@@ -11591,12 +11618,32 @@ static void fly_a_sign_through_a_busy_door(int with_a_hawk) {
         for (int i = before; i < config.birds; i++) { /* Calm, and nobody's writer. */
             assert(formation.slot[i] == -1 && waves[i].wait == 0 && waves[i].left == 0);
             assert(birds[i].alarmed == 0 && birds[i].scattered == 0);
+            birds[i].trail_x[1] = next_tag++;
         }
+        assert(next_tag < (int)sizeof(was_writing));
         assert(spatial_grid_prepare(&grid, screen.width, screen.height, grid_items()) ==
                SPATIAL_GRID_OK);
+        char before_the_minute[sizeof(the_sign.written)];
+        memcpy(before_the_minute, the_sign.written, sizeof(before_the_minute));
         sign_advance(birds);
         if (the_sign.up && frame == 90) {
             for (int i = 0; i < config.birds; i++) writers += formation.slot[i] >= 0;
+        }
+        if (a_clock && frame > 90) {
+            /* The clock changes its minute while the door is busy: it is never let go
+             * of as a whole, and the birds that write the letters that did not change
+             * are the birds that wrote them. */
+            let_go += !the_sign.up;
+            if (strcmp(before_the_minute, the_sign.written) != 0) {
+                minute_changed++;
+                for (int i = 0; i < config.birds; i++) {
+                    int tag = (int)birds[i].trail_x[1];
+                    writers_then += was_writing[tag];
+                    writers_kept += was_writing[tag] && formation.slot[i] >= 0;
+                }
+            }
+            for (int i = 0; i < config.birds; i++)
+                was_writing[(int)birds[i].trail_x[1]] = formation.slot[i] >= 0;
         }
         memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
         assert(spatial_grid_build(&grid, config.birds, read_bird_position, snapshot) ==
@@ -11646,6 +11693,12 @@ static void fly_a_sign_through_a_busy_door(int with_a_hawk) {
     assert(crossed_in > 100 && crossed_out > 100);
     assert(held_frames > FRAMES / 2 && writers > 20);
     assert(relaid == 0);
+    if (a_clock) {
+        assert(minute_changed == 1 && let_go == 0);
+        /* 10:09 to 10:10 changes two letters of five, and the three that did not are
+         * between two fifths and three fifths of the birds that were writing. */
+        assert(writers_then > 20 && writers_kept * 10 > writers_then * 4);
+    }
     if (with_a_hawk) {
         assert(lit_birds > 0); /* A wave went through the free flock while they crossed. */
     } else {
@@ -11659,11 +11712,15 @@ static void fly_a_sign_through_a_busy_door(int with_a_hawk) {
 }
 
 static void test_a_sign_is_held_while_birds_cross(void) {
-    fly_a_sign_through_a_busy_door(0);
+    fly_a_sign_through_a_busy_door(0, 0);
 }
 
 static void test_a_wave_and_a_sign_go_on_while_birds_cross(void) {
-    fly_a_sign_through_a_busy_door(1);
+    fly_a_sign_through_a_busy_door(1, 0);
+}
+
+static void test_a_clock_changes_a_letter_while_birds_cross(void) {
+    fly_a_sign_through_a_busy_door(0, 1);
 }
 
 /* What a bird is outside bird_t does not travel, so the modes that keep it there
@@ -12025,6 +12082,7 @@ int main(void) {
     test_nothing_crosses_while_the_intro_is_written();
     test_a_sign_is_held_while_birds_cross();
     test_a_wave_and_a_sign_go_on_while_birds_cross();
+    test_a_clock_changes_a_letter_while_birds_cross();
     test_a_signal_removes_the_socket();
     test_leaving_through_exit_removes_the_socket();
     /* Every test removes what it wrote, so this fails if one did not. */

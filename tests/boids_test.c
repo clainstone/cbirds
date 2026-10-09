@@ -6122,6 +6122,86 @@ static void test_a_text_with_hawks_records_the_flight_and_not_the_light(void) {
     reset_test_config();
 }
 
+/* Zero is "not asked for", and six seconds for a flock and a whole cycle for text
+ * are what it settles to: once, before any reader sees it. The readers are the two
+ * recorders, and the light of a wave, which is decided by how long a clip is. */
+static void test_an_unasked_for_recording_length_is_settled_before_anything_reads_it(void) {
+    reset_test_config();
+    record_seconds = 0;
+    letters_mode = 0;
+    settle_the_recording_length();
+    assert(record_seconds == FLOCK_RECORD_SECONDS);
+    settle_the_recording_length();
+    assert(record_seconds == FLOCK_RECORD_SECONDS);
+    record_seconds = 0;
+    letters_mode = 1;
+    settle_the_recording_length();
+    assert(record_seconds == TEXT_RECORD_SECONDS);
+    record_seconds = 12; /* Asked for: left alone, text or not. */
+    settle_the_recording_length();
+    assert(record_seconds == 12);
+    letters_mode = 0;
+
+    /* The cast recorder reads it, and a night and a flock with hawks are flocks. */
+    char path[600];
+    scratch_file(path, sizeof(path), "unasked.cast");
+    for (int night_run = 0; night_run < 2; night_run++) {
+        reset_test_config();
+        if (night_run) {
+            fireflies_mode = 1;
+            config.birds = FIREFLY_COUNT;
+            config.palette = palette_named("firefly");
+            config.shape = shape_named("dot");
+            config.bird_size = 0;
+        } else {
+            config.birds = 50;
+            config.hawks = 1;
+        }
+        record_path = path;
+        record_fps = 5;
+        record_seconds = 0;
+        record_columns = 60;
+        record_rows = 20;
+        requested_seed = 7;
+        fflush(stdout);
+        int saved = dup(STDOUT_FILENO);
+        assert(freopen("/dev/null", "w", stdout) != NULL);
+        int status = run_recording();
+        fflush(stdout);
+        dup2(saved, STDOUT_FILENO);
+        close(saved);
+        clearerr(stdout);
+        assert(status == EXIT_SUCCESS);
+        assert(record_seconds == FLOCK_RECORD_SECONDS);
+        FILE *file = fopen(path, "r");
+        assert(file != NULL);
+        static char line[1 << 16];
+        int events = 0;
+        assert(fgets(line, sizeof(line), file) != NULL); /* The header. */
+        while (fgets(line, sizeof(line), file) != NULL) events++;
+        fclose(file);
+        remove(path);
+        /* The clear, a frame for every one of the seconds, and the end. */
+        assert(events == record_fps * FLOCK_RECORD_SECONDS + 2);
+    }
+    record_path = NULL;
+    record_fps = 25;
+    record_seconds = 6;
+    record_columns = 96;
+    record_rows = 26;
+    requested_seed = -1;
+    reset_test_config();
+
+    /* The light of a wave is decided by the length of a clip: unasked for, it is
+     * the length it settles to and not zero, so a flock with hawks has it. */
+    reset_test_config();
+    config.palette = palette_named("ice");
+    uint8_t light[3];
+    memcpy(light, highlight_colour(), 3);
+    assert(palette_of_a_recording_has(light, 2, 0));
+    reset_test_config();
+}
+
 /* A text and a night are two flocks, and the text is the flock: said in one line,
  * before anything is read, with the exit status of every other usage error. Text on
  * a pipe is said when it is found there, and a pipe with nothing in it is no text. */
@@ -6195,6 +6275,33 @@ static void test_the_text_is_the_flock_and_a_night_is_refused_with_it(void) {
 
     remove(file);
     remove(empty);
+    reset_test_config();
+}
+
+/* A whip is read from the descriptor the keys come from, when standard input is a
+ * pipe and the keys come from the terminal: two reports a moment apart are a
+ * velocity, and a quick one is a whip. */
+static void test_a_whip_is_read_from_the_descriptor_that_was_chosen(void) {
+    int keys[2];
+    assert(pipe(keys) == 0);
+    int saved = input_fd;
+    input_fd = keys[0];
+    reset_test_config();
+    apply_screen_size(80, 24, 80 * 8, 24 * 16);
+    mouse.present = 0;
+    clock_state.seconds = 10.0;
+    const char *first = "\033[<35;5;5M";
+    assert(write(keys[1], first, strlen(first)) == (ssize_t)strlen(first));
+    assert(handle_input() == 1);
+    clock_state.seconds = 10.05;
+    const char *second = "\033[<35;45;5M"; /* Forty columns in fifty milliseconds. */
+    assert(write(keys[1], second, strlen(second)) == (ssize_t)strlen(second));
+    assert(handle_input() == 1);
+    assert(mouse.velocity_x > 0 && pointer_startles());
+    mouse.present = 0;
+    input_fd = saved;
+    close(keys[0]);
+    close(keys[1]);
     reset_test_config();
 }
 
@@ -6324,7 +6431,9 @@ int main(void) {
     test_keys_and_colour_questions_use_the_descriptor_that_was_chosen();
     test_a_text_tells_no_alarm_and_never_reads_the_wave_state();
     test_a_text_with_hawks_records_the_flight_and_not_the_light();
+    test_an_unasked_for_recording_length_is_settled_before_anything_reads_it();
     test_the_text_is_the_flock_and_a_night_is_refused_with_it();
+    test_a_whip_is_read_from_the_descriptor_that_was_chosen();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);
     return 0;

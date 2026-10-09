@@ -5355,6 +5355,27 @@ static void test_the_flat_flock_is_what_it_was(void) {
     assert(bird_placement(&far, &placement) && placement.z_index == -1);
     assert(bird_placement(&near, &placement) && placement.z_index == 0);
     legend_enabled = 0;
+
+    /* And a hawk is on the near plane with the birds, the last thing placed, and
+     * not on the far one: the space puts it above its five sizes, which is a layer
+     * the flat sky must never be told of. */
+    kitty_graphics_t graphics;
+    bird_t flock[2] = {{.x = 100, .y = 100}, {.x = 200, .y = 200, .layer = 1}};
+    assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
+    config.birds = 2;
+    config.hawks = 1;
+    hawks[0] = (hawk_t){.x = 300, .y = 300};
+    assert(queue_render_frame(&graphics, flock) == KITTY_GRAPHICS_OK);
+    const char *last = graphics.buffer;
+    for (const char *at = strstr(last, "a=p"); at != NULL; at = strstr(at + 3, "a=p")) last = at;
+    char *hawk_placement = strndup(last, (size_t)(strstr(last, "\033\\") - last));
+    char hawk_id[40];
+    snprintf(hawk_id, sizeof(hawk_id), "I=%u,", (unsigned)hawk_image_id(&hawks[0]));
+    assert(hawk_placement != NULL && strstr(hawk_placement, hawk_id) != NULL);
+    assert(strstr(hawk_placement, "z=") == NULL);
+    free(hawk_placement);
+    kitty_graphics_destroy(&graphics);
+    memset(hawks, 0, sizeof(hawks));
     reset_test_config();
 }
 

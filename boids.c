@@ -4637,11 +4637,12 @@ static kitty_graphics_status_t queue_render_frame(kitty_graphics_t *graphics, co
             status = kitty_graphics_place(graphics, &placement);
     }
     for (int i = 0; status == KITTY_GRAPHICS_OK && i < config.hawks; i++) {
-        /* Over every bird, in a space too: it is what the picture is of. */
+        /* Over every bird, in a space too: it is what the picture is of. In the flat
+         * sky that is the near plane, where a layer above it would be the far one. */
         bird_t as_bird = {.x = hawks[i].x - hawk_offset_of(&hawks[i]),
                           .y = hawks[i].y - hawk_offset_of(&hawks[i]),
                           .frame = hawks[i].frame,
-                          .layer = SKY_BINS};
+                          .layer = sky_mode ? SKY_BINS : 0};
         kitty_graphics_placement_t placement;
         if (bird_placement(&as_bird, &placement)) {
             placement.image_id = hawk_image_id(&hawks[i]);

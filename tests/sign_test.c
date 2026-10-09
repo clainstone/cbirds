@@ -246,38 +246,38 @@ static void test_the_clock_text_follows_the_convention(void) {
     /* 24 hour: two digits each. */
     when.tm_hour = 0;
     when.tm_min = 5;
-    sign_clock_text(&when, 0, out, sizeof(out));
+    sign_clock_text(&when, 0, 0, out, sizeof(out));
     assert(strcmp(out, "00:05") == 0);
     when.tm_hour = 13;
     when.tm_min = 7;
-    sign_clock_text(&when, 0, out, sizeof(out));
+    sign_clock_text(&when, 0, 0, out, sizeof(out));
     assert(strcmp(out, "13:07") == 0);
     when.tm_hour = 23;
     when.tm_min = 59;
-    sign_clock_text(&when, 0, out, sizeof(out));
+    sign_clock_text(&when, 0, 0, out, sizeof(out));
     assert(strcmp(out, "23:59") == 0);
 
     /* 12 hour: no AM and no PM, midnight and noon are twelve, and no zero in front
      * of the hour. */
     when.tm_hour = 0;
     when.tm_min = 5;
-    sign_clock_text(&when, 1, out, sizeof(out));
+    sign_clock_text(&when, 1, 0, out, sizeof(out));
     assert(strcmp(out, "12:05") == 0);
     when.tm_hour = 12;
     when.tm_min = 0;
-    sign_clock_text(&when, 1, out, sizeof(out));
+    sign_clock_text(&when, 1, 0, out, sizeof(out));
     assert(strcmp(out, "12:00") == 0);
     when.tm_hour = 13;
     when.tm_min = 7;
-    sign_clock_text(&when, 1, out, sizeof(out));
+    sign_clock_text(&when, 1, 0, out, sizeof(out));
     assert(strcmp(out, "1:07") == 0);
     when.tm_hour = 9;
     when.tm_min = 30;
-    sign_clock_text(&when, 1, out, sizeof(out));
+    sign_clock_text(&when, 1, 0, out, sizeof(out));
     assert(strcmp(out, "9:30") == 0);
     when.tm_hour = 23;
     when.tm_min = 59;
-    sign_clock_text(&when, 1, out, sizeof(out));
+    sign_clock_text(&when, 1, 0, out, sizeof(out));
     assert(strcmp(out, "11:59") == 0);
 
     /* Every minute of the day reads as time in both, and fits the font. */
@@ -285,12 +285,65 @@ static void test_the_clock_text_follows_the_convention(void) {
         when.tm_hour = minute / 60;
         when.tm_min = minute % 60;
         for (int twelve = 0; twelve < 2; twelve++) {
-            sign_clock_text(&when, twelve, out, sizeof(out));
+            sign_clock_text(&when, twelve, 0, out, sizeof(out));
             char clean[16];
             assert(sign_clean(out, clean, sizeof(clean)) == (int)strlen(out));
             assert(strlen(out) <= 5 && strchr(out, ':') != NULL);
         }
     }
+}
+
+/* With the seconds: two digits of them after a second colon, on either clock, and
+ * the hour as it is without them. */
+static void test_the_clock_text_with_seconds(void) {
+    struct tm when;
+    char out[16];
+    memset(&when, 0, sizeof(when));
+    when.tm_hour = 0;
+    when.tm_min = 5;
+    when.tm_sec = 9;
+    sign_clock_text(&when, 0, 1, out, sizeof(out));
+    assert(strcmp(out, "00:05:09") == 0);
+    sign_clock_text(&when, 1, 1, out, sizeof(out));
+    assert(strcmp(out, "12:05:09") == 0);
+    when.tm_hour = 13;
+    when.tm_min = 7;
+    when.tm_sec = 0;
+    sign_clock_text(&when, 0, 1, out, sizeof(out));
+    assert(strcmp(out, "13:07:00") == 0);
+    sign_clock_text(&when, 1, 1, out, sizeof(out));
+    assert(strcmp(out, "1:07:00") == 0);
+    when.tm_hour = 23;
+    when.tm_min = 59;
+    when.tm_sec = 59;
+    sign_clock_text(&when, 0, 1, out, sizeof(out));
+    assert(strcmp(out, "23:59:59") == 0);
+    /* A leap second is said as the clock says it. */
+    when.tm_sec = 60;
+    sign_clock_text(&when, 0, 1, out, sizeof(out));
+    assert(strcmp(out, "23:59:60") == 0);
+    /* Without them, a struct tm with seconds in it reads as it always did. */
+    sign_clock_text(&when, 0, 0, out, sizeof(out));
+    assert(strcmp(out, "23:59") == 0);
+
+    /* Every second of the day reads as time in both, fits the font, and is as wide
+     * as 00:00:00 at the most, which is what sizes the cells. */
+    for (int second = 0; second < 24 * 60 * 60; second++) {
+        when.tm_hour = second / 3600;
+        when.tm_min = second / 60 % 60;
+        when.tm_sec = second % 60;
+        for (int twelve = 0; twelve < 2; twelve++) {
+            sign_clock_text(&when, twelve, 1, out, sizeof(out));
+            char clean[16];
+            assert(sign_clean(out, clean, sizeof(clean)) == (int)strlen(out));
+            assert(strlen(out) <= 8 && strchr(out, ':') != strrchr(out, ':'));
+            assert(sign_columns(out) <= sign_columns("00:00:00"));
+        }
+    }
+    /* A buffer too small is cut short and still ended. */
+    char small[4];
+    sign_clock_text(&when, 0, 1, small, sizeof(small));
+    assert(strlen(small) == 3);
 }
 
 static void test_the_locale_says_which_clock(void) {
@@ -476,6 +529,7 @@ int main(void) {
     test_a_cell_is_never_larger_than_the_largest();
     test_a_reference_width_keeps_a_clock_the_same_size();
     test_the_clock_text_follows_the_convention();
+    test_the_clock_text_with_seconds();
     test_the_locale_says_which_clock();
     test_a_hovering_bird_stays_within_its_loop();
     test_every_bird_has_a_loop_of_its_own();

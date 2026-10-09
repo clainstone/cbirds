@@ -2,7 +2,7 @@
  * What a flock needs to know to be a sign, with nothing of the flock in it.
  *
  * The words: cleaned down to what the font can draw, and wrapped onto the
- * fewest lines that make the letters largest. The time: HH:MM from a struct tm,
+ * fewest lines that make the letters largest. The time: HH:MM or HH:MM:SS from a struct tm,
  * in the convention the locale asks for. The hover: the small loop a bird flies
  * around its place in a letter while a sign is held. The rhythm of hold and
  * flight. And the box the rest of the flock keeps out of. All of it is a
@@ -54,8 +54,10 @@ int sign_fit(const char *clean, int reference_columns, double width, double heig
 int sign_wants_twelve_hours(const char *time_format);
 
 /* "13:05", or "1:05" on a 12 hour clock; no AM and no PM, and no zero in front of
- * the hour there, which would make it look like the other convention. */
-void sign_clock_text(const struct tm *when, int twelve_hours, char *out, size_t size);
+ * the hour there, which would make it look like the other convention. With the
+ * seconds, "13:05:09" and "1:05:09". */
+void sign_clock_text(const struct tm *when, int twelve_hours, int seconds, char *out,
+                     size_t size);
 
 /* Where in its loop a bird is, relative to the middle of it. `id` gives the bird
  * its own phase, pace, direction, tilt and size; the loop is never wider than

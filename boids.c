@@ -1872,6 +1872,7 @@ static const char *say_text;           /* --say, as it was typed. */
 static char sign_words[SIGN_TEXT_MAX]; /* And as the font can draw it. */
 static int clock_mode;
 static const char *clock_start; /* --clock-at: a time to start from. */
+static int clock_seconds;       /* --seconds: HH:MM:SS. */
 static int screensaver_mode;
 
 /* Half of the free width, centred, which is sky on either side for the flock,
@@ -2025,6 +2026,7 @@ static struct {
     int failures, was_up;
     int failed_columns, failed_rows;
     int twelve_hours;
+    int seconds;       /* The clock shows them. */
     unsigned seed;     /* --seed, for what a picture picks without the flock's numbers. */
     int virtual_clock; /* The time is the start time and the run's clock, not the wall's. */
     time_t origin;
@@ -2061,7 +2063,7 @@ static void sign_text_now(char *out, size_t size) {
     if (the_sign.kind == SIGN_CLOCK) {
         struct tm local;
         sign_local_now(&local);
-        sign_clock_text(&local, the_sign.twelve_hours, out, size);
+        sign_clock_text(&local, the_sign.twelve_hours, the_sign.seconds, out, size);
     } else {
         snprintf(out, size, "%s", sign_words);
     }
@@ -2133,6 +2135,12 @@ static int sign_fit_in(const char *clean, int reference_columns, double room_wid
     *width = most_width;
     *height = most_height;
     return most_count;
+}
+
+/* The widest a clock gets, which sizes its cells: so that it does not change size
+ * between 1:09 and 10:09. */
+static int sign_clock_columns(void) {
+    return sign_columns(the_sign.seconds ? "00:00:00" : "00:00");
 }
 
 /* How far a bird loops, for targets this far apart. */
@@ -2227,17 +2235,21 @@ static int sign_place(const char *clean, int reference_columns, int lift_the_col
      * number to every cell for as long as the text is up. A clock is budgeted for
      * the busiest minute of its hour and not for the minute it is writing: it
      * changes a letter at a time, and a cell that had four birds at ten past ten
-     * and three at ten to eleven would be a stroke that thickens and thins. */
+     * and three at ten to eleven would be a stroke that thickens and thins. With
+     * the seconds it is the busiest second of the hour. */
     int budget = formation.count;
     if (the_sign.kind == SIGN_CLOCK) {
         struct tm when;
         sign_local_now(&when);
-        for (int minute = 0; minute < 60; minute++) {
-            char time_text[SIGN_TEXT_MAX];
-            when.tm_min = minute;
-            sign_clock_text(&when, the_sign.twelve_hours, time_text, sizeof(time_text));
-            if (font_text_cells(time_text) > budget) budget = font_text_cells(time_text);
-        }
+        for (int minute = 0; minute < 60; minute++)
+            for (int second = 0; second < (the_sign.seconds ? 60 : 1); second++) {
+                char time_text[SIGN_TEXT_MAX];
+                when.tm_min = minute;
+                if (the_sign.seconds) when.tm_sec = second;
+                sign_clock_text(&when, the_sign.twelve_hours, the_sign.seconds, time_text,
+                                sizeof(time_text));
+                if (font_text_cells(time_text) > budget) budget = font_text_cells(time_text);
+            }
     }
     int per_cell =
         (int)(near_birds * sign_share(SIGN_WRITER_SHARE, SIGN_WRITER_SHARE_SMALL)) / budget;
@@ -2379,11 +2391,14 @@ static int sign_nearer(const void *a, const void *b) {
 /* The birds that write a letter that was not there: the ones nearest to it that
  * are flocking. Those that wrote what it replaces have only now been let go, and
  * are used only if there is nobody else, so that a letter is a letter made of new
- * birds and not the same ones turning into another. They are matched to the
- * letter's cells nearest first, each cell taking as many as every other, so that
- * the letter is as thick as the ones that held. */
-static void sign_send_the_birds_to_a_letter(const bird_t *birds, const char *let_go, int first,
-                                            int cells) {
+ * birds and not the same ones turning into another. A digit of the seconds is the
+ * other way round (`own` is its number, and -1 for any other letter): its birds
+ * move over to the next digit, which is a hop of a few pixels where the flock is a
+ * flight from round the sign, so the seconds can be read while they tick. They are
+ * matched to the letter's cells nearest first, each cell taking as many as every
+ * other, so that the letter is as thick as the ones that held. */
+static void sign_send_the_birds_to_a_letter(const bird_t *birds, const char *let_go,
+                                            const int *was_glyph, int own, int first, int cells) {
     static sign_candidate_t candidates[MAX_BIRDS];
     double centre_x = 0, centre_y = 0;
     for (int t = first; t < first + cells; t++) {
@@ -2394,8 +2409,10 @@ static void sign_send_the_birds_to_a_letter(const bird_t *birds, const char *let
     for (int i = 0; i < config.birds; i++) {
         if (formation.slot[i] >= 0 || birds[i].layer > 0 || birds[i].scattered > 0) continue;
         double dx = birds[i].x - centre_x, dy = birds[i].y - centre_y;
-        /* Behind everybody who was already flying free, however far they are. */
-        candidates[count].distance = dx * dx + dy * dy + (let_go[i] ? 1e12 : 0);
+        /* Behind everybody who was already flying free, however far they are; or,
+         * for a digit of the seconds, its own birds ahead of everybody. */
+        double order = own < 0 ? (let_go[i] ? 1 : 0) : was_glyph[i] == own ? 0 : let_go[i] ? 2 : 1;
+        candidates[count].distance = dx * dx + dy * dy + order * 1e12;
         candidates[count].bird = i;
         count++;
     }
@@ -2422,9 +2439,10 @@ static void sign_send_the_birds_to_a_letter(const bird_t *birds, const char *let
     }
 }
 
-/* A new minute on a clock that is not a new hour: the letters that changed are
- * let go of and written by other birds, and the rest are not touched, so the time
- * can be read throughout. Returns 0, with nothing done, when it is the whole sign
+/* A new minute on a clock that is not a new hour, or a new second on a clock that
+ * shows them: the letters that changed are let go of and written by other birds,
+ * or for the seconds moved over by their own, and the rest are not touched, so the
+ * time can be read throughout. Returns 0, with nothing done, when it is the whole sign
  * that has to go: the hour, a text of another length or another hour, or a
  * layout that is no longer for this screen. */
 static int sign_change_the_letters(const bird_t *birds, const char *shown) {
@@ -2435,10 +2453,13 @@ static int sign_change_the_letters(const bird_t *birds, const char *shown) {
     const char *colon = strchr(now, ':');
     if (letters == 0 || strlen(was) != length || colon == NULL || length < 2) return 0;
     if (strncmp(was, now, (size_t)(colon - now) + 1) != 0) return 0; /* The hour changed. */
-    if (now[length - 2] == '0' && now[length - 1] == '0') return 0;  /* The hour is here. */
+    if (strspn(colon, ":0") == strlen(colon)) return 0;               /* The hour is here. */
     if (!sign_layout_is_current()) return 0;
+    /* The digits after the second colon are the seconds. */
+    const char *seconds_colon = strchr(colon + 1, ':');
+    int first_second = seconds_colon != NULL ? (int)(seconds_colon - now) + 1 : (int)length;
 
-    static int was_slot[MAX_BIRDS];
+    static int was_slot[MAX_BIRDS], was_glyph[MAX_BIRDS];
     static char let_go[MAX_BIRDS];
     int was_first[SIGN_TEXT_MAX], was_cells[SIGN_TEXT_MAX];
     int now_first[SIGN_TEXT_MAX], now_cells[SIGN_TEXT_MAX];
@@ -2450,7 +2471,7 @@ static int sign_change_the_letters(const bird_t *birds, const char *shown) {
     /* Laid out again for the new text, which puts every letter that did not change
      * exactly where it was: the same cell, the same size. Only the numbers of its
      * targets move, with the letters before it. */
-    if (!sign_place(now, sign_columns("00:00"), 1, birds)) return 0;
+    if (!sign_place(now, sign_clock_columns(), 1, birds)) return 0;
     formation.box = box;
     formation.band = band;
     int now_letters = sign_find_the_letters(now_first, now_cells, SIGN_TEXT_MAX);
@@ -2460,19 +2481,24 @@ static int sign_change_the_letters(const bird_t *birds, const char *shown) {
 
     for (int i = 0; i < config.birds; i++) {
         let_go[i] = 0;
+        was_glyph[i] = -1;
         formation.slot[i] = -1;
         int old = was_slot[i];
         if (old < 0) continue;
         for (int g = 0; g < was_letters; g++) {
             if (old < was_first[g] || old >= was_first[g] + was_cells[g]) continue;
-            if (g < now_letters && !changed[g])
+            if (g < now_letters && !changed[g]) {
                 formation.slot[i] = now_first[g] + (old - was_first[g]);
-            else
+            } else {
                 let_go[i] = 1;
+                was_glyph[i] = g;
+            }
         }
     }
     for (int g = 0; g < now_letters; g++)
-        if (changed[g]) sign_send_the_birds_to_a_letter(birds, let_go, now_first[g], now_cells[g]);
+        if (changed[g])
+            sign_send_the_birds_to_a_letter(birds, let_go, was_glyph, g >= first_second ? g : -1,
+                                            now_first[g], now_cells[g]);
 
     snprintf(the_sign.written, sizeof(the_sign.written), "%s", shown);
     sign_move_the_letters();
@@ -2488,7 +2514,7 @@ static int sign_write(const bird_t *birds) {
     } else {
         sign_text_now(text, sizeof(text));
         sign_clean(text, clean, sizeof(clean));
-        fits = sign_place(clean, the_sign.kind == SIGN_CLOCK ? sign_columns("00:00") : 0,
+        fits = sign_place(clean, the_sign.kind == SIGN_CLOCK ? sign_clock_columns() : 0,
                           the_sign.kind == SIGN_CLOCK, birds);
         if (fits) sign_send_the_writers(birds);
     }
@@ -5667,6 +5693,8 @@ static const option_t OPTIONS[] = {
      "the flock tells the time, HH:MM, in local time", "Sign", 0},
     {0, "clock-at", NULL, OPTION_STRING, &clock_start, 0, 0, NULL, "TIME",
      "start the clock at HH:MM or HH:MM:SS, not now", "Sign", 0},
+    {0, "seconds", NULL, OPTION_FLAG, &clock_seconds, 0, 0, NULL, NULL,
+     "the clock shows the seconds too, HH:MM:SS", "Sign", 0},
     {0, "picture", NULL, OPTION_STRING, &picture_path, 0, 0, NULL, "FILE",
      "the flock draws a PNG, in its colours unless --color is given", "Sign", 0},
 
@@ -6742,6 +6770,7 @@ static void settle_the_sign(void) {
         }
         clock_mode = 1;
     }
+    if (clock_seconds) clock_mode = 1; /* As --clock-at, a clock on its own. */
     if ((say_text != NULL) + clock_mode + (picture_path != NULL) > 1) {
         fprintf(stderr, "%s: --say, --clock and --picture each take the whole sign, so only one\n",
                 program_name);
@@ -6770,6 +6799,7 @@ static void settle_the_sign(void) {
     }
     if (clock_mode) {
         the_sign.kind = SIGN_CLOCK;
+        the_sign.seconds = clock_seconds;
         /* The locale's own idea of the hour, and nothing else of it: only the
          * names of things in time are asked of it. */
         setlocale(LC_TIME, "");
@@ -6798,6 +6828,7 @@ static void settle_the_sign(void) {
 static const char *the_sign_option(void) {
     if (say_text != NULL) return "--say";
     if (clock_start != NULL) return "--clock-at";
+    if (clock_seconds) return "--seconds";
     if (clock_mode) return "--clock";
     if (picture_path != NULL) return "--picture";
     return NULL;

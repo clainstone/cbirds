@@ -287,10 +287,15 @@ it again.
 
 The birds that write do not stand still: each hovers round its place in a small
 loop of its own, so the strokes shimmer and stay sharp. The colour runs along
-the text, from one end of the ramp to the other. The rest of the flock flies
-round the sign, not through it. On a small terminal the sign takes less of it,
-down to half the width and half the height at 96 by 26 cells, and more of the
-flock writes, so that the birds that are left have sky to fly in. A sign picks a
+the text, from one end of the ramp to the other. The rest of the flock wheels
+round the sign, not through it: all of it the same way, on an ellipse round the
+text, as one river that bunches and thins, and the other way round the next time
+the sign is written. Each bird of it wears the colour of its heading, so the sky
+round the text turns like a wheel. The sign takes half the width of the screen
+and not quite half its height, which leaves the river room, half and half on a
+small terminal, where more of the flock writes so that the birds that are left
+have sky to fly in, and up to two thirds by three fifths for a long text that
+would be too small to read otherwise. A sign picks a
 bird as wide as the distance between the cells of its letters unless you give
 `--size`, so a short text is written with the usual bird and a long one on a
 small terminal with a smaller one. `--shape dot` gives sharp strokes, and more
@@ -311,6 +316,11 @@ settles once a second. At each new minute the digits that change let go and
 other birds write the new ones, while the rest of the time stays where it is,
 so the clock can be read at any moment. On the hour the whole of it lets go for
 a few seconds, and the flock writes the next time.
+
+`--seconds` shows the seconds too, HH:MM:SS, and is a clock on its own, as
+`--clock-at` is. A digit of the seconds is not let go: its own birds hop over to
+the next one, which takes them a fraction of a second, so the seconds can be
+read as they tick. The minutes and the hour change as they do without it.
 
 <p align="center"><img src="docs/clock.gif" alt="The flock writes 10:09, and a few seconds later the two digits that change let go and other birds write 10:10 while the rest of the time stays where it is"></p>
 
@@ -565,6 +575,7 @@ Sign
       --say TEXT                the flock writes TEXT and holds it as a sign
       --clock                   the flock tells the time, HH:MM, in local time
       --clock-at TIME           start the clock at HH:MM or HH:MM:SS, not now
+      --seconds                 the clock shows the seconds too, HH:MM:SS
       --picture FILE            the flock draws a PNG, in its colours unless --color is given
 
 Oddities

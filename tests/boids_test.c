@@ -1704,6 +1704,7 @@ static void reset_sign_state(void) {
     sign_words[0] = '\0';
     clock_mode = 0;
     clock_start = NULL;
+    clock_seconds = 0;
     screensaver_mode = 0;
     picture_path = NULL;
     picture_colours_in_use = 0;
@@ -2330,6 +2331,158 @@ static void test_the_hour_lets_go_of_the_whole_clock(void) {
     assert(the_sign.up && strcmp(the_sign.written, "11:00") == 0);
     assert_every_cell_has_its_writers(&world);
     close_the_world(&world);
+    reset_sign_state();
+}
+
+/* A clock with the seconds, at 200 by 50 cells with a flock of 800. */
+static void open_a_seconds_clock_at(sign_sky_t *world, int hour, int minute, int second) {
+    open_a_clock_at(world, hour, minute, second, 800);
+    the_sign.seconds = 1;
+}
+
+/* The writers of a letter, and whether every one of them is in its loop. */
+static int the_glyph_of(int bird) {
+    return formation.slot[bird] < 0 ? -1 : formation.glyph[formation.slot[bird]];
+}
+
+static int writers_of_glyph_home(const sign_sky_t *world, int glyph) {
+    for (int i = 0; i < config.birds; i++)
+        if (the_glyph_of(i) == glyph && home_distance(world, i) > formation.hover + 1e-6) return 0;
+    return 1;
+}
+
+/* With the seconds the clock changes every second, and every second it is a digit
+ * that changes and not the clock: the birds of a digit of the seconds move over to
+ * the next one and are home within half a second, the minutes are written by other
+ * birds as they always were, and the rest never moves. A new minute is not the
+ * hour, though the seconds end in two zeros then. */
+static void test_a_clock_with_seconds_ticks_a_digit_at_a_time(void) {
+    sign_sky_t world;
+    open_a_seconds_clock_at(&world, 10, 9, 55);
+    fly_the_world(&world, 0, 4.9, 60);
+    assert(the_sign.up && strcmp(the_sign.written, "10:09:59") == 0);
+    assert(formation.count == font_text_cells("10:09:59"));
+    assert_every_cell_has_its_writers(&world);
+    int per_cell = the_sign.per_cell;
+    double cell = formation.cell;
+
+    /* "10:09:59": the hour and its colon are 0 to 2, the minutes 3 and 4, the
+     * second colon 5, and the seconds 6 and 7. */
+    static int before[MAX_BIRDS];
+    static double place_x[MAX_BIRDS], place_y[MAX_BIRDS];
+    int written[8] = {0};
+    for (int i = 0; i < config.birds; i++) {
+        before[i] = the_glyph_of(i);
+        if (before[i] < 0) continue;
+        written[before[i]]++;
+        place_x[i] = formation.x[formation.slot[i]];
+        place_y[i] = formation.y[formation.slot[i]];
+    }
+
+    /* 10:10:00: the minutes and both seconds change, and nothing else. */
+    step_the_world(&world, 5.0);
+    assert(the_sign.up && formation.writing && strcmp(the_sign.written, "10:10:00") == 0);
+    assert(the_sign.per_cell == per_cell && formation.cell == cell);
+    int now_cells[8] = {0}, from_own[8] = {0};
+    for (int t = 0; t < formation.count; t++) now_cells[formation.glyph[t]]++;
+    for (int i = 0; i < config.birds; i++) {
+        int g = the_glyph_of(i);
+        if (before[i] == 0 || before[i] == 1 || before[i] == 2 || before[i] == 5) {
+            /* Kept: the same letter, the same place. */
+            assert(g == before[i]);
+            assert(formation.x[formation.slot[i]] == place_x[i] &&
+                   formation.y[formation.slot[i]] == place_y[i]);
+        }
+        if (before[i] == 3 || before[i] == 4) assert(g < 0); /* The minutes: let go. */
+        if (g == 3 || g == 4) assert(before[i] < 0);         /* Written by others. */
+        if (g >= 6 && before[i] == g) from_own[g]++;
+    }
+    for (int g = 6; g <= 7; g++) {
+        int wanted = now_cells[g] * per_cell;
+        assert(from_own[g] == (written[g] < wanted ? written[g] : wanted));
+    }
+    /* Half a second on, the seconds are written whole, by birds in their loops. */
+    fly_the_world(&world, 5.0 + 1.0 / 60, 5.5, 60);
+    assert(writers_of_glyph_home(&world, 6) && writers_of_glyph_home(&world, 7));
+
+    /* 10:10:01: the last digit, and all of its birds were the zero's. */
+    fly_the_world(&world, 5.5, 5.99, 60);
+    for (int i = 0; i < config.birds; i++) before[i] = the_glyph_of(i);
+    step_the_world(&world, 6.0);
+    assert(strcmp(the_sign.written, "10:10:01") == 0);
+    for (int i = 0; i < config.birds; i++) {
+        int g = the_glyph_of(i);
+        if (before[i] >= 0 && before[i] < 7) assert(g == before[i]);
+        if (g == 7) assert(before[i] == 7);
+    }
+    fly_the_world(&world, 6.0 + 1.0 / 60, 6.5, 60);
+    assert_every_cell_has_its_writers(&world);
+    assert(the_sign.per_cell == per_cell && formation.cell == cell);
+    close_the_world(&world);
+    reset_sign_state();
+}
+
+/* The hour lets go of the whole clock with the seconds as without them, and the
+ * clock comes back on the second it has got to. */
+static void test_the_hour_lets_go_of_a_clock_with_seconds(void) {
+    sign_sky_t world;
+    open_a_seconds_clock_at(&world, 10, 59, 57);
+    fly_the_world(&world, 0, 2.9, 60);
+    assert(the_sign.up && strcmp(the_sign.written, "10:59:59") == 0);
+    step_the_world(&world, 3.0);
+    assert(!the_sign.up && !formation.writing);
+    fly_the_world(&world, 3.0 + 1.0 / 60, 3.0 + SIGN_CLOCK_FLIGHT - 0.1, 60);
+    assert(!the_sign.up);
+    fly_the_world(&world, 3.0 + SIGN_CLOCK_FLIGHT - 0.1, 3.0 + SIGN_CLOCK_FLIGHT + 1.5, 60);
+    assert(the_sign.up && strncmp(the_sign.written, "11:00:0", 7) == 0);
+    close_the_world(&world);
+    reset_sign_state();
+}
+
+/* HH:MM:SS is wider than HH:MM, and fits the screens a clock does, in cells that
+ * are letters: from 96 by 26 up it takes the most a sign may take to keep eight
+ * pixels a cell, and at 80 by 24 it has all of that, which is seven and a half.
+ * And a twelve hour clock with one digit of hour has the cell of one with two. */
+static void test_a_clock_with_seconds_fits_the_screens_a_clock_does(void) {
+    int sizes[][2] = {{80, 24}, {96, 26}, {120, 34}, {200, 50}};
+    for (int s = 0; s < 4; s++) {
+        double cells[2];
+        for (int twelve = 0; twelve < 2; twelve++) {
+            sign_sky_t world;
+            reset_sign_state();
+            config.pace_notch = DEFAULT_PACE_NOTCH;
+            apply_notches();
+            apply_screen_size(sizes[s][0], sizes[s][1], sizes[s][0] * 8, sizes[s][1] * 16);
+            config.bird_size = 0;
+            settle_the_bird_size();
+            the_sign.kind = SIGN_CLOCK;
+            the_sign.virtual_clock = 1;
+            the_sign.seconds = 1;
+            the_sign.twelve_hours = twelve;
+            the_sign.origin = local_time(13, 9, 5);
+            begin_the_intro();
+            open_the_world(&world, 800, 6);
+            sign_advance(world.birds);
+            assert(the_sign.up);
+            assert(strcmp(the_sign.written, twelve ? "1:09:05" : "13:09:05") == 0);
+            /* Eight pixels a cell, or what the most a sign may take gives if that is
+             * less, which it is only on the smallest of these. */
+            double pad = config.bird_size * 2.0, most_cell;
+            sign_lines_t lines;
+            assert(sign_fit("00:00:00", 0, (screen.width - 2 * pad) * SIGN_WIDTH_MOST,
+                            (screen.height - 2 * pad) * SIGN_HEIGHT_MOST,
+                            SIGN_LARGEST_CELL * config.bird_size, &lines, &most_cell) == 1);
+            double floor_cell = most_cell < SIGN_SMALLEST_CELL ? most_cell : SIGN_SMALLEST_CELL;
+            assert(formation.cell >= floor_cell - 1e-9);
+            if (sizes[s][0] >= 96) assert(formation.cell >= SIGN_SMALLEST_CELL - 1e-9);
+            for (int t = 0; t < formation.count; t++)
+                assert(formation.x[t] > 0 && formation.x[t] < screen.width &&
+                       formation.y[t] > 0 && formation.y[t] < screen.height);
+            cells[twelve] = formation.cell;
+            close_the_world(&world);
+        }
+        assert(fabs(cells[0] - cells[1]) < 1e-9);
+    }
     reset_sign_state();
 }
 
@@ -3253,6 +3406,128 @@ static void lay_out_a_sign_on(sign_sky_t *world, int columns, int rows, int fps,
     clock_state.seconds = 0;
     sign_advance(world->birds);
     assert(the_sign.up);
+}
+
+/* --seconds is a clock on its own, as --clock-at is, and goes with either of them;
+ * beside another sign it is refused as --clock is. */
+static void test_seconds_is_a_clock(void) {
+    reset_sign_state();
+    char *alone[] = {"cbirds", "--seconds", NULL};
+    read_options(2, alone);
+    assert(the_sign.kind == SIGN_CLOCK && the_sign.seconds);
+    reset_sign_state();
+    char *both[] = {"cbirds", "--clock", "--seconds", NULL};
+    read_options(3, both);
+    assert(the_sign.kind == SIGN_CLOCK && the_sign.seconds);
+    reset_sign_state();
+    char *from[] = {"cbirds", "--clock-at", "10:09:58", "--seconds", NULL};
+    read_options(4, from);
+    assert(the_sign.kind == SIGN_CLOCK && the_sign.seconds && the_sign.virtual_clock);
+    {
+        char text[SIGN_TEXT_MAX];
+        clock_state.seconds = 0;
+        sign_text_now(text, sizeof(text));
+        assert(strcmp(text, "10:09:58") == 0);
+        clock_state.seconds = 2.5;
+        sign_text_now(text, sizeof(text));
+        assert(strcmp(text, "10:10:00") == 0);
+    }
+    reset_sign_state();
+    char *plain[] = {"cbirds", "--clock", NULL};
+    read_options(2, plain);
+    assert(the_sign.kind == SIGN_CLOCK && !the_sign.seconds);
+    reset_sign_state();
+    char *said[] = {"cbirds", "--say", "hi", "--seconds", NULL};
+    assert(exit_status_of(4, said) == EXIT_USAGE);
+    reset_sign_state();
+}
+
+/* The pull round a sign, as geometry: along the ellipse, one way while the sign is
+ * held and the other way the next time, back towards it from far off, nothing to a
+ * bird of the far sky, and nothing without a sign. */
+static void test_the_free_flock_is_turned_round_a_sign(void) {
+    reset_sign_state();
+    apply_screen_size(200, 50, 1600, 800);
+    config.bird_size = 12;
+    formation_clear();
+    formation.sign = 1;
+    formation.writing = 1;
+    formation.keep_out = 1;
+    formation.box = (sign_box_t){600, 300, 1000, 500};
+    formation.band = SIGN_KEEP_OUT_BAND * config.bird_size;
+    bird_t bird;
+    memset(&bird, 0, sizeof(bird));
+    for (unsigned cycle = 0; cycle < 4; cycle++) {
+        the_sign.cycle = cycle;
+        double way = cycle % 2 ? -1 : 1;
+        /* Right of the text: down the screen, then up; above it: right, then left;
+         * left of it: up; below it: left. */
+        double at[4][2] = {{1150, 400}, {800, 200}, {450, 400}, {800, 600}};
+        double expect[4][2] = {{0, 1}, {1, 0}, {0, -1}, {-1, 0}};
+        for (int k = 0; k < 4; k++) {
+            bird.x = at[k][0];
+            bird.y = at[k][1];
+            vector_t flow = sign_orbit_vector(&bird);
+            double along = flow.x * expect[k][0] + flow.y * expect[k][1];
+            assert(way * along > 0.5 * SIGN_ORBIT_ALONG);
+        }
+    }
+    /* From a corner of the screen it is pulled in as well as round. */
+    the_sign.cycle = 0;
+    bird.x = 30;
+    bird.y = 30;
+    vector_t flow = sign_orbit_vector(&bird);
+    assert(flow.x * (800 - 30) + flow.y * (400 - 30) > 0);
+    /* Not for a bird of the far sky, nor with no sign up. */
+    bird.layer = 1;
+    flow = sign_orbit_vector(&bird);
+    assert(flow.x == 0 && flow.y == 0);
+    bird.layer = 0;
+    formation.writing = 0;
+    flow = sign_orbit_vector(&bird);
+    assert(flow.x == 0 && flow.y == 0);
+    formation_clear();
+    reset_sign_state();
+}
+
+/* And as flight: the free birds round a sign wheel round it one way, most of them
+ * at any moment, and the other way on the next hold. Measured on 800 birds saying
+ * HELLO WORLD at 96 by 26 cells: without the pull, about half of them went each
+ * way. */
+static double share_wheeling_down_the_right(int columns, int rows, unsigned cycle, int seed) {
+    sign_sky_t world;
+    lay_out_a_sign_on(&world, columns, rows, 25, "HELLO WORLD", 800, seed);
+    the_sign.cycle = cycle;
+    double cx = (formation.box.left + formation.box.right) / 2;
+    double cy = (formation.box.top + formation.box.bottom) / 2;
+    double sum = 0;
+    int samples = 0;
+    for (double at = 0.04; at < 12; at += 0.04) {
+        step_the_world(&world, at);
+        if (at < 6 || ((int)(at * 25 + 0.5)) % 5 != 0) continue;
+        int free_birds = 0, wheeling = 0;
+        for (int i = 0; i < config.birds; i++) {
+            if (formation.slot[i] >= 0 || world.birds[i].layer > 0) continue;
+            free_birds++;
+            double dx = world.birds[i].x - cx, dy = world.birds[i].y - cy;
+            wheeling += dx * sin(world.birds[i].direction) - dy * cos(world.birds[i].direction) > 0;
+        }
+        sum += (double)wheeling / free_birds;
+        samples++;
+    }
+    assert(the_sign.up && samples > 0);
+    close_the_world(&world);
+    reset_sign_state();
+    return sum / samples;
+}
+
+static void test_the_free_flock_wheels_round_a_sign_one_way(void) {
+    int sizes[][2] = {{96, 26}, {200, 50}};
+    for (int s = 0; s < 2; s++)
+        for (int seed = 1; seed <= 2; seed++) {
+            assert(share_wheeling_down_the_right(sizes[s][0], sizes[s][1], 0, seed) > 0.75);
+            assert(share_wheeling_down_the_right(sizes[s][0], sizes[s][1], 1, seed) < 0.25);
+        }
 }
 
 /* A hawk is over the places it flew over in the last step and not only the ones it
@@ -12785,6 +13060,12 @@ int main(void) {
     test_the_clock_tells_the_time_and_changes_it_a_letter_at_a_time();
     test_a_new_minute_lets_go_of_the_letters_that_changed_and_of_nothing_else();
     test_the_hour_lets_go_of_the_whole_clock();
+    test_a_clock_with_seconds_ticks_a_digit_at_a_time();
+    test_the_hour_lets_go_of_a_clock_with_seconds();
+    test_seconds_is_a_clock();
+    test_a_clock_with_seconds_fits_the_screens_a_clock_does();
+    test_the_free_flock_is_turned_round_a_sign();
+    test_the_free_flock_wheels_round_a_sign_one_way();
     test_a_twelve_hour_clock_changes_a_letter_at_a_time_too();
     test_every_lit_cell_of_a_clock_keeps_its_writers_through_an_hour();
     test_a_sign_is_coloured_along_its_text();

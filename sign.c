@@ -212,15 +212,21 @@ int sign_wants_twelve_hours(const char *time_format) {
     return 0;
 }
 
-void sign_clock_text(const struct tm *when, int twelve_hours, char *out, size_t size) {
-    int hour = when->tm_hour, minute = when->tm_min;
+void sign_clock_text(const struct tm *when, int twelve_hours, int seconds, char *out,
+                     size_t size) {
+    int hour = when->tm_hour, minute = when->tm_min, second = when->tm_sec;
     if (twelve_hours) {
         hour %= 12;
         if (hour == 0) hour = 12;
-        snprintf(out, size, "%d:%02d", hour, minute);
-    } else {
-        snprintf(out, size, "%02d:%02d", hour, minute);
     }
+    if (seconds && twelve_hours)
+        snprintf(out, size, "%d:%02d:%02d", hour, minute, second);
+    else if (seconds)
+        snprintf(out, size, "%02d:%02d:%02d", hour, minute, second);
+    else if (twelve_hours)
+        snprintf(out, size, "%d:%02d", hour, minute);
+    else
+        snprintf(out, size, "%02d:%02d", hour, minute);
 }
 
 /* A small integer hash (lowbias32): every bit of the input reaches every bit of

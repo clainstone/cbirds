@@ -140,6 +140,7 @@ static void reset_test_config(void) {
     unlock_fps = 0;
     fireflies_mode = 0;
     fireflies_destroy(&night);
+    letters_mode = 0;
     apply_notches();
     reset_the_waves();
 }
@@ -5993,6 +5994,134 @@ static void test_keys_and_colour_questions_use_the_descriptor_that_was_chosen(vo
     close(keys[1]);
 }
 
+/* ---- Text beside the other modes ----------------------------------------------- */
+
+/* A screen of letters, more than a flock can be: the wave state is the size of a
+ * flock, and a text may be four times that. */
+static char *screen_of_letters(int cols, int rows) {
+    size_t size = (size_t)(cols + 1) * (size_t)rows + 1;
+    char *text = malloc(size);
+    assert(text != NULL);
+    size_t at = 0;
+    for (int row = 0; row < rows; row++) {
+        for (int col = 0; col < cols; col++) text[at++] = 'a' + (char)((row + col) % 26);
+        text[at++] = '\n';
+    }
+    text[at] = '\0';
+    return text;
+}
+
+/* No escape wave runs over text. The letters have a take-off wave of their own, a
+ * hawk or the pointer scatters them, and nothing else may start one: not a hawk's
+ * dive, not a pointer whipped through. The wave state is a flock's size, so a text
+ * of more letters than that must not be read from it or written to it at all,
+ * which the sanitizers see if it is. */
+static void test_a_text_tells_no_alarm_and_never_reads_the_wave_state(void) {
+    world_t world;
+    char *text = screen_of_letters(120, 50);
+    world_open(&world, text, 120, 50);
+    free(text);
+    assert(config.birds == 6000 && config.birds > MAX_BIRDS);
+    config.hawks = 2;
+    place_hawks();
+    letters_poke(&the_letters);
+
+    int whipped = 0, scattered = 0;
+    for (int frame = 0; frame < 400; frame++) {
+        /* A pointer going across the screen faster than a whip has to. */
+        mouse.present = 1;
+        mouse.x = 40.0 + 8.0 * frame;
+        mouse.y = 200.0;
+        mouse.velocity_x = 100.0 * screen.cell_width;
+        mouse.velocity_y = 0;
+        mouse.moved_at = clock_state.seconds;
+        clock_state.seconds += frame_seconds;
+        if (pointer_startles()) whipped++;
+        world_step(&world);
+        assert(wave_task_count == 0 && !waves_in_flight);
+        for (int i = 0; i < config.birds; i += 97) assert(!world.birds[i].alarmed);
+        for (int i = 0; i < config.birds; i++)
+            if (!world.birds[i].perched) {
+                scattered++;
+                break;
+            }
+    }
+    assert(whipped > 300); /* The pointer was a whip, and the text did not care. */
+    assert(scattered > 0);
+    for (int i = 0; i < MAX_BIRDS; i++) {
+        assert(waves[i].wait == 0 && waves[i].left == 0 && waves[i].rest == 0);
+        assert(waves[i].swerve == 0 && waves[i].heading == 0);
+    }
+    for (int i = 0; i < config.birds; i++) assert(!world.birds[i].alarmed);
+    world_close(&world);
+}
+
+/* A recording of text with hawks has the colours the letters fly in and the hawk's
+ * in its table, and not the light of a wave: there is none. */
+static int text_recording_has(const uint8_t colour[3], int hawks) {
+    char path[600], text_file[600];
+    scratch_file(path, sizeof(path), "text_light.gif");
+    scratch_file(text_file, sizeof(text_file), "text_light.txt");
+    world_write(text_file, NEOFETCH_LIKE);
+    reset_test_config();
+    config.palette = palette_named("ember");
+    config.hawks = hawks;
+    text_path = text_file;
+    record_path = path;
+    record_fps = 10;
+    record_seconds = 5; /* Long enough for hawks to be about and for a wave, were there any. */
+    record_columns = 60;
+    record_rows = 12;
+    assert(take_the_text(record_columns, record_rows, 1) == 1);
+    fflush(stdout);
+    int saved = dup(STDOUT_FILENO);
+    assert(freopen("/dev/null", "w", stdout) != NULL);
+    int status = run_recording();
+    fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+    clearerr(stdout);
+    assert(status == EXIT_SUCCESS);
+    letters_mode = 0;
+    text_path = NULL;
+    remove(text_file);
+    FILE *file = fopen(path, "rb");
+    assert(file != NULL);
+    uint8_t header[13 + 768];
+    assert(fread(header, 1, sizeof(header), file) == sizeof(header));
+    fclose(file);
+    remove(path);
+    record_path = NULL;
+    record_fps = 25;
+    record_seconds = 6;
+    record_columns = 96;
+    record_rows = 26;
+    render_mode = RENDER_KITTY;
+    int found = 0;
+    for (int entry = 0; entry < 256; entry++)
+        if (memcmp(header + 13 + entry * 3, colour, 3) == 0) found = 1;
+    reset_test_config();
+    return found;
+}
+
+static void test_a_text_with_hawks_records_the_flight_and_not_the_light(void) {
+    reset_test_config();
+    config.palette = palette_named("ember");
+    uint8_t light[3], hawk[3], first[3], last[3];
+    memcpy(light, highlight_colour(), 3);
+    memcpy(hawk, hawk_colour(), 3);
+    memcpy(first, palette()->tints[0], 3);
+    memcpy(last, palette()->tints[palette()->shades - 1], 3);
+    assert(text_recording_has(first, 0) && text_recording_has(last, 0)); /* The ramp it flies in. */
+    assert(text_recording_has(hawk, 2) && !text_recording_has(hawk, 0));
+    assert(!text_recording_has(light, 2)); /* No wave, so no light. */
+    /* A flock with hawks still has it, in the palette that helper records in. */
+    config.palette = palette_named("ice");
+    memcpy(light, highlight_colour(), 3);
+    assert(palette_of_a_recording_has(light, 2, 5));
+    reset_test_config();
+}
+
 int main(void) {
     make_scratch();
     trig_lookup_init();
@@ -6117,6 +6246,8 @@ int main(void) {
     test_a_benchmark_of_text_flies_it_from_the_first_frame();
     test_standard_input_that_is_not_a_terminal_leaves_the_keys_to_the_tty();
     test_keys_and_colour_questions_use_the_descriptor_that_was_chosen();
+    test_a_text_tells_no_alarm_and_never_reads_the_wave_state();
+    test_a_text_with_hawks_records_the_flight_and_not_the_light();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);
     return 0;

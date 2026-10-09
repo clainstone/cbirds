@@ -2283,10 +2283,17 @@ static void spread_the_alarm(const bird_t *birds, const spatial_grid_t *grid) {
     }
 }
 
+/* Whether a bird is in the middle of a swerve. A letter never is: a text has its own
+ * take-off wave (see letters.c) and a hawk or a pointer scatters its letters instead,
+ * and the wave state is the size of a flock, not of a text. */
+static int is_swerving(int index) {
+    return !letters_mode && waves[index].left > 0;
+}
+
 /* The swerve as a pull, towards the heading the bird was told to take. */
 static vector_t swerve_vector(int index) {
     vector_t force = {0, 0};
-    if (waves[index].left <= 0) return force;
+    if (!is_swerving(index)) return force;
     force.x = cos(waves[index].heading);
     force.y = sin(waves[index].heading);
     return force;
@@ -3035,12 +3042,12 @@ static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_gr
             !legend_turn_zone(snapshot[i].x, snapshot[i].y)) {
             /* A swerve is a turn the banking would not allow. */
             double limit = turn_limit();
-            if (waves[i].left > 0)
+            if (is_swerving(i))
                 limit = limit * SWERVE_TURN < 2 * M_PI ? limit * SWERVE_TURN : 2 * M_PI;
             direction = turn_towards(snapshot[i].direction, direction, limit);
         }
         birds[i].direction = direction;
-        birds[i].alarmed = waves[i].left > 0;
+        birds[i].alarmed = is_swerving(i);
         /* Never past the target: the last step is the distance left, which is
          * what makes a letter crisp instead of a cloud orbiting one. */
         double step = config.speed * flock_pace(snapshot[i].flock);
@@ -3514,7 +3521,9 @@ static void fly(bird_t *birds, bird_t *snapshot, spatial_grid_t *grid) {
              * lantern and not a whip. */
             drift_the_fireflies(birds, snapshot, grid);
         } else {
-            spread_the_alarm(snapshot, grid);
+            /* No escape wave over text either: the letters have their own take-off
+             * wave, and what a hawk or the pointer does to them is to scatter them. */
+            if (!letters_mode) spread_the_alarm(snapshot, grid);
             update_birds(birds, snapshot, grid);
         }
     }
@@ -4982,10 +4991,12 @@ static int run_cast_recording(void) {
 /* The light of an escape wave is on no first frame, and a GIF's palette is made
  * from the first frame: so it is asked for, with its edges, which are the light
  * and the ground in quarters. Only for a clip in which a wave can happen, which
- * is one with hawks that is longer than the intro, because the letters are never
- * alarmed: any other clip keeps exactly the palette it always had. */
+ * is one with hawks that is longer than the intro, because the letters of the
+ * intro are never alarmed, and not one of text, in which nothing is: any other
+ * clip keeps exactly the palette it always had. */
 static void reserve_the_light(gif_writer_t *gif, double seconds) {
-    if (config.hawks == 0 || seconds <= (formation.writing ? formation.until : 0)) return;
+    if (config.hawks == 0 || letters_mode || seconds <= (formation.writing ? formation.until : 0))
+        return;
     const uint8_t *light = highlight_colour();
     uint8_t colours[4][3];
     for (int quarter = 0; quarter < 4; quarter++)

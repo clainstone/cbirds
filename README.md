@@ -224,11 +224,13 @@ when it has gone. `q` sends them off the top, as it does the birds.
 A letter is drawn as itself, in its own colours, with its bold and underline,
 wherever it is; one with no colour of its own takes the flock's while it flies.
 A background colour stays where it was printed. Wide characters take two cells.
-Hawks work, and are arrows over text. `--birds`, `--flocks`, `--depth`,
-`--matrix`, `--shape`, `--sprite`, `--size` and tails do not apply: the text
-decides how many letters there are, and a letter has no sprite. `--render
-kitty` draws text too. The panel is laid over the text, and the letters under it
-still land there.
+Hawks work, and are arrows over text: they scatter the letters they come near.
+No wave of light runs through a text, whether a hawk dives or the pointer is
+whipped; the letters have the wave that sends them up. `--birds`, `--flocks`,
+`--depth`, `--matrix`, `--shape`, `--sprite`, `--size` and tails do not apply:
+the text decides how many letters there are, and a letter has no sprite.
+`--render kitty` draws text too. The panel is laid over the text, and the
+letters under it still land there.
 
 When standard input is not a terminal, the keys are read from the terminal
 itself. A pipe is read to its end, or until it has been quiet for a second and a

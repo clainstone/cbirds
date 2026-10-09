@@ -153,6 +153,10 @@ cbirds --depth --trails             a second sky behind the first
 cbirds --matrix                     it is raining birds
 cbirds --fireflies                  a summer night, and they fall into step
 fastfetch | cbirds                  the letters of anything take flight
+cbirds --say "back in five"         the flock writes it, and holds it as a sign
+cbirds --clock                      the flock tells the time
+cbirds --picture logo.png           the flock draws a PNG; --shape dot and -n 2000 suit it
+cbirds --screensaver --clock        a lock screen that tells the time; any key quits
 ```
 
 It opens by writing BOIDS, lets go, and flocks. Move the pointer into the
@@ -253,6 +257,76 @@ A GIF of text is drawn with a 5 by 7 font in cells of 12 by 20 pixels, so it
 shows the letters rather than dots. `--snapshot` takes text, and `--bench` takes
 `--text` and never a pipe it happens to be in.
 
+## Signs
+
+`--say TEXT` has the flock write TEXT where it would write BOIDS, and keep it
+up. A sign is for reading, so it is held for thirty to forty-five seconds, and
+then the flock lets go for eight to twelve, flies as a murmuration, and writes
+it again. The birds that write do not stand still: each hovers round its place
+in a small loop of its own, so the strokes shimmer and stay sharp. The colour
+runs along the text, from one end of the ramp to the other. The rest of the
+flock flies round the sign, not through it. On a small terminal the sign takes
+less of it, down to half the width and half the height at 96 by 26 cells, and
+more of the flock writes, so that the birds that are left have sky to fly in. Lower case is written in
+capitals and characters the font lacks are left out. Text too long for one line
+wraps at its spaces onto two or three, as large as fits. A text the flock has
+too few birds to write is said so on stderr and left unwritten, and one that
+turns out too big for the screen once the run has started is said so there when
+the run ends, after the terminal is given back. A key does
+not end a sign. Move the pointer through it and the birds it reaches scatter,
+and come back when it has gone. A hawk does the same to the places it flies
+over, for less time.
+
+`--clock` writes the time, HH:MM, in local time, and follows the locale for the
+hour: twelve hours, with no AM or PM, if `LC_TIME` has a time format that shows
+the hour on a twelve hour clock, and twenty four otherwise. The colon rises and
+settles once a second. At each new minute the digits that change let go and
+other birds write the new ones, while the rest of the time stays where it is,
+so the clock can be read at any moment. On the hour the whole of it lets go for
+a few seconds, and the flock writes the next time.
+
+`--picture FILE` has the flock draw a PNG instead. Every bird takes a place in
+the opaque part of the picture, where a pixel with an alpha above half is ink,
+the places spread evenly over it, and wears the picture's colour there. The
+picture is cut down to at most eight colours, which are the palette of the
+run; with `--color` given they are not, and the light and dark of the picture
+pick shades of that ramp. A bird keeps its colour while it flies, and the
+picture is held, let go of and drawn again as a sign is. `--shape dot` and more
+birds, `-n 2000`, draw it best. The file is read as `--sprite` reads one: a PNG
+of up to 4 MB, in any of the colour types PNG has.
+
+A sign picks a bird as wide as the distance between the cells of its letters
+unless you give `--size`, so a short text is written with the usual bird and a
+long one on a small terminal with a smaller one. `--shape dot` is the
+crispest, and more birds make thicker strokes.
+
+A recording runs on its own clock, not the wall's, so the time a recorded
+`--clock` tells is the local time at which the recording started, moved on by
+its frames. `--clock-at 10:09:50` starts it from a time you choose instead,
+which is how to record a change of minute.
+
+## Screensaver
+
+`--screensaver` quits at once on any key, mouse click or pointer movement, with
+no flight out. Input in the first half second is ignored, because it is
+whatever started the lock. It goes with everything else, so
+`cbirds --screensaver --clock` is a lock screen that tells the time. For tmux,
+which locks a client after `lock-after-time` idle seconds and runs `lock-command`
+on it:
+
+```
+set -g lock-after-time 300
+set -g lock-command "cbirds --screensaver --clock"
+```
+
+And in zsh, which sends itself an alarm after `TMOUT` idle seconds at the
+prompt and runs `TRAPALRM`:
+
+```
+TMOUT=300
+TRAPALRM() { cbirds --screensaver --clock }
+```
+
 ## Terminals
 
 cbirds draws in braille by default, in every terminal: no terminal is guessed
@@ -299,6 +373,12 @@ Look
   -l, --panel                   the sliders in the corner from the start; h toggles them
       --render HOW              braille by default; sextants, blocks, or kitty in Kitty and Ghostty
 
+Sign
+      --say TEXT                the flock writes TEXT and holds it as a sign
+      --clock                   the flock tells the time, HH:MM, in local time
+      --clock-at TIME           start the clock at HH:MM or HH:MM:SS, not now
+      --picture FILE            the flock draws a PNG, in its colours unless --color is given
+
 Oddities
       --matrix                  it is raining birds
       --fireflies               a summer night; they fall into step
@@ -315,6 +395,7 @@ Output
 
 General
       --unlock-fps              render as fast as the terminal allows
+      --screensaver             quit at once on any key, click or movement, for tmux's lock-command
   -h, --help                    the one-screen help
       --completion SHELL        completions for bash, zsh or fish
   -V, --version                 print the version and quit

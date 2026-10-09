@@ -8869,6 +8869,48 @@ static void test_resizing_the_flock_keeps_every_bird_and_starts_every_new_one_cl
     reset_sign_state();
 }
 
+/* The pointer whipped through a sign: the letters it reaches scatter, and the ones
+ * that have scattered are birds of the flock, so the wave the whip starts lights
+ * them. The writers it has not reached are not lit. */
+static void test_a_whipped_pointer_scatters_a_sign_and_lights_the_letters_it_scattered(void) {
+    sky_t world;
+    lay_out_a_sign_on(&world, 160, 45, 50, "HELLO WORLD", 800, 5);
+    reset_the_waves();
+    int lit_scattered = 0, scattered = 0;
+    double across = formation.x[formation.count - 1] - formation.x[0];
+    for (int frame = 1; frame <= 60; frame++) {
+        double at = frame * 0.02;
+        /* Across the middle of the text, two hundred cells a second. */
+        mouse.present = 1;
+        mouse.x = formation.x[0] + across * frame / 60.0;
+        mouse.y = (formation.y[0] + formation.y[formation.count - 1]) / 2;
+        mouse.velocity_x = 200.0 * screen.cell_width;
+        mouse.velocity_y = 0;
+        mouse.moved_at = at;
+        clock_state.seconds = at;
+        assert(pointer_startles());
+        step_the_world(&world, at);
+        for (int i = 0; i < config.birds; i++) {
+            if (formation.slot[i] < 0) continue;
+            double x, y;
+            int writing = formation_target_for(&world.snapshot[i], i, &x, &y);
+            if (writing) {
+                assert(!world.birds[i].alarmed); /* A writer that is home is never lit. */
+            } else {
+                scattered++;
+                lit_scattered += world.birds[i].alarmed;
+            }
+        }
+    }
+    assert(scattered > 0);     /* The whip reached the letters... */
+    assert(lit_scattered > 0); /* ...and the ones it scattered lit with the wave. */
+    mouse.present = 0;
+    mouse.velocity_x = mouse.velocity_y = 0;
+    close_the_world(&world);
+    reset_the_waves();
+    reset_sign_state();
+}
+
 int main(void) {
     make_scratch();
     trig_lookup_init();
@@ -9040,6 +9082,7 @@ int main(void) {
     test_a_screensaver_reads_the_descriptor_that_was_chosen();
     test_a_screensaver_is_a_lock_screen_for_every_mode();
     test_resizing_the_flock_keeps_every_bird_and_starts_every_new_one_clean();
+    test_a_whipped_pointer_scatters_a_sign_and_lights_the_letters_it_scattered();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);
     return 0;

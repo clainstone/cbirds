@@ -10345,6 +10345,12 @@ static void test_a_screensaver_is_a_lock_screen_for_every_mode(void) {
     char text[600];
     scratch_file(text, sizeof(text), "saver.txt");
     world_write(text, "hello, world\nsecond line\n");
+    /* The sky a linked run joins, which has to be empty when it has gone: any key
+     * quits that window, and it leaves the sky. */
+    char sky_home[64], sky_path[100];
+    snprintf(sky_home, sizeof(sky_home), "/tmp/cbs.XXXXXX");
+    assert(mkdtemp(sky_home) != NULL);
+    snprintf(sky_path, sizeof(sky_path), "%s/cbirds", sky_home);
     const char *runs[][4] = {
         {NULL, NULL, NULL, NULL},
         {"--fireflies", NULL, NULL, NULL},
@@ -10354,6 +10360,9 @@ static void test_a_screensaver_is_a_lock_screen_for_every_mode(void) {
         {"--hawks", "2", NULL, NULL},
         {"--3d", NULL, NULL, NULL},
         {"--3d", "--hawks", "1", NULL},
+        {"--link", NULL, NULL, NULL},
+        {"--link", "--hawks", "1", NULL},
+        {"--link", "--say", "hi", NULL},
         {NULL, NULL, NULL, NULL} /* The text of this one is on a pipe. */,
     };
     int count = (int)(sizeof(runs) / sizeof(*runs));
@@ -10384,6 +10393,7 @@ static void test_a_screensaver_is_a_lock_screen_for_every_mode(void) {
                 _exit(99);
             terminal_is_raw = terminal_restored = alt_screen_is_on = sprites_uploaded = 0;
             input_fd = STDIN_FILENO;
+            setenv("XDG_RUNTIME_DIR", sky_home, 1);
             char *argv[12] = {"cbirds", "--screensaver", "--color", "ember", "--seed", "3"};
             int argc = 6;
             for (int word = 0; word < 4 && runs[which][word] != NULL; word++)
@@ -10445,8 +10455,17 @@ static void test_a_screensaver_is_a_lock_screen_for_every_mode(void) {
         while (said < tail + sizeof(tail) - 1 && *said == '\0') said++;
         assert(strstr(said, ALT_SCREEN_OFF) != NULL); /* The terminal is given back. */
         close(master);
+        /* And the sky has nobody in it, whichever way it was left. */
+        DIR *sky = opendir(sky_path);
+        if (sky != NULL) {
+            for (struct dirent *entry; (entry = readdir(sky)) != NULL;)
+                assert(entry->d_name[0] == '.');
+            closedir(sky);
+        }
     }
     assert(unlink(text) == 0);
+    assert(rmdir(sky_path) == 0 || errno == ENOENT);
+    assert(rmdir(sky_home) == 0);
     reset_sign_state();
 }
 

@@ -794,6 +794,9 @@ static void test_a_bird_flees_a_hawk_in_reach(void) {
     /* Sent to the right, away from a hawk on its left, and by more than a bird that
      * has no hawk, which does not turn at all. */
     assert(with.birds[0].y < -0.01);
+    /* And it turned faster than a bird at its ease can: four steps of a thirtieth of
+     * a second at the rate that banks the flock come to 0.16 of a radian. */
+    assert(fabs(with.birds[0].yaw) > 4 * rules.turn_rate / 30 * 1.2);
     assert(fabs(without.birds[0].y) < 1e-9);
     /* One that is forty metres off is not feared. */
     assert(fabs(far.birds[0].y) < 1e-9);

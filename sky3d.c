@@ -126,6 +126,8 @@ static const double BIN_STEP = 1.27;
  * shape worth recording. */
 static const double HAWK_REACH = 14.0;
 static const double HAWK_SWIRL = 0.9;
+/* How much quicker a bird turns with a hawk on it: up to three times its ease. */
+static const double HAWK_PANIC = 2.0;
 static const double HAWK_CRUISE = 0.9;
 static const double HAWK_DIVE_SPEED = 1.45;
 static const double HAWK_DIVE = 14.0;
@@ -246,7 +248,7 @@ sky_rules_t sky_default_rules(void) {
         .turn_rate = 1.2,
         .cruise = 10.0,
         .poke_weight = 4.0,
-        .hawk_weight = 8.0,
+        .hawk_weight = 12.0,
     };
     return rules;
 }
@@ -571,6 +573,7 @@ static void fly_one(const sky_t *sky, sky_bird_t *out, int self, const sky_rules
         }
     }
 
+    double fear = 0;
     for (int h = 0; h < sky->hawk_count; h++) {
         const sky_hawk_t *hawk = &sky->hawks[h];
         double away[3] = {me->x - hawk->x, me->y - hawk->y, me->z - hawk->z};
@@ -588,6 +591,7 @@ static void fly_one(const sky_t *sky, sky_bird_t *out, int self, const sky_rules
         else
             side[0] = side[1] = side[2] = 0;
         double strength = (HAWK_REACH - distance) / HAWK_REACH;
+        if (strength > fear) fear = strength;
         for (int axis = 0; axis < 3; axis++)
             want[axis] += rules->hawk_weight * strength * (away[axis] + HAWK_SWIRL * side[axis]);
     }
@@ -596,8 +600,12 @@ static void fly_one(const sky_t *sky, sky_bird_t *out, int self, const sky_rules
      * pitch by a part of it. Nothing in the pull can flip a bird round in a step. */
     double flat = sqrt(want[0] * want[0] + want[1] * want[1]);
     double yaw = me->yaw, pitch = me->pitch;
-    double yaw_step = rules->turn_rate * seconds;
-    double pitch_step = rules->turn_rate * PITCH_SHARE * seconds;
+    /* A bird with a hawk on it turns as it cannot at any other time: the limit
+     * that banks the flock is a limit on a bird at its ease, and the flock that
+     * only turned that fast would be overtaken, and would never be seen to part. */
+    double agility = 1 + HAWK_PANIC * fear;
+    double yaw_step = rules->turn_rate * agility * seconds;
+    double pitch_step = rules->turn_rate * agility * PITCH_SHARE * seconds;
     double turned = 0;
     if (flat > 1e-9) {
         /* A want that points nearly straight up or down says little about which way

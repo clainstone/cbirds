@@ -982,10 +982,10 @@ static int hawk_draw_offset(void) {
     return hawk_sprite_size() / 2;
 }
 
-/* In a space a hawk is two and a half times the bird of its size, whichever it is:
- * it has to be the thing the eye goes to among two thousand. */
+/* In a space a hawk is three times the bird of its size, whichever it is: it has to
+ * be the thing the eye goes to among two thousand, and the far ones are small. */
 static int hawk_size_in_layer(int layer) {
-    int size = sky_bin_size(layer) * 5 / 2;
+    int size = sky_bin_size(layer) * 3;
     return size > 2 * MAX_BIRD_SIZE ? 2 * MAX_BIRD_SIZE : size;
 }
 

@@ -8911,6 +8911,59 @@ static void test_a_whipped_pointer_scatters_a_sign_and_lights_the_letters_it_sca
     reset_sign_state();
 }
 
+/* A GIF's palette is made from its first frame, and the light of a wave is on none.
+ * The intro's letters are never lit, so a short clip with hawks does without it; a
+ * sign is a flock with letters in it, and the birds round it have their waves from
+ * the first frame, however short the clip. */
+static int palette_of_a_sign_recording_has(const uint8_t colour[3], int hawks, int seconds) {
+    char path[600];
+    scratch_file(path, sizeof(path), "sign_light.gif");
+    reset_sign_state();
+    config.palette = palette_named("ice");
+    config.birds = 200;
+    config.hawks = hawks;
+    ask_for_a_sign("HI");
+    record_path = path;
+    record_fps = 25;
+    record_seconds = seconds;
+    record_columns = 96;
+    record_rows = 32;
+    fflush(stdout);
+    int saved = dup(STDOUT_FILENO);
+    FILE *quiet = freopen("/dev/null", "w", stdout);
+    assert(quiet != NULL);
+    int status = run_recording();
+    fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+    clearerr(stdout);
+    assert(status == EXIT_SUCCESS);
+    FILE *file = fopen(path, "rb");
+    assert(file != NULL);
+    uint8_t header[13 + 768];
+    assert(fread(header, 1, sizeof(header), file) == sizeof(header));
+    fclose(file);
+    remove(path);
+    record_path = NULL;
+    record_seconds = 6;
+    int found = 0;
+    for (int entry = 0; entry < 256; entry++)
+        if (memcmp(header + 13 + entry * 3, colour, 3) == 0) found = 1;
+    reset_sign_state();
+    return found;
+}
+
+static void test_a_sign_recording_with_hawks_has_the_light_in_its_palette(void) {
+    reset_sign_state();
+    config.palette = palette_named("ice");
+    uint8_t light[3];
+    memcpy(light, highlight_colour(), 3);
+    assert(palette_of_a_sign_recording_has(light, 2, 2)); /* A wave can happen at once. */
+    assert(palette_of_a_sign_recording_has(light, 1, 5));
+    assert(!palette_of_a_sign_recording_has(light, 0, 5)); /* No hawks, so none can. */
+    reset_sign_state();
+}
+
 int main(void) {
     make_scratch();
     trig_lookup_init();
@@ -9083,6 +9136,7 @@ int main(void) {
     test_a_screensaver_is_a_lock_screen_for_every_mode();
     test_resizing_the_flock_keeps_every_bird_and_starts_every_new_one_clean();
     test_a_whipped_pointer_scatters_a_sign_and_lights_the_letters_it_scattered();
+    test_a_sign_recording_with_hawks_has_the_light_in_its_palette();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);
     return 0;

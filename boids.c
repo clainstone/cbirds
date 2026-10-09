@@ -6137,7 +6137,9 @@ static int run_cast_recording(void) {
  * and the ground in quarters. Only for a clip in which a wave can happen, which
  * is one with hawks that is longer than the intro, because the letters of the
  * intro are never alarmed, and not one of text, in which nothing is: any other
- * clip keeps exactly the palette it always had. */
+ * clip keeps exactly the palette it always had. A sign is not the intro: it has
+ * no time at which it lets go, and the birds round it have their waves from the
+ * first moment, so a clip of one with hawks has the light however short it is. */
 static void reserve_the_light(gif_writer_t *gif, double seconds) {
     if (config.hawks == 0 || letters_mode || seconds <= (formation.writing ? formation.until : 0))
         return;

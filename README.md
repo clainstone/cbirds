@@ -160,8 +160,8 @@ cbirds --picture logo.png           the flock draws a PNG; --shape dot and -n 20
 cbirds --screensaver --clock        a lock screen that tells the time; any key quits
 ```
 
-It opens by writing BOIDS, lets go, and flocks; a sign, a night and a text
-open as their sections below say. Move the pointer into the flock and it
+It opens by writing BOIDS, lets go, and flocks; a sign, a night, a text and a
+space open as their sections below say. Move the pointer into the flock and it
 scatters; whip it through and a wave of light runs across the flock, as it does
 when a hawk dives. Press `q` and it flies off the top. Left alone for a minute,
 it starts moving the sliders itself; any key takes them back.
@@ -366,7 +366,12 @@ birds near the line from the camera through it get out of the way. `--hawks`
 hunts the flock through the air.
 
 `--3d` replaces `--depth`, draws no tails, and is one flock: `--flocks` and
-`--matrix` are refused.
+`--matrix` are refused. A night, a text and a sign are made on the flat sky,
+with a screen to lay them out on, and a space has none: `--3d` with
+`--fireflies`, `--text` or text piped in, and `--say`, `--clock`, `--clock-at`
+or `--picture`, is refused with exit status 2. `--screensaver` goes with it, and
+so do `--hawks`, the pointer and the keys. There are no escape waves in a space,
+as the algorithm below says.
 
 ## Terminals
 
@@ -499,6 +504,9 @@ see them swerve do the same a moment later and in the same way, so the turn
 crosses the flock as a wave, about three times as fast as a bird flies. A bird
 is drawn lit while it swerves, and does not swerve again for three seconds,
 which is what lets the wave pass through the flock and not come back through it.
+The waves are the flat flock's rules: in a space (`--3d`) a hawk dives through
+the murmuration and the birds flee it, but there is no wave of light, and a
+whipped pointer starts none.
 
 ## Fireflies
 

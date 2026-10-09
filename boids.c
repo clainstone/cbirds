@@ -3532,14 +3532,10 @@ static void fly(bird_t *birds, bird_t *snapshot, spatial_grid_t *grid) {
     if (fireflies_mode) light_the_night(birds);
 }
 
-/* The way out after q: straight up, every one of them, and nothing else steering.
- * At the shipped pace whatever the slider says, so that leaving takes the same
- * moment every time: at a fifth of the pace the flock was still on the screen
- * when the program closed it. */
-/* The same for letters, which are mostly at home when it comes: each goes up at a
- * speed of its own after a short wait of its own, so that the text does not rise
- * as one sheet. The wait is kept in the field a letter never uses for gliding, and
- * the speed in the one it never uses for its wings. */
+/* The way out after q for letters, which are mostly at home when it comes: each
+ * goes up at a speed of its own after a short wait of its own, so that the text
+ * does not rise as one sheet. The wait is kept in the field a letter never uses for
+ * gliding, and the speed in the one it never uses for its wings. */
 static void fly_the_letters_away(bird_t *birds) {
     for (int i = 0; i < config.birds; i++) {
         if (birds[i].perched) {
@@ -3558,6 +3554,10 @@ static void fly_the_letters_away(bird_t *birds) {
     }
 }
 
+/* The way out after q: straight up, every one of them, and nothing else steering.
+ * At the shipped pace whatever the slider says, so that leaving takes the same
+ * moment every time: at a fifth of the pace the flock was still on the screen
+ * when the program closed it. */
 static void fly_away(bird_t *birds) {
     if (letters_mode) {
         fly_the_letters_away(birds);

@@ -279,7 +279,11 @@ birds to write is said so on stderr and left unwritten, and one that turns out
 too big for the screen once the run has started is said so there when the run
 ends, after the terminal is given back. A key does not end a sign. Move the
 pointer through it and the birds it reaches scatter, and come back when it has
-gone. A hawk does the same to the places it flies over, for less time.
+gone. A hawk does the same to the places it flies over, for less time: a fifth
+of a second to two fifths, and only the places within a hawk's own width of its
+path. With one hawk up, 800 birds and a screen of 96 by 26 cells, about 5% of the
+writers are scattered at any moment, and about 10% with two; a clock stays
+readable. A hawk that dives through a letter still tears it.
 
 `--clock` writes the time, HH:MM, in local time, and follows the locale for the
 hour: twelve hours, with no AM or PM, if `LC_TIME` has a time format that shows

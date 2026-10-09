@@ -275,6 +275,7 @@ gif_status_t gif_reserve_colours(gif_writer_t *w, const uint8_t (*rgb)[3], int c
     if (w == NULL || (rgb == NULL && count > 0) || count < 0 ||
         count > GIF_MAX_RESERVED - w->reserved_count || w->have_palette)
         return GIF_ERR_ARGUMENT;
+    if (count == 0) return GIF_OK;
     memcpy(w->reserved[w->reserved_count], rgb, (size_t)count * 3);
     w->reserved_count += count;
     return GIF_OK;

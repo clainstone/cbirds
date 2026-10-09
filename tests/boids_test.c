@@ -5754,17 +5754,21 @@ static void test_three_d_has_defaults_of_its_own(void) {
     assert(config.palette == palette_named("theme"));
 
     /* Ink is a ramp like the rest, for either sky: asked for by name it is kept, and
-     * the flat flock keeps everything else it has. The help for --3d says which
-     * ramp it flies in, and it is the one it does. */
+     * the flat flock keeps everything else it has. The example of --3d in --help
+     * says how many birds it flies and in which ramp, and they are the ones it does:
+     * the row of the option is one short line, for -h to fit its screen. */
     char *ink[] = {"cbirds", "--color", "ink", NULL};
     reset_test_config();
     read_options(3, ink);
     assert(sky_mode == 0 && palette_is_ink() && config.birds == 800);
-    for (int i = 0; i < OPTION_COUNT; i++)
-        if (strcmp(OPTIONS[i].name, "3d") == 0) {
-            assert(strstr(OPTIONS[i].help, "in ink") != NULL);
-            assert(strstr(OPTIONS[i].help, "in ash") == NULL);
+    int said = 0;
+    for (int i = 0; EXAMPLES[i].command != NULL; i++)
+        if (strcmp(EXAMPLES[i].command, "cbirds --3d") == 0) {
+            assert(strstr(EXAMPLES[i].what, "2000 birds in ink") != NULL);
+            assert(strstr(EXAMPLES[i].what, "in ash") == NULL);
+            said++;
         }
+    assert(said == 1);
 
     /* Without it nothing is different: 800 birds, the terminal's colours, thirty. */
     char *flat[] = {"cbirds", NULL};

@@ -5019,13 +5019,46 @@ static void land_a_hawk(hawk_t *hawk, const link_traveller_t *traveller) {
     hawk->wing_clock = traveller->wing_clock;
 }
 
+/* What is kept for a bird by its place in the array and not in bird_t: the state
+ * of its wave, the place it writes in a sign and how it loops there, and the colour
+ * a picture gives it. A bird that moves takes all of it along, and a bird that comes
+ * in has none: calm, not told anything, writing nothing. Every array in the program
+ * that is indexed by a bird is here, and a new one belongs here too, or a bird
+ * swapped into a place would be the one that was there before. The temporary ones
+ * (the heap of the wave, the candidates of a sign) are built afresh every time they
+ * are used and keep nothing from one frame to the next. */
+static void move_what_is_kept_for_a_bird(int to, int from) {
+    waves[to] = waves[from];
+    formation.slot[to] = formation.slot[from];
+    formation.hover_x[to] = formation.hover_x[from];
+    formation.hover_y[to] = formation.hover_y[from];
+    picture_shade[to] = picture_shade[from];
+}
+
+static void forget_what_is_kept_for_a_bird(int index) {
+    waves[index] = (wave_t){0};
+    formation.slot[index] = -1;
+    formation.hover_x[index] = formation.hover_y[index] = 0;
+    picture_shade[index] = 0;
+}
+
+/* A sign that is up is written by birds that stay where they write, and the birds
+ * that come and go are the free flock, so the sign is as laid out for the flock as
+ * it was and is not laid out again for every bird that crosses, which in a busy
+ * crossing would be every frame: the writers of a clock would all be picked anew
+ * and the minute would let go of the whole sign. A key that changes the flock does
+ * not pass this way, and still has the sign laid out again. */
+static void the_sign_follows_the_traffic(int birds) {
+    the_sign.key_birds += birds;
+}
+
 /* A bird leaves the flock and the last one fills the gap, which moves one bird
  * and not all that come after it. Everything that remembers a bird by its place
  * in the array is made good: a hawk after the bird that has gone loses it, and one
- * after the bird that has moved follows it. The tail behind a bird goes with it,
- * but only where the place it lands keeps tails (every fourth), and starts again
- * where it was a place that did not: a ring from nowhere would draw ghosts of
- * where the bird was never. */
+ * after the bird that has moved follows it, and so does every other array that is
+ * indexed by a bird. The tail behind a bird goes with it, but only where the place
+ * it lands keeps tails (every fourth), and starts again where it was a place that
+ * did not: a ring from nowhere would draw ghosts of where the bird was never. */
 static void take_out_bird(bird_t *birds, int index) {
     int last = config.birds - 1;
     for (int h = 0; h < config.hawks; h++) {
@@ -5040,8 +5073,11 @@ static void take_out_bird(bird_t *birds, int index) {
         birds[index] = birds[last];
         if (index % TRAIL_EVERY == 0 && last % TRAIL_EVERY != 0)
             birds[index].trail_at = birds[index].trail_held = 0;
+        move_what_is_kept_for_a_bird(index, last);
     }
+    forget_what_is_kept_for_a_bird(last);
     config.birds = last;
+    the_sign_follows_the_traffic(-1);
 }
 
 static void take_out_hawk(int index) {
@@ -5058,10 +5094,30 @@ static void sky_look_at_the_doors(void) {
     open_edges.hawk_right = link_edge_open(&the_row, LINK_RIGHT, LINK_HAWK);
 }
 
+/* The intro is a word the whole flock writes, each bird by its number, and nothing
+ * crosses while it is up: a bird that came in would be handed a letter, and one
+ * that went out would leave a hole in it. A sign is another thing, picked writers
+ * that hold their places and a free flock round them, and it is held for as long as
+ * it takes to read. */
+static int the_intro_is_being_written(void) {
+    return formation.writing && !formation.sign;
+}
+
+/* A bird that is writing a sign holds its place, scattered or not: it is not one of
+ * the free flock, and a sign with a hole in it for every bird the wind blew out of
+ * a door would be a sign the neighbour had half of. */
+static int a_bird_is_writing_a_sign(int index) {
+    return formation.writing && formation.sign && index >= 0 && index < MAX_BIRDS &&
+           formation.slot[index] >= 0;
+}
+
 static void sky_keep_up(void) {
     if (!the_row.opened) return;
     link_update(&the_row, clock_state.seconds);
-    link_set_room(&the_row, config.birds < MAX_BIRDS - SKY_HEADROOM, config.hawks < MAX_HAWKS);
+    /* A window writing its intro has no room, so that nobody posts to it. */
+    int room = !the_intro_is_being_written();
+    link_set_room(&the_row, room && config.birds < MAX_BIRDS - SKY_HEADROOM,
+                  room && config.hawks < MAX_HAWKS);
     sky_look_at_the_doors();
 }
 
@@ -5070,7 +5126,7 @@ static void sky_keep_up(void) {
  * ago, and a bird that crossed in the dark is one nobody will miss. */
 static void sky_take_in(bird_t *birds, int *live) {
     link_traveller_t traveller;
-    if (!the_row.opened) return;
+    if (!the_row.opened || the_intro_is_being_written()) return; /* They wait in the post. */
     for (int taken = 0; taken < MAX_BIRDS && link_receive(&the_row, &traveller); taken++) {
         if (traveller.kind == LINK_HAWK) {
             if (config.hawks >= MAX_HAWKS) continue;
@@ -5079,7 +5135,12 @@ static void sky_take_in(bird_t *birds, int *live) {
         } else {
             if (config.birds >= MAX_BIRDS) continue;
             land_a_bird(&birds[config.birds], &traveller);
+            forget_what_is_kept_for_a_bird(config.birds);
+            /* A picture colours every bird by its place in the array, flying or home;
+             * one that comes in keeps the colour it came with. */
+            picture_shade[config.birds] = birds[config.birds].shade;
             config.birds++;
+            the_sign_follows_the_traffic(1);
         }
     }
     *live = config.birds;
@@ -5091,7 +5152,7 @@ static void sky_take_in(bird_t *birds, int *live) {
  * neighbour will not take stays where it is, and tries again. */
 static void sky_hand_over(bird_t *birds, int *live) {
     double half = config.bird_size / 2.0;
-    if (!the_row.opened || formation.writing) return;
+    if (!the_row.opened || the_intro_is_being_written()) return;
     for (int side = LINK_LEFT; side <= LINK_RIGHT; side++) {
         int door = side == LINK_LEFT ? open_edges.left : open_edges.right;
         int hawk_door = side == LINK_LEFT ? open_edges.hawk_left : open_edges.hawk_right;
@@ -5103,6 +5164,7 @@ static void sky_hand_over(bird_t *birds, int *live) {
             double middle = birds[i].x + half;
             double reach = side == LINK_RIGHT ? middle - screen.width : -middle;
             if (side == LINK_LEFT ? middle >= 0 : middle < screen.width) continue;
+            if (a_bird_is_writing_a_sign(i)) continue;
             at[count] = i;
             post[count++] = traveller_of_bird(&birds[i], reach);
         }

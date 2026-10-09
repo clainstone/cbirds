@@ -11346,6 +11346,326 @@ static void test_a_shared_sky_cannot_be_benchmarked_or_recorded(void) {
     assert(message[0] == '\0');
 }
 
+/* ------------------------------------------------------------------------ */
+/* Birds that leave and land: what is kept for a bird outside bird_t            */
+/* ------------------------------------------------------------------------ */
+
+/* Everything the program keeps for a bird by its place in the flock, outside
+ * bird_t, as one value to compare. */
+typedef struct {
+    wave_t wave;
+    int slot;
+    double hover_x, hover_y;
+    int shade;
+} kept_t;
+
+static kept_t kept_at(int index) {
+    kept_t kept = {.wave = waves[index],
+                   .slot = formation.slot[index],
+                   .hover_x = formation.hover_x[index],
+                   .hover_y = formation.hover_y[index],
+                   .shade = picture_shade[index]};
+    return kept;
+}
+
+static int the_same_is_kept(const kept_t *a, const kept_t *b) {
+    return a->wave.wait == b->wave.wait && a->wave.left == b->wave.left &&
+           a->wave.rest == b->wave.rest && a->wave.swerve == b->wave.swerve &&
+           a->wave.heading == b->wave.heading && a->slot == b->slot && a->hover_x == b->hover_x &&
+           a->hover_y == b->hover_y && a->shade == b->shade;
+}
+
+/* A bird is known by a number in a slot of its tail that nothing writes while there
+ * are no trails, and it travels in the bird whatever else is done to it. */
+static int tag_of(const bird_t *bird) {
+    return (int)bird->trail_x[1];
+}
+
+/* Birds go out of a flock at random places and come in at its end, over and over,
+ * with a sign up and every wave in every state, and each bird that stays has what
+ * it had wherever it ends up, and each that lands has nothing: not a wave, not a
+ * place in the sign, not the colour of a picture, in a place the last bird to be
+ * there left in a mess. Under the sanitizers this is also every array there is,
+ * written at every index a flock can have. */
+static void test_everything_kept_for_a_bird_goes_with_it_and_a_bird_that_lands_has_none(void) {
+    enum { START = 200, OPS = 900, TAGS = 2000 };
+    static bird_t birds[MAX_BIRDS];
+    static kept_t model[TAGS];
+    int tags = 0;
+
+    reset_sign_state();
+    set_test_screen(800, 480);
+    render_mode = RENDER_UNSET;
+    join_the_sky(0); /* The neighbour is on the left, and posts to us by its right. */
+    seed_random(21);
+    config.birds = START;
+    formation.writing = formation.sign = 1;
+    formation.count = 5;
+    for (int i = 0; i < MAX_BIRDS; i++) {
+        waves[i] = (wave_t){.wait = 0.01 * (i % 7 + 1),
+                            .left = 0.02 * (i % 5),
+                            .rest = 0.5 + i % 3,
+                            .swerve = 0.1 * (i % 11) - 0.5,
+                            .heading = 0.01 * i};
+        formation.slot[i] = i % 4 == 0 ? i % 5 : -1;
+        formation.hover_x[i] = 0.001 * i;
+        formation.hover_y[i] = -0.002 * i;
+        picture_shade[i] = i % 5;
+    }
+    for (int i = 0; i < START; i++) {
+        birds[i] = (bird_t){.x = 50 + 10.0 * (i % 70), .y = 40 + 5.0 * (i % 50), .alarmed = i % 2};
+        birds[i].trail_x[1] = tags;
+        model[tags++] = kept_at(i);
+    }
+    the_sign.key_birds = START;
+    int landed = 0, left = 0, writers_moved = 0;
+
+    for (int op = 0; op < OPS; op++) {
+        if (config.birds > 2 && random_unit() < 0.5) {
+            int last = config.birds - 1;
+            int index = (int)(random_unit() * config.birds) % config.birds;
+            int moved = tag_of(&birds[last]);
+            writers_moved += index != last && formation.slot[last] >= 0;
+            take_out_bird(birds, index);
+            left++;
+            if (index != last)
+                assert(tag_of(&birds[index]) == moved); /* Whole, and in its place. */
+            /* The place it left is the flock's no more, and nothing there is anybody's. */
+            kept_t gone = kept_at(last);
+            assert(gone.slot == -1 && gone.wave.wait == 0 && gone.wave.left == 0 &&
+                   gone.wave.rest == 0 && gone.hover_x == 0 && gone.shade == 0);
+        } else {
+            int place = config.birds;
+            /* The place it will take is in a mess, as the one before left it. */
+            waves[place] = (wave_t){.wait = 9, .left = 9, .rest = 9, .swerve = 1, .heading = 2};
+            formation.slot[place] = 3;
+            formation.hover_x[place] = formation.hover_y[place] = 9;
+            picture_shade[place] = 4;
+            link_traveller_t post = {.kind = LINK_BIRD,
+                                     .height = random_unit(),
+                                     .reach = 1 + 20 * random_unit(),
+                                     .direction = 6 * random_unit(),
+                                     .shade = 2};
+            assert(link_send(&beside, LINK_RIGHT, &post, 1) == 1);
+            int live = config.birds;
+            sky_take_in(birds, &live);
+            assert(config.birds == place + 1 && live == config.birds);
+            landed++;
+            const bird_t *in = &birds[place];
+            assert(in->alarmed == 0 && in->scattered == 0 && in->perched == 0 && in->shape == 0);
+            assert(in->trail_held == 0 && in->trail_at == 0);
+            birds[place].trail_x[1] = tags;
+            kept_t clean = {.slot = -1, .shade = in->shade}; /* Wears the colour it came in. */
+            model[tags] = clean;
+            /* Once it is in, it may be told things like any other: a wave, a place in
+             * the sign, a loop to fly there. */
+            if (random_unit() < 0.5) {
+                waves[place] = (wave_t){.wait = 0.01 + random_unit(), .swerve = random_unit()};
+                formation.slot[place] = (int)(random_unit() * 5) % 5;
+                formation.hover_x[place] = random_unit();
+                formation.hover_y[place] = -random_unit();
+                picture_shade[place] = (int)(random_unit() * 5) % 5;
+                model[tags] = kept_at(place);
+            }
+            tags++;
+        }
+        /* Every bird that is in the flock has what it had. */
+        for (int i = 0; i < config.birds; i++) {
+            kept_t now = kept_at(i);
+            assert(the_same_is_kept(&now, &model[tag_of(&birds[i])]));
+        }
+        /* And the sign is as laid out for the flock as it was: nothing here is a key. */
+        assert(the_sign.key_birds == config.birds);
+        assert(tags < TAGS);
+    }
+    assert(landed > 100 && left > 100 && writers_moved > 50); /* The test did what it says. */
+
+    leave_the_sky();
+    reset_sign_state();
+    memset(picture_shade, 0, sizeof(picture_shade));
+}
+
+/* The intro is a word the whole flock writes, each bird by its number: a bird that
+ * came in would be handed a letter, so none does until it is over, and none goes. */
+static void test_nothing_crosses_while_the_intro_is_written(void) {
+    static bird_t birds[16];
+    link_traveller_t got;
+
+    reset_sign_state();
+    set_test_screen(800, 480);
+    render_mode = RENDER_UNSET;
+    assert(formation_layout("BOIDS") > 0 && formation.writing && !formation.sign);
+    join_the_sky(1);
+    /* It says it has no room, for birds or hawks, so that nobody posts to it. */
+    link_traveller_t post = {.kind = LINK_BIRD, .height = 0.5, .reach = 5, .direction = 1};
+    assert(!link_edge_open(&beside, LINK_LEFT, LINK_BIRD));
+    assert(!link_edge_open(&beside, LINK_LEFT, LINK_HAWK));
+    assert(link_send(&beside, LINK_LEFT, &post, 1) == 0);
+
+    /* Nothing leaves it either, however far out. */
+    config.birds = 2;
+    birds[0] = (bird_t){.x = 900, .y = 100};
+    birds[1] = (bird_t){.x = 100, .y = 100};
+    int live = 2;
+    sky_hand_over(birds, &live);
+    assert(config.birds == 2 && link_receive(&beside, &got) == 0);
+
+    /* A bird that is on its way when the window shuts is not lost: it waits in the
+     * post, and lands when the intro is over, calm and writing nothing. */
+    link_set_room(&the_row, 1, 1);
+    while (link_receive(&beside, &got)) {
+    }
+    assert(link_send(&beside, LINK_LEFT, &post, 1) == 1);
+    sky_take_in(birds, &live);
+    assert(config.birds == 2);
+    formation_clear(); /* A key, or the end of its three seconds. */
+    sky_take_in(birds, &live);
+    assert(config.birds == 3 && live == 3);
+    assert(!formation_target_of(2, &(double){0}, &(double){0}));
+    assert(birds[2].alarmed == 0);
+
+    /* The room it says is what it is once the intro is over. */
+    sky_keep_up();
+    while (link_receive(&beside, &got)) {
+    }
+    assert(link_edge_open(&beside, LINK_LEFT, LINK_BIRD));
+    assert(link_edge_open(&beside, LINK_LEFT, LINK_HAWK));
+
+    leave_the_sky();
+    reset_sign_state();
+}
+
+/* A window that holds a sign, with birds coming in and going out of its door, and a
+ * hawk if asked, which sets waves off among the free birds. The writers hold their
+ * places and none crosses; the free birds come and go; the sign is not laid out
+ * again for any of it. */
+static void fly_a_sign_through_a_busy_door(int with_a_hawk) {
+    enum { FRAMES = 60 * 14 };
+    static bird_t birds[MAX_BIRDS], snapshot[MAX_BIRDS];
+    spatial_grid_t grid;
+    link_traveller_t got;
+
+    reset_sign_state();
+    apply_screen_size(120, 40, 960, 640);
+    render_mode = RENDER_UNSET;
+    frame_seconds = 1.0 / 60;
+    update_speed();
+    config.birds = 600;
+    config.hawks = with_a_hawk;
+    ask_for_a_sign("HELLO");
+    begin_the_sign();
+    join_the_sky(1); /* A neighbour on the right: the door is there. */
+    seed_random(5);
+    initialize_birds(birds);
+    place_hawks();
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+
+    int live = config.birds, writers = 0, lit_birds = 0, crossed_out = 0, crossed_in = 0;
+    int relaid = 0, held_frames = 0, at_home = 0, counted = 0;
+    for (int frame = 0; frame < FRAMES; frame++) {
+        clock_state.seconds = 1.1 + frame / 60.0;
+        link_update(&beside, clock_state.seconds);
+        link_set_room(&beside, 1, 1);
+        /* The neighbour sends back what it is sent, turned round, a frame later, so
+         * that the flock is not drained and the door is busy both ways. */
+        link_traveller_t back[SKY_PER_FRAME];
+        int coming_back = 0;
+        while (link_receive(&beside, &got)) {
+            crossed_out++;
+            if (got.kind == LINK_BIRD && coming_back < SKY_PER_FRAME) {
+                back[coming_back] = got;
+                back[coming_back++].direction = fmod(M_PI - got.direction + 4 * M_PI, 2 * M_PI);
+            }
+        }
+        if (coming_back > 0) link_send(&beside, LINK_LEFT, back, coming_back);
+        sky_keep_up();
+        /* And a hawk, now and then, when there is none: it crossed out before. */
+        if (with_a_hawk && config.hawks == 0 && frame % 90 == 0 && frame > 0) {
+            link_traveller_t hawk = {
+                .kind = LINK_HAWK, .height = 0.5, .reach = 3, .direction = M_PI};
+            link_send(&beside, LINK_LEFT, &hawk, 1);
+        }
+        int before = config.birds;
+        sky_take_in(birds, &live);
+        crossed_in += config.birds - before;
+        for (int i = before; i < config.birds; i++) { /* Calm, and nobody's writer. */
+            assert(formation.slot[i] == -1 && waves[i].wait == 0 && waves[i].left == 0);
+            assert(birds[i].alarmed == 0 && birds[i].scattered == 0);
+        }
+        assert(spatial_grid_prepare(&grid, screen.width, screen.height, grid_items()) ==
+               SPATIAL_GRID_OK);
+        sign_advance(birds);
+        if (the_sign.up && frame == 90) {
+            for (int i = 0; i < config.birds; i++) writers += formation.slot[i] >= 0;
+        }
+        memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
+        assert(spatial_grid_build(&grid, config.birds, read_bird_position, snapshot) ==
+               SPATIAL_GRID_OK);
+        fly(birds, snapshot, &grid);
+        for (int i = 0; i < config.birds; i++) lit_birds += birds[i].alarmed ? 1 : 0;
+
+        /* Free birds that fly out of the door are posted. To keep the traffic going
+         * at a steady rate a few are blown out of it. */
+        if (frame % 4 == 0)
+            for (int pushed = 0, i = config.birds - 1; i >= 0 && pushed < 1; i--)
+                if (formation.slot[i] < 0 && birds[i].x > 700) {
+                    birds[i].x = 975;
+                    pushed++;
+                }
+        int writers_before = 0;
+        for (int i = 0; i < config.birds; i++) writers_before += formation.slot[i] >= 0;
+        int held = the_sign.up && formation.writing;
+        sky_hand_over(birds, &live);
+        int writers_after = 0;
+        for (int i = 0; i < config.birds; i++) writers_after += formation.slot[i] >= 0;
+        if (held) {
+            held_frames++;
+            /* A writer never leaves, and every one that is left is aimed at a place
+             * that is there. */
+            assert(writers_after == writers_before);
+            for (int i = 0; i < config.birds; i++)
+                assert(formation.slot[i] < formation.count && formation.slot[i] >= -1);
+            if (!sign_layout_is_current()) relaid++;
+        }
+        assert(config.birds >= 0 && config.birds <= MAX_BIRDS && live == config.birds);
+        for (int i = 0; i < config.birds; i++)
+            assert(isfinite(birds[i].x) && isfinite(birds[i].y) && isfinite(birds[i].direction));
+        if (held && frame > 60 * 8) {
+            for (int i = 0; i < config.birds; i++) {
+                int target = formation.slot[i];
+                if (target < 0 || birds[i].scattered > 0) continue;
+                double d = hypot(birds[i].x - formation.x[target] - formation.hover_x[i],
+                                 birds[i].y - formation.y[target] - formation.hover_y[i]);
+                at_home += d < 12;
+                counted++;
+            }
+        }
+    }
+    /* The door was busy in both directions, the sign was up through most of it, and
+     * none of that made it be laid out again. */
+    assert(crossed_in > 100 && crossed_out > 100);
+    assert(held_frames > FRAMES / 2 && writers > 20);
+    assert(relaid == 0);
+    if (with_a_hawk) {
+        assert(lit_birds > 0); /* A wave went through the free flock while they crossed. */
+    } else {
+        /* The letters are held by the writers while the others come and go. */
+        assert(counted > 0 && at_home > 0.95 * counted);
+    }
+    spatial_grid_destroy(&grid);
+    leave_the_sky();
+    reset_sign_state();
+    memset(picture_shade, 0, sizeof(picture_shade));
+}
+
+static void test_a_sign_is_held_while_birds_cross(void) {
+    fly_a_sign_through_a_busy_door(0);
+}
+
+static void test_a_wave_and_a_sign_go_on_while_birds_cross(void) {
+    fly_a_sign_through_a_busy_door(1);
+}
+
 /* What a bird is outside bird_t does not travel, so the modes that keep it there
  * are refused, each with a line that names both options and says why. */
 static void test_a_shared_sky_is_refused_with_a_space_a_night_and_a_text(void) {
@@ -11700,6 +12020,10 @@ int main(void) {
     test_the_link_option_is_in_the_table_and_off_by_default();
     test_a_shared_sky_cannot_be_benchmarked_or_recorded();
     test_a_shared_sky_is_refused_with_a_space_a_night_and_a_text();
+    test_everything_kept_for_a_bird_goes_with_it_and_a_bird_that_lands_has_none();
+    test_nothing_crosses_while_the_intro_is_written();
+    test_a_sign_is_held_while_birds_cross();
+    test_a_wave_and_a_sign_go_on_while_birds_cross();
     test_a_signal_removes_the_socket();
     test_leaving_through_exit_removes_the_socket();
     /* Every test removes what it wrote, so this fails if one did not. */

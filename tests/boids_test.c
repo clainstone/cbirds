@@ -11566,6 +11566,40 @@ static void test_the_link_option_is_in_the_table_and_off_by_default(void) {
     reset_test_config();
 }
 
+/* -h is one screen: with the lines that wrap on an 80 column terminal counted as
+ * two, it is no taller than the 25 rows it was before --3d, which belongs on it and
+ * has a line of 33 characters so that it does not wrap. */
+static void test_the_short_help_is_one_screen_at_eighty_columns(void) {
+    char path[512], text[8192];
+    scratch_file(path, sizeof(path), "short-help.txt");
+    FILE *help = fopen(path, "w+");
+    assert(help != NULL);
+    usage(help, "cbirds", 0);
+    rewind(help);
+    size_t length = fread(text, 1, sizeof(text) - 1, help);
+    text[length] = '\0';
+    fclose(help);
+    assert(unlink(path) == 0);
+
+    int rows = 0, columns = 0, three_d_width = 0;
+    int in_the_3d_line = 0;
+    for (const char *c = text; *c != '\0'; c++) {
+        if ((*c & 0xC0) == 0x80) continue; /* Not a column: the rest of a character. */
+        if (*c == '\n') {
+            rows += columns <= 80 ? 1 : (columns + 79) / 80;
+            if (in_the_3d_line) three_d_width = columns;
+            in_the_3d_line = 0;
+            columns = 0;
+            continue;
+        }
+        if (columns == 0 && strncmp(c, "      --3d ", 11) == 0) in_the_3d_line = 1;
+        columns++;
+    }
+    assert(strstr(text, "--3d") != NULL); /* The headline feature is on it... */
+    assert(three_d_width > 0 && three_d_width <= 80);
+    assert(rows <= 25); /* ...and it is still a screen. */
+}
+
 /* Starts the program's own option reading in a child and says how it ended. */
 static int read_options_in_a_child(char **argv, int argc, char *message, size_t size) {
     int errors[2];
@@ -12393,6 +12427,7 @@ int main(void) {
     test_a_window_with_no_birds_flies();
     test_a_shared_sky_has_room_for_all_it_may_take();
     test_the_link_option_is_in_the_table_and_off_by_default();
+    test_the_short_help_is_one_screen_at_eighty_columns();
     test_a_shared_sky_cannot_be_benchmarked_or_recorded();
     test_a_shared_sky_is_refused_with_a_space_a_night_and_a_text();
     test_no_bird_or_hawk_lands_past_the_arrays();

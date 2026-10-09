@@ -466,7 +466,7 @@ Look
       --sprite FILE             a PNG you supply, kept in its own colours
   -e, --trails                  faint tails behind the flock
       --depth                   a second sky further off: smaller, slower, dimmer birds
-      --3d                      a murmuration in three dimensions, seen from a slow orbit (2000 birds, in ink)
+      --3d                      a murmuration in three dimensions
   -l, --panel                   the sliders in the corner from the start; h toggles them
       --render HOW              braille by default; sextants, blocks, or kitty in Kitty and Ghostty
 

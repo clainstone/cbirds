@@ -1,8 +1,9 @@
 name: tests
 
 # Builds cbirds and runs its tests on every push and pull request: on Linux and
-# macOS, on x86_64 and arm64, and once more under the address and
-# undefined-behaviour sanitizers.
+# macOS, on x86_64 and arm64, once more under the address and
+# undefined-behaviour sanitizers, and on Windows in MSYS2's MinGW-w64
+# environments, where the tests also drive the program through a pseudo console.
 on:
   push:
     paths-ignore: ["**.md", "docs/**"]
@@ -57,4 +58,55 @@ jobs:
           make CC=${{ matrix.cc }}
           CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all"
           LDFLAGS="-fsanitize=address,undefined"
+          test
+
+  windows:
+    name: test (${{ matrix.os }}, ${{ matrix.msystem }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2022, msystem: UCRT64, cc: gcc, pacboy: "gcc:p" }
+          - { os: windows-2025, msystem: CLANG64, cc: clang, pacboy: "clang:p" }
+          - { os: windows-11-arm, msystem: CLANGARM64, cc: clang, pacboy: "clang:p" }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: false
+          install: make
+          pacboy: ${{ matrix.pacboy }}
+      - name: Build, warnings as errors
+        run: make CC=${{ matrix.cc }} CFLAGS="-O2 -g -Wpedantic -Wshadow -Werror" cbirds
+      - name: Test
+        run: make CC=${{ matrix.cc }} test
+      - name: Run it
+        run: |
+          ./cbirds --version
+          ./cbirds --bench 60 --render braille | tail -3
+          ./cbirds --record ci.gif --record-seconds 1
+          ./cbirds --record ci.cast --record-seconds 1
+          ls -l ci.gif ci.cast
+      - name: Depends on Windows alone
+        run: |
+          ldd cbirds.exe
+          # Only DLLs that ship with Windows: no MSYS2 runtime, no winpthreads,
+          # no libgcc, so the file runs on a plain machine.
+          if ldd cbirds.exe | grep -vi '/c/windows/'; then echo "cbirds.exe needs more than Windows"; exit 1; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cbirds-windows-${{ matrix.msystem }}
+          path: cbirds.exe
+      - name: Test under the undefined-behaviour checks
+        if: matrix.cc == 'clang'
+        run: >-
+          make clean &&
+          make CC=clang
+          CFLAGS="-O1 -g -fsanitize=undefined -fsanitize-trap=undefined"
           test

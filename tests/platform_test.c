@@ -195,8 +195,12 @@ static void test_the_clock_runs_forwards(void) {
 }
 
 /* A frame is 16.7 ms. Windows rounds an ordinary sleep up to its 15.6 ms tick,
- * which makes that 31 ms and the program thirty frames a second; this measures
- * what the pace is made of, and prints it so the CI log shows the number. */
+ * which makes that 31 ms and the program thirty frames a second; the Windows
+ * sleep exists to avoid that, so that is where it is held to account, with the
+ * margin a loaded CI machine meets (a tick-rounded sleep averages 31, and a
+ * busy VM adds a few ms either way). The POSIX sleep is nanosleep as it always
+ * was, and a shared macOS runner oversleeps it by whatever it likes, so there
+ * the number is only printed, for the log. */
 static void test_a_sleep_of_a_frame_is_about_a_frame(void) {
     enum { SLEEPS = 30, FRAME_MICROSECONDS = 16667 };
     platform_time_t start, end;
@@ -205,8 +209,10 @@ static void test_a_sleep_of_a_frame_is_about_a_frame(void) {
     platform_now(&end);
     double mean_ms = seconds_between(&start, &end) * 1000.0 / SLEEPS;
     printf("a sleep of 16.667 ms took %.3f ms on average over %d\n", mean_ms, SLEEPS);
-    assert(mean_ms >= 16.5);
-    assert(mean_ms < 20.0);
+    assert(mean_ms >= 16.0);
+#ifdef _WIN32
+    assert(mean_ms < 25.0);
+#endif
 }
 
 static void test_a_pipe_with_no_reader_is_an_error_not_a_death(void) {

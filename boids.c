@@ -6452,9 +6452,28 @@ static void refuse_what_does_not_go_together(void) {
     const char *sign = the_sign_option();
     /* A shared sky is a live thing: it is the other windows, as they are now. */
     if (share_the_sky && (bench_frames > 0 || record_path != NULL)) {
-        fprintf(stderr,
-                "%s: --link joins the windows that are open, so it cannot be used with %s\n",
+        fprintf(stderr, "%s: --link does not go with %s: it joins the windows that are open\n",
                 program_name, bench_frames > 0 ? "--bench" : "--record");
+        exit(EXIT_USAGE);
+    }
+    /* What a bird is outside bird_t does not travel: the post carries a position, a
+     * heading and a look, and nothing else. The flat flock is all that is. */
+    if (share_the_sky && sky_mode) {
+        fprintf(stderr,
+                "%s: --link does not go with --3d: a bird's place in a space does not travel\n",
+                program_name);
+        exit(EXIT_USAGE);
+    }
+    if (share_the_sky && fireflies_mode) {
+        fprintf(stderr,
+                "%s: --link does not go with --fireflies: a firefly's clock does not travel\n",
+                program_name);
+        exit(EXIT_USAGE);
+    }
+    if (share_the_sky && text_path != NULL) {
+        fprintf(stderr,
+                "%s: --link does not go with --text: a letter's home is in its own window\n",
+                program_name);
         exit(EXIT_USAGE);
     }
     if (sky_mode && fireflies_mode) {
@@ -6763,6 +6782,13 @@ static int take_the_text(int cols, int rows, int pipes) {
     if (the_sign_option() != NULL) {
         fprintf(stderr, "%s: %s does not go with text on standard input: the text is the flock\n",
                 program_name, the_sign_option());
+        exit(EXIT_USAGE);
+    }
+    if (share_the_sky) {
+        fprintf(stderr,
+                "%s: --link does not go with text on standard input: a letter's home is in its "
+                "own window\n",
+                program_name);
         exit(EXIT_USAGE);
     }
     letters_mode = 1;
@@ -7364,7 +7390,6 @@ int main(int argc, char **argv) {
     }
     install_signal_handlers();
     atexit(restore_terminal);
-    sky_join();
 
     /* The keys, and then the text, before the terminal is taken: the text is laid
      * out on a screen of the size this one is, and reading it may take a moment. */
@@ -7373,6 +7398,10 @@ int main(int argc, char **argv) {
     open_the_keys();
     update_screen_dimensions();
     take_the_text(screen.cols, screen.rows, 1);
+    /* After everything that can refuse the run, so that a run that is refused has
+     * been in nobody's sky, and before the terminal is taken, so that what it says
+     * when it cannot join is read where it is written. */
+    sky_join();
 
     /* The terminal is asked its questions before anything is built for it: can
      * you draw this at all, and what colours do you use? The sprites are then

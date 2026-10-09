@@ -11346,6 +11346,80 @@ static void test_a_shared_sky_cannot_be_benchmarked_or_recorded(void) {
     assert(message[0] == '\0');
 }
 
+/* What a bird is outside bird_t does not travel, so the modes that keep it there
+ * are refused, each with a line that names both options and says why. */
+static void test_a_shared_sky_is_refused_with_a_space_a_night_and_a_text(void) {
+    char text[600], empty[600], picture[600], said[512], line[1200];
+    scratch_file(text, sizeof(text), "link_refuse.txt");
+    scratch_file(empty, sizeof(empty), "link_refuse_empty.txt");
+    world_write(text, "hello, world\n");
+    world_write(empty, "");
+    write_a_picture("link_refuse.png", 1, 255);
+    scratch_file(picture, sizeof(picture), "link_refuse.png");
+
+    const char *asked[][2] = {
+        {"--3d", "--3d"},         {"--fireflies", "--fireflies"}, {"--text -", "--text"},
+        {"--bench 5", "--bench"}, {"--record x.gif", "--record"},
+    };
+    for (size_t a = 0; a < sizeof(asked) / sizeof(*asked); a++) {
+        char expected[128];
+        snprintf(expected, sizeof(expected), "--link does not go with %s:", asked[a][1]);
+        snprintf(line, sizeof(line), "--link %s", asked[a][0]);
+        assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, line, said, sizeof(said)) ==
+               EXIT_USAGE);
+        assert(strstr(said, expected) != NULL);
+        assert(strchr(said, '\n') == said + strlen(said) - 1); /* One line. */
+        snprintf(line, sizeof(line), "%s --link", asked[a][0]);
+        assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, line, said, sizeof(said)) ==
+               EXIT_USAGE);
+        assert(strstr(said, expected) != NULL && strchr(said, '\n') == said + strlen(said) - 1);
+    }
+    /* A text file, either way round. */
+    snprintf(line, sizeof(line), "--link --text %s", text);
+    assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, line, said, sizeof(said)) ==
+           EXIT_USAGE);
+    assert(strstr(said, "--link does not go with --text:") != NULL);
+    snprintf(line, sizeof(line), "--text %s --link", text);
+    assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, line, said, sizeof(said)) ==
+           EXIT_USAGE);
+    assert(strstr(said, "--link does not go with --text:") != NULL);
+
+    /* Text on a pipe is said when it is found, and a pipe with nothing in it is no
+     * text, so the window goes on to join the sky. */
+    piped_line_t piped = {"--link", text};
+    assert(status_of_a_run_that_may_exit(take_the_text_piped_in_on_a_line, &piped, said,
+                                         sizeof(said)) == EXIT_USAGE);
+    assert(strstr(said, "--link does not go with text on standard input:") != NULL);
+    assert(strchr(said, '\n') == said + strlen(said) - 1);
+    piped.text_file = empty;
+    assert(status_of_a_run_that_may_exit(take_the_text_piped_in_on_a_line, &piped, said,
+                                         sizeof(said)) == 3);
+    assert(said[0] == '\0');
+
+    /* What does go with it goes: hawks and waves, flocks and the far sky, the rain,
+     * a sign and the screensaver, in whichever order. */
+    snprintf(line, sizeof(line), "--link --picture %s", picture);
+    const char *fine[] = {"--link --hawks 2",
+                          "--link --screensaver",
+                          "--link --flocks 3",
+                          "--link --depth",
+                          "--link --matrix",
+                          "--link --say hi",
+                          "--link --clock",
+                          "--link --trails",
+                          "--screensaver --link",
+                          "--hawks 1 --link --screensaver --say hi",
+                          line};
+    for (size_t f = 0; f < sizeof(fine) / sizeof(*fine); f++) {
+        assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, (void *)fine[f], said,
+                                             sizeof(said)) == 0);
+        assert(said[0] == '\0');
+    }
+
+    assert(unlink(text) == 0 && unlink(empty) == 0 && unlink(picture) == 0);
+    forget_the_options();
+}
+
 /* A window that is told to die leaves no socket behind, whichever way. */
 static void test_a_signal_removes_the_socket(void) {
     static const int SIGNALS[] = {SIGINT, SIGTERM, SIGHUP, SIGQUIT};
@@ -11625,6 +11699,7 @@ int main(void) {
     test_a_shared_sky_has_room_for_all_it_may_take();
     test_the_link_option_is_in_the_table_and_off_by_default();
     test_a_shared_sky_cannot_be_benchmarked_or_recorded();
+    test_a_shared_sky_is_refused_with_a_space_a_night_and_a_text();
     test_a_signal_removes_the_socket();
     test_leaving_through_exit_removes_the_socket();
     /* Every test removes what it wrote, so this fails if one did not. */

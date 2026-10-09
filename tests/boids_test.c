@@ -9588,6 +9588,8 @@ static void forget_the_options(void) {
     forget_the_text();
     letters_mode = 0;
     fireflies_mode = 0;
+    sky_mode = 0;
+    deep_look = 0;
     matrix_mode = 0;
     the_rain_is_falling = 0;
     requested_preset = -1;
@@ -9661,6 +9663,30 @@ static void test_what_was_not_asked_for_is_settled_together(void) {
     assert(config.birds == FIREFLY_COUNT && config.shape == shape_named("dot"));
     assert(config.palette == palette_named("firefly"));
 
+    /* A space takes its own birds and ramp for whatever was left open, a bird as
+     * the flock has it, and what was asked for wins whichever side of --3d it is
+     * on, even when it is the very thing the flock ships with. */
+    read_the_line("--3d");
+    assert(sky_mode && config.birds == SKY_BIRDS && config.shape == 0);
+    assert(config.palette == palette_named("ink") && !palette_was_asked_for);
+    const char *space_both_ways[][2] = {
+        {"-n 800 --3d", "--3d -n 800"},           {"--color ash --3d", "--3d --color ash"},
+        {"--color ink --3d", "--3d --color ink"}, {"--color theme --3d", "--3d --color theme"},
+        {"--shape dot --3d", "--3d --shape dot"},
+    };
+    const int space_birds[] = {800, SKY_BIRDS, SKY_BIRDS, SKY_BIRDS, SKY_BIRDS};
+    const char *space_ramp[] = {"ink", "ash", "ink", "theme", "ink"};
+    for (size_t pair = 0; pair < sizeof(space_both_ways) / sizeof(*space_both_ways); pair++)
+        for (int way = 0; way < 2; way++) {
+            read_the_line(space_both_ways[pair][way]);
+            assert(sky_mode && config.birds == space_birds[pair]);
+            assert(config.palette == palette_named(space_ramp[pair]));
+            assert(palette_was_asked_for == (pair == 1 || pair == 2 || pair == 3));
+            assert(config.shape == (pair == 4 ? shape_named("dot") : 0));
+        }
+    /* The flock's own birds are 800 and its ramp theme, as ever, with no --3d. */
+    read_the_line("");
+    assert(!sky_mode && config.birds == 800 && config.palette == 0);
 
     const char *both_ways[][2] = {
         {"-n 50 --fireflies", "--fireflies -n 50"},

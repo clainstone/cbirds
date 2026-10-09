@@ -7294,6 +7294,299 @@ static void test_standard_input_that_is_not_a_terminal_leaves_the_keys_to_the_tt
     close(master);
 }
 
+/* Whether a descriptor has something to read within this many milliseconds:
+ * select, which macOS answers for a terminal as Linux does. */
+static int readable_within(int fd, int milliseconds) {
+    fd_set readable;
+    FD_ZERO(&readable);
+    FD_SET(fd, &readable);
+    struct timeval wait = {milliseconds / 1000, (milliseconds % 1000) * 1000};
+    return select(fd + 1, &readable, NULL, NULL, &wait);
+}
+
+/* The text is on the first row of twenty and the lines after it are empty, so a
+ * screen of ten has scrolled it away and a larger one has no letter to show. */
+static const char TEXT_AT_THE_TOP[] = "hello world\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n";
+
+static void test_a_window_with_none_of_the_text_left_keeps_the_letters_and_their_size(void) {
+    world_t world;
+    world_open(&world, TEXT_AT_THE_TOP, 40, 20);
+    int before = config.birds;
+    assert(before == 10 && the_letters.cols == 40 && the_letters.rows == 20);
+
+    /* A bigger screen, with nothing of the text on it once it is laid out there. The
+     * letters are still the ones laid out on forty by twenty, in arrays of that size,
+     * and the size they say is the size they are: a sanitizer sees the arrays. */
+    apply_screen_size(100, 10, 0, 0);
+    assert(text_renderer_fits_the_screen());
+    for (int frame = 0; frame < 120; frame++)
+        assert(reflow_the_letters(&world.birds, &world.snapshot) == 0);
+    assert(the_letters.cols == 40 && the_letters.rows == 20 && config.birds == before);
+    assert(the_letters.grid != NULL && the_letters.at != NULL && the_letters.claim != NULL);
+    /* It was looked at once and found empty, and is not looked at again. */
+    assert(reflow_wait == 0);
+
+    /* The text is still painted, in the corner of a screen that has more room. */
+    int cells;
+    cell_t *picture = world_picture(&world, &cells);
+    assert(cells == 100 * 10);
+    assert(picture[0].glyph == 'h' && picture[4].glyph == 'o' && picture[6].glyph == 'w');
+    free(picture);
+
+    /* And it flies and comes home on the screen it does not fit. */
+    assert(spatial_grid_prepare(&world.grid, screen.width, screen.height, config.birds) ==
+           SPATIAL_GRID_OK);
+    feed_input("\r");
+    assert(world_run_until(&world, LETTERS_IN_FLIGHT, 60 * 6) > 0);
+    for (int frame = 0; frame < 120; frame++) {
+        world_step(&world);
+        picture = world_picture(&world, &cells);
+        free(picture);
+    }
+    feed_input("\r");
+    assert(world_run_until(&world, LETTERS_AT_REST, 60 * 40) > 0 && world_all_home(&world));
+
+    /* A smaller screen is no different: what there is stays. */
+    apply_screen_size(20, 5, 0, 0);
+    assert(text_renderer_fits_the_screen());
+    for (int frame = 0; frame < 120; frame++)
+        assert(reflow_the_letters(&world.birds, &world.snapshot) == 0);
+    assert(the_letters.cols == 40 && the_letters.rows == 20);
+    picture = world_picture(&world, &cells);
+    assert(cells == 20 * 5 && picture[0].glyph == 'h');
+    free(picture);
+
+    /* A size where it does show is laid out, whatever the sizes before were. */
+    apply_screen_size(60, 20, 0, 0);
+    assert(text_renderer_fits_the_screen());
+    int laid_out = 0;
+    for (int frame = 0; frame < 60 && !laid_out; frame++)
+        laid_out = reflow_the_letters(&world.birds, &world.snapshot);
+    assert(laid_out && the_letters.cols == 60 && the_letters.rows == 20 && config.birds == before);
+    /* The size that had nothing is still known to have nothing. */
+    apply_screen_size(100, 10, 0, 0);
+    for (int frame = 0; frame < 120; frame++)
+        assert(reflow_the_letters(&world.birds, &world.snapshot) == 0);
+    assert(the_letters.cols == 60 && the_letters.rows == 20);
+    world_close(&world);
+}
+
+/* A letter that is in the air is a bird that is flying, and the other way round: the
+ * cycle waits for every letter to land, and a bird that is told nothing never leaves. */
+static void assert_the_letters_in_the_air_are_the_birds_in_the_air(const world_t *world) {
+    for (int i = 0; i < config.birds; i++)
+        assert(letter_is_airborne(&the_letters.letter[i]) == !world->birds[i].perched);
+}
+
+/* How many times the cycle began over `frames` frames of a world with hawks, and
+ * whether a bird and its letter ever disagreed about being in the air. */
+static int cycles_with_hawks(int hawk_count, int seed, int frames) {
+    world_t world;
+    world_open(&world, NEOFETCH_LIKE, 60, 12);
+    config.hawks = hawk_count;
+    seed_random((unsigned)seed);
+    place_hawks();
+    for (int frame = 0; frame < frames; frame++) {
+        world_step(&world);
+        assert_the_letters_in_the_air_are_the_birds_in_the_air(&world);
+    }
+    int cycles = the_letters.cycles;
+    world_close(&world);
+    return cycles;
+}
+
+static void test_a_hawk_over_the_text_does_not_stop_the_cycle(void) {
+    /* A hawk that touches letters in the very step the rest ends used to leave them
+     * in the air for the cycle and on their cells for the flock, and the text then
+     * never rested or flew again. Two minutes is four cycles of a text left alone. */
+    for (int hawks = 1; hawks <= 3; hawks++)
+        for (int seed = 1; seed <= 4; seed++) assert(cycles_with_hawks(hawks, seed, 60 * 120) >= 3);
+}
+
+/* The same through the keys, over text, for a run under the float-cast sanitizer to
+ * see: the pointer far past the last letter touches none and breaks nothing. */
+static void test_a_pointer_at_the_limits_does_not_disturb_the_text(void) {
+    world_t world;
+    world_open(&world, NEOFETCH_LIKE, 60, 12);
+    static const char *const REPORTS[] = {"\033[<35;5;2147483647M", "\033[<35;2147483647;5M",
+                                          "\033[<35;2147483647;2147483647M"};
+    for (size_t i = 0; i < sizeof(REPORTS) / sizeof(*REPORTS); i++) {
+        mouse.present = 0;
+        assert(feed_input(REPORTS[i]) == 1);
+        assert(mouse.present && mouse.x < screen.width && mouse.y < screen.height);
+        for (int frame = 0; frame < 30; frame++) world_step(&world);
+    }
+    mouse.present = 0;
+    world_close(&world);
+}
+
+/* A lock screen reads its keys from where the keys come from: the descriptor that
+ * was chosen, which is the terminal itself when standard input is a pipe, and not
+ * standard input. Here standard input is at its end and the keys are on the other. */
+static void test_a_screensaver_reads_the_descriptor_that_was_chosen(void) {
+    int keys[2], silent[2];
+    assert(pipe(keys) == 0 && pipe(silent) == 0);
+    /* As the terminal is in raw mode: a read with nothing there comes back. */
+    assert(fcntl(keys[0], F_SETFL, O_NONBLOCK) == 0);
+    close(silent[1]); /* Standard input is at its end: nobody is there. */
+    int saved_stdin = dup(STDIN_FILENO);
+    assert(saved_stdin >= 0 && dup2(silent[0], STDIN_FILENO) == STDIN_FILENO);
+    close(silent[0]);
+    int saved = input_fd;
+    input_fd = keys[0];
+
+    reset_sign_state();
+    apply_screen_size(80, 24, 640, 384);
+    screensaver_mode = 1;
+    clock_state.seconds = SCREENSAVER_GRACE + 1;
+    assert(handle_input() == 1); /* Nothing on either: carry on. */
+    assert(write(keys[1], "x", 1) == 1);
+    assert(handle_input() == 0); /* A key where the keys come from. */
+    /* The first half second is whatever started it, there as well. */
+    clock_state.seconds = SCREENSAVER_GRACE - 0.1;
+    assert(write(keys[1], "\033[<35;10;5M", 10) == 10);
+    assert(handle_input() == 1);
+    /* But the first half second of the program, not of its first frame: a start that
+     * took longer than that has no key in it that started anything, and the one
+     * typed meanwhile is somebody waking the screen. A quick start is as it was. */
+    clock_state.seconds = 0;
+    launch_lag = SCREENSAVER_GRACE / 2;
+    assert(write(keys[1], "x", 1) == 1);
+    assert(handle_input() == 1);
+    launch_lag = SCREENSAVER_GRACE + 1.5;
+    assert(write(keys[1], "x", 1) == 1);
+    assert(handle_input() == 0);
+    launch_lag = 0;
+
+    input_fd = saved;
+    assert(dup2(saved_stdin, STDIN_FILENO) == STDIN_FILENO);
+    close(saved_stdin);
+    close(keys[0]);
+    close(keys[1]);
+    reset_sign_state();
+}
+
+/* The whole program, on a terminal of its own, as a flock, a clock, a sign, a
+ * text from a file and a text on a pipe, each of them a lock screen: it
+ * runs until a key is typed after the grace, and then goes at once with the
+ * status of a run that went well, having given the terminal back. */
+static void test_a_screensaver_is_a_lock_screen_for_every_mode(void) {
+    char text[600];
+    scratch_file(text, sizeof(text), "saver.txt");
+    world_write(text, "hello, world\nsecond line\n");
+    const char *runs[][4] = {
+        {NULL, NULL, NULL, NULL},
+        {"--clock", NULL, NULL, NULL},
+        {"--say", "hi", NULL, NULL},
+        {"--text", text, NULL, NULL},
+        {"--hawks", "2", NULL, NULL},
+        {NULL, NULL, NULL, NULL} /* The text of this one is on a pipe. */,
+    };
+    int count = (int)(sizeof(runs) / sizeof(*runs));
+    for (int which = 0; which < count; which++) {
+        int piped = which == count - 1;
+        int master = posix_openpt(O_RDWR | O_NOCTTY);
+        assert(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0);
+        const char *name = ptsname(master);
+        assert(name != NULL);
+        int text_pipe[2];
+        assert(pipe(text_pipe) == 0);
+        const char *words = "hello, world\nsecond line\n";
+        assert(write(text_pipe[1], words, strlen(words)) == (ssize_t)strlen(words));
+        close(text_pipe[1]);
+        fflush(NULL);
+        pid_t child = fork();
+        assert(child >= 0);
+        if (child == 0) {
+            alarm(60);
+            close(master);
+            /* The terminal is the controlling one, so that /dev/tty is it. */
+            if (setsid() < 0) _exit(90);
+            int terminal = open(name, O_RDWR);
+            if (terminal < 0 || ioctl(terminal, TIOCSCTTY, 0) < 0) _exit(91);
+            int quiet = open("/dev/null", O_WRONLY);
+            if (quiet < 0 || dup2(piped ? text_pipe[0] : terminal, STDIN_FILENO) < 0 ||
+                dup2(terminal, STDOUT_FILENO) < 0 || dup2(quiet, STDERR_FILENO) < 0)
+                _exit(99);
+            terminal_is_raw = terminal_restored = alt_screen_is_on = sprites_uploaded = 0;
+            input_fd = STDIN_FILENO;
+            char *argv[12] = {"cbirds", "--screensaver", "--color", "ember", "--seed", "3"};
+            int argc = 6;
+            for (int word = 0; word < 4 && runs[which][word] != NULL; word++)
+                argv[argc++] = (char *)runs[which][word];
+            argv[argc] = NULL;
+            /* Not _exit: the terminal is given back by the exit handler. */
+            exit(cbirds_application_main(argc, argv));
+        }
+        close(text_pipe[0]);
+        /* Once the program has taken the screen, and the grace is over, a key. */
+        int status = 0, typed = 0;
+        size_t seen = 0;
+        char drain[4096], screen_taken[] = ALT_SCREEN_ON, tail[256] = "";
+        struct timespec taken_at = {0, 0}, now;
+        for (;;) {
+            if (readable_within(master, 50) > 0) {
+                ssize_t got = read(master, drain, sizeof(drain));
+                if (got <= 0) break;
+                for (ssize_t i = 0; i < got; i++) {
+                    if (!typed) {
+                        seen = drain[i] == screen_taken[seen] ? seen + 1
+                                                              : (drain[i] == '\033' ? 1 : 0);
+                        if (seen == sizeof(screen_taken) - 1) {
+                            clock_gettime(CLOCK_MONOTONIC, &taken_at);
+                            typed = -1;
+                        }
+                    }
+                    memmove(tail, tail + 1, sizeof(tail) - 2);
+                    tail[sizeof(tail) - 2] = drain[i];
+                }
+            }
+            if (typed == -1) {
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                if (elapsed_seconds(&taken_at, &now) > SCREENSAVER_GRACE + 0.5) {
+                    /* The terminal answers a colour question late: that is not
+                     * somebody, and the lock screen is still there a moment later. */
+                    const char *late = "\033]11;rgb:bbbb/bbbb/bbbb\033\\";
+                    assert(write(master, late, strlen(late)) == (ssize_t)strlen(late));
+                    taken_at = now;
+                    typed = -2;
+                }
+            } else if (typed == -2) {
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                if (elapsed_seconds(&taken_at, &now) > 0.3) {
+                    assert(waitpid(child, &status, WNOHANG) == 0);
+                    assert(write(master, "x", 1) == 1);
+                    typed = 1;
+                }
+            }
+            if (waitpid(child, &status, WNOHANG) == child) {
+                child = -1;
+                break;
+            }
+        }
+        /* What it had still to say when it went. */
+        while (readable_within(master, 100) > 0) {
+            ssize_t got = read(master, drain, sizeof(drain));
+            if (got <= 0) break;
+            for (ssize_t i = 0; i < got; i++) {
+                memmove(tail, tail + 1, sizeof(tail) - 2);
+                tail[sizeof(tail) - 2] = drain[i];
+            }
+        }
+        assert(typed == 1);
+        if (child > 0) assert(waitpid(child, &status, 0) == child);
+        assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS);
+        /* The tail is filled from its end, so a run that said little has NULs in front
+         * of it, and a run that was told to go before its first frame said little. */
+        const char *said = tail;
+        while (said < tail + sizeof(tail) - 1 && *said == '\0') said++;
+        assert(strstr(said, ALT_SCREEN_OFF) != NULL); /* The terminal is given back. */
+        close(master);
+    }
+    assert(unlink(text) == 0);
+    reset_sign_state();
+}
+
 /* The whole program with text on a pipe, on a terminal of its own that is its
  * controlling one, as `fastfetch | cbirds` has it: the text is read from the pipe,
  * the keys from /dev/tty, the size from the terminal, and the terminal is given
@@ -7694,6 +7987,11 @@ int main(void) {
     test_text_that_does_not_fit_the_screen_it_is_laid_out_on_scrolls();
     test_a_benchmark_of_text_flies_it_from_the_first_frame();
     test_standard_input_that_is_not_a_terminal_leaves_the_keys_to_the_tty();
+    test_a_window_with_none_of_the_text_left_keeps_the_letters_and_their_size();
+    test_a_hawk_over_the_text_does_not_stop_the_cycle();
+    test_a_pointer_at_the_limits_does_not_disturb_the_text();
+    test_a_screensaver_reads_the_descriptor_that_was_chosen();
+    test_a_screensaver_is_a_lock_screen_for_every_mode();
     test_text_on_a_pipe_flies_on_a_terminal_and_gives_it_back();
     test_text_on_a_pipe_with_no_terminal_says_so();
     test_a_sign_is_refused_with_text();

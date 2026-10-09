@@ -429,6 +429,10 @@ static letters_t the_letters;
 static uint8_t *the_text;
 static size_t the_text_length;
 static double reflow_wait;
+/* A size the text was laid out on and nothing of it showed. The letters stay as they
+ * were, so the screen is still not their size, and without this it would be laid out
+ * again every moment to find the same nothing. */
+static int reflow_empty_cols, reflow_empty_rows;
 /* Where the keys come from, and the terminal's modes are set and queried: the
  * standard input, unless that is a pipe with text in it, in which case the
  * controlling terminal. */
@@ -5297,10 +5301,16 @@ static const double REFLOW_SETTLE_SECONDS = 0.3;
  * again on this one, as it would have been had the command run here, and the cycle
  * begins again from the text at rest: a letter in the air has nowhere to land on a
  * grid that is gone. Waits until the size has held still for a moment, so that
- * dragging a corner is not a layout a frame. Returns whether it laid out afresh. */
+ * dragging a corner is not a layout a frame. Returns whether it laid out afresh.
+ *
+ * When it cannot, because nothing of the text is left on the new screen (it has
+ * scrolled off) or there is no memory, the letters stay as they were, with the size
+ * they were laid out for: their arrays are that big and no bigger, and a size that
+ * said otherwise would have the painting run past them. */
 static int reflow_the_letters(bird_t **birds, bird_t **snapshot) {
     if (!letters_mode || the_text == NULL) return 0;
-    if (screen.cols == the_letters.cols && screen.rows == the_letters.rows) {
+    if ((screen.cols == the_letters.cols && screen.rows == the_letters.rows) ||
+        (screen.cols == reflow_empty_cols && screen.rows == reflow_empty_rows)) {
         reflow_wait = 0;
         return 0;
     }
@@ -5319,13 +5329,14 @@ static int reflow_the_letters(bird_t **birds, bird_t **snapshot) {
     bird_t *grown = count > 0 ? malloc(sizeof(**birds) * (size_t)count) : NULL;
     bird_t *grown_snapshot = count > 0 ? malloc(sizeof(**snapshot) * (size_t)count) : NULL;
     if (count <= 0 || grown == NULL || grown_snapshot == NULL) {
-        /* Nothing of it fits on the new screen, or no memory: what there is stays, and
-         * the size it was laid out for is the size to compare with from now on. */
         free(grown);
         free(grown_snapshot);
         letters_destroy(&fresh);
-        the_letters.cols = screen.cols;
-        the_letters.rows = screen.rows;
+        /* Nothing to show is the same on every try at this size; no memory may not be. */
+        if (count == 0) {
+            reflow_empty_cols = screen.cols;
+            reflow_empty_rows = screen.rows;
+        }
         return 0;
     }
     free(*birds);

@@ -8540,6 +8540,102 @@ static void test_a_sign_is_refused_with_a_night_and_with_text(void) {
     forget_the_options();
 }
 
+/* A writer has somewhere to be: in a sign as in the intro it is never caught by an
+ * alarm, never lit and never turns. A writer that a hawk or the pointer has
+ * scattered is a bird of the sky until it is home, and is caught like one. */
+static void test_a_writer_is_never_alarmed_and_a_scattered_one_is(void) {
+    sky_t world;
+    lay_out_a_sign_on(&world, 160, 45, 25, "HI", 400, 5);
+    int writer = -1, free_bird = -1;
+    for (int i = 0; i < config.birds; i++) {
+        if (formation.slot[i] >= 0 && writer < 0) writer = i;
+        if (formation.slot[i] < 0 && world.birds[i].layer == 0 && free_bird < 0) free_bird = i;
+    }
+    assert(writer >= 0 && free_bird >= 0);
+    reset_the_waves();
+
+    /* Asked of the function that decides it. */
+    assert(!bird_can_be_alarmed(&world.birds[writer], writer));
+    assert(bird_can_be_alarmed(&world.birds[free_bird], free_bird));
+    world.birds[writer].scattered = 1.0;
+    assert(bird_can_be_alarmed(&world.birds[writer], writer));
+    world.birds[writer].scattered = 0;
+    assert(!bird_can_be_alarmed(&world.birds[writer], writer));
+
+    /* The intro's letters are as they were: never. */
+    formation_clear();
+    begin_the_sign();
+    formation_clear();
+    formation.sign = 0;
+    assert(formation_layout("BOIDS") > 0);
+    assert(!bird_can_be_alarmed(&world.birds[0], 0));
+    formation_clear();
+    assert(bird_can_be_alarmed(&world.birds[0], 0));
+    close_the_world(&world);
+    reset_sign_state();
+}
+
+/* A bird that was told to swerve, and then was sent to write before it turned,
+ * forgets what it was told: it does not turn, is not lit, and tells nobody. The
+ * control is a free bird told the same, which does all three. */
+static void test_a_bird_sent_to_write_forgets_the_alarm_it_was_given(void) {
+    sky_t world;
+    lay_out_a_sign_on(&world, 160, 45, 25, "HI", 400, 5);
+    int writer = -1, free_bird = -1;
+    for (int i = 0; i < config.birds; i++) {
+        if (formation.slot[i] >= 0 && writer < 0) writer = i;
+        if (formation.slot[i] < 0 && world.birds[i].layer == 0 && free_bird < 0) free_bird = i;
+    }
+    assert(writer >= 0 && free_bird >= 0);
+    reset_the_waves();
+    waves[writer] = (wave_t){.wait = 0.001, .swerve = 0.9};
+    waves[free_bird] = (wave_t){.wait = 0.001, .swerve = 0.9};
+    waves_in_flight = 1; /* Something is going on, which is what makes it look. */
+    step_the_world(&world, 0.04);
+    assert(waves[free_bird].left > 0 || waves[free_bird].rest > 0);
+    assert(world.birds[free_bird].alarmed);
+    assert(waves[writer].wait == 0 && waves[writer].left == 0 && waves[writer].rest == 0);
+    assert(!world.birds[writer].alarmed);
+    close_the_world(&world);
+    reset_sign_state();
+}
+
+/* Hawks over a sign for twenty seconds: the free birds have their waves, and no
+ * writer is ever lit or caught. */
+static void test_hawks_over_a_sign_light_the_free_birds_and_not_the_writers(void) {
+    sky_t world;
+    lay_out_a_sign_on(&world, 160, 45, 50, "HELLO WORLD", 800, 5);
+    config.hawks = 2;
+    place_hawks();
+    reset_the_waves();
+    int lit_free = 0, lit_scattered = 0, writing_frames = 0;
+    for (double at = 0.02; at < 20; at += 0.02) {
+        step_the_world(&world, at);
+        for (int i = 0; i < config.birds; i++) {
+            double x, y;
+            /* As the step saw it: a bird that comes home in this step is a writer only
+             * in the next, which forgets what it was told. */
+            int writing = formation_target_for(&world.snapshot[i], i, &x, &y);
+            if (writing) {
+                writing_frames++;
+                assert(!world.birds[i].alarmed);
+                assert(waves[i].wait == 0);
+            } else if (world.birds[i].alarmed) {
+                lit_free++;
+                if (formation.slot[i] >= 0) lit_scattered++;
+            }
+        }
+    }
+    assert(writing_frames > 0);
+    assert(lit_free > 0);      /* The flock round the sign has its waves... */
+    assert(lit_scattered > 0); /* ...and so do the letters a hawk has scattered. */
+    assert(the_sign.up);
+    config.hawks = 0;
+    close_the_world(&world);
+    reset_the_waves();
+    reset_sign_state();
+}
+
 int main(void) {
     make_scratch();
     trig_lookup_init();
@@ -8705,6 +8801,9 @@ int main(void) {
     test_a_whip_is_read_from_the_descriptor_that_was_chosen();
     test_what_was_not_asked_for_is_settled_together();
     test_a_sign_is_refused_with_a_night_and_with_text();
+    test_a_writer_is_never_alarmed_and_a_scattered_one_is();
+    test_a_bird_sent_to_write_forgets_the_alarm_it_was_given();
+    test_hawks_over_a_sign_light_the_free_birds_and_not_the_writers();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);
     return 0;

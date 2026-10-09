@@ -2872,7 +2872,10 @@ static vector_t hawk_vector(const bird_t *bird) {
  * strikes is something happening.
  *
  * The letters of the intro are never alarmed: a bird writing has somewhere to be,
- * and the writing is the one thing the hawks cannot spoil. A bird in the far sky
+ * and the writing is the one thing the hawks cannot spoil. The writers of a sign
+ * are the same while they write, and are lit by nothing and told nothing; a hawk
+ * or the pointer can scatter the places it is over, and a writer so scattered is a
+ * bird of the sky, wave and all, until it has come home. A bird in the far sky
  * is never alarmed, for the same reason it is never hunted, and does not alarm
  * those in the near one. Birds of other flocks are watched as far as they are
  * kin, which is what the avoidance slider says: at the default none, so a wave
@@ -2979,7 +2982,10 @@ static void tell_the_bird(int index, double swerve, double at, double seconds) {
 static int bird_can_be_alarmed(const bird_t *bird, int index) {
     double unused_x, unused_y;
     if (bird->layer > 0) return 0;
-    if (formation_target_of(index, &unused_x, &unused_y)) return 0;
+    /* A writer has somewhere to be, in the intro and in a sign alike. A writer of a
+     * sign that a hawk or the pointer has scattered is flocking until it is called
+     * home, and is as alarmed as any bird in the sky. */
+    if (formation_target_for(bird, index, &unused_x, &unused_y)) return 0;
     return wave_catchable(&waves[index]) || wave_waiting(&waves[index]);
 }
 
@@ -3082,6 +3088,11 @@ static void spread_the_alarm(const bird_t *birds, const spatial_grid_t *grid) {
     wave_heap_count = 0;
     for (int i = 0; i < config.birds; i++) {
         wave_heap_place[i] = -1;
+        /* Told, and then sent to write before it turned, as a sign does with the
+         * birds it picks: it forgets what it was told. */
+        double unused_x, unused_y;
+        if (waves[i].wait > 0 && formation_target_for(&birds[i], i, &unused_x, &unused_y))
+            waves[i].wait = 0;
         if (waves[i].wait > 0 && waves[i].wait <= seconds) wave_heap_add(i);
     }
     while (wave_heap_count > 0) {
@@ -3908,7 +3919,7 @@ static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_gr
             direction = turn_towards(snapshot[i].direction, direction, limit);
         }
         birds[i].direction = direction;
-        birds[i].alarmed = is_swerving(i);
+        birds[i].alarmed = !writing && is_swerving(i);
         /* Never past the target: the last step is the distance left, which is
          * what makes a letter crisp instead of a cloud orbiting one. */
         double step = config.speed * flock_pace(snapshot[i].flock);

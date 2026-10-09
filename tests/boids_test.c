@@ -5379,6 +5379,121 @@ static void test_the_flat_flock_is_what_it_was(void) {
     reset_test_config();
 }
 
+/* The catalogue of pictures is one thing for every renderer. The Kitty upload sends
+ * every image that was built, under the id its place in the catalogue gives it, and
+ * the frame places images by the same ids; so a placement of an image that was not
+ * uploaded is a bird that is not there. Checked in the flat sky with everything it
+ * can draw at once, a far plane, tails, birds lit by a wave and hawks, and in a
+ * space with its hawks, by reading the ids out of the frame that is queued. */
+static void every_placement_is_of_an_image_that_was_uploaded(const char *frame,
+                                                             const png_image_t *sprites,
+                                                             int *placements) {
+    int images = sprite_set_count() * ROTATION_FRAMES;
+    *placements = 0;
+    for (const char *at = strstr(frame, "a=p"); at != NULL; at = strstr(at + 3, "a=p")) {
+        const char *id = strstr(at, ",I=");
+        const char *end = strstr(at, "\033\\");
+        assert(id != NULL && id < end);
+        long number = strtol(id + 3, NULL, 10);
+        /* The upload names image i as i + 1, and sends only the ones that exist. */
+        assert(number >= 1 && number <= images);
+        assert(sprites[number - 1].pixels != NULL);
+        (*placements)++;
+    }
+}
+
+static void test_the_kitty_frame_places_only_what_the_upload_sent(void) {
+    static png_image_t frames[ROTATION_FRAMES * MAX_SPRITE_SETS];
+    enum { COUNT = 240 };
+    bird_t *birds = calloc(COUNT, sizeof(*birds)), *snapshot = malloc(sizeof(*snapshot) * COUNT);
+    spatial_grid_t grid;
+    kitty_graphics_t graphics;
+    int placements = 0;
+
+    assert(birds != NULL && snapshot != NULL);
+    assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
+
+    /* The flat sky, with everything on. */
+    reset_test_config();
+    legend_enabled = 0;
+    config.birds = COUNT;
+    config.palette = palette_named("ember");
+    config.hawks = 2;
+    config.trails = 1;
+    deep_look = 1;
+    apply_screen_size(96, 32, 768, 512);
+    set_frame_seconds(1.0 / FRAME_RATE);
+    seed_random(6);
+    assert(rasterise_sprites(frames) == PNG_OK);
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, COUNT) == SPATIAL_GRID_OK);
+    initialize_birds(birds);
+    place_hawks();
+    for (int frame = 0; frame < 30; frame++) {
+        memcpy(snapshot, birds, sizeof(*birds) * COUNT);
+        assert(spatial_grid_build(&grid, COUNT, read_bird_position, snapshot) == SPATIAL_GRID_OK);
+        fly(birds, snapshot, &grid);
+    }
+    int lit = 0, tailed = 0, far = 0;
+    for (int i = 0; i < COUNT; i++) {
+        if (birds[i].layer == 0 && i % 5 == 0) {
+            birds[i].alarmed = 1;
+            lit++;
+        }
+        if (birds[i].layer == 0 && i % 7 == 1) {
+            birds[i].trail_held = TRAIL_LENGTH;
+            tailed++;
+        }
+        far += birds[i].layer > 0;
+    }
+    assert(lit > 0 && tailed > 0 && far > 0);
+    graphics.length = 0;
+    assert(queue_render_frame(&graphics, birds) == KITTY_GRAPHICS_OK);
+    every_placement_is_of_an_image_that_was_uploaded(graphics.buffer, frames, &placements);
+    /* The hawks are the last two placed, and they are the hawks' images. */
+    assert(placements > COUNT / 2);
+    const char *last = graphics.buffer;
+    for (const char *at = strstr(last, "a=p"); at != NULL; at = strstr(at + 3, "a=p")) last = at;
+    char hawk_id[40];
+    snprintf(hawk_id, sizeof(hawk_id), ",I=%u,", (unsigned)hawk_image_id(&hawks[1]));
+    assert(strstr(last, hawk_id) != NULL);
+    assert(hawk_set(0) <= (int)((hawk_image_id(&hawks[1]) - 1) / ROTATION_FRAMES) &&
+           (int)((hawk_image_id(&hawks[1]) - 1) / ROTATION_FRAMES) < trail_set(0));
+    spatial_grid_destroy(&grid);
+    free_sprites(frames);
+
+    /* A space, with its hawks. */
+    reset_test_config();
+    sky_mode = 1;
+    legend_enabled = 0;
+    config.birds = COUNT;
+    config.palette = palette_named("ash");
+    config.hawks = 2;
+    apply_screen_size(96, 32, 768, 512);
+    seed_random(6);
+    assert(rasterise_sprites(frames) == PNG_OK);
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, COUNT) == SPATIAL_GRID_OK);
+    initialize_birds(birds);
+    place_hawks();
+    for (int frame = 0; frame < 60; frame++) fly(birds, snapshot, &grid);
+    graphics.length = 0;
+    assert(queue_render_frame(&graphics, birds) == KITTY_GRAPHICS_OK);
+    every_placement_is_of_an_image_that_was_uploaded(graphics.buffer, frames, &placements);
+    assert(placements > COUNT / 2);
+    /* None of them is of a set the space does not build: tails and the light of a wave. */
+    for (const char *at = strstr(graphics.buffer, "a=p"); at != NULL; at = strstr(at + 3, "a=p")) {
+        long number = strtol(strstr(at, ",I=") + 3, NULL, 10);
+        assert((number - 1) / ROTATION_FRAMES < trail_set(0) + 0);
+    }
+    spatial_grid_destroy(&grid);
+    free_sprites(frames);
+    kitty_graphics_destroy(&graphics);
+    free(snapshot);
+    free(birds);
+    reset_test_config();
+}
+
 /* Runs the option reader in a child, as the program would run it, and says what
  * came of it: how it exited, what it printed to its error output, and the state
  * of the switches it was meant to set, as a number. */
@@ -10641,6 +10756,7 @@ int main(void) {
     test_the_avoidance_is_a_flag();
     test_flocks_avoid_each_other_as_much_as_asked();
     test_the_flat_flock_is_what_it_was();
+    test_the_kitty_frame_places_only_what_the_upload_sent();
     test_three_d_has_defaults_of_its_own();
     test_three_d_says_what_it_replaces();
     test_ink_runs_from_the_foreground_towards_the_background();

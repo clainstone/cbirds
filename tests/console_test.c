@@ -173,6 +173,13 @@ static void start(session_t *session, const char *arguments, int columns, int ro
 
     memset(&startup, 0, sizeof(startup));
     startup.StartupInfo.cb = sizeof(startup);
+    /* The program must take the pseudo console's handles and not the test's own
+     * (which a CI runner has redirected to pipes): asking for standard handles,
+     * and giving none, is how that is said. And nothing is inherited. */
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = NULL;
+    startup.StartupInfo.hStdOutput = NULL;
+    startup.StartupInfo.hStdError = NULL;
     InitializeProcThreadAttributeList(NULL, 1, 0, &attribute_size);
     startup.lpAttributeList = HeapAlloc(GetProcessHeap(), 0, attribute_size);
     EXPECT(NULL, startup.lpAttributeList != NULL);

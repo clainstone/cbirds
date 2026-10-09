@@ -237,8 +237,8 @@ static void test_usage_is_aligned(void) {
     assert(strstr(buffer, "cbirds -n 1500") != NULL);
 
     /* Every help text starts at the same column. */
-    size_t at = 0, column = 0;
-    for (char *line = strtok(buffer, "\n"); line != NULL; line = strtok(NULL, "\n"), at++) {
+    size_t column = 0;
+    for (char *line = strtok(buffer, "\n"); line != NULL; line = strtok(NULL, "\n")) {
         if (line[0] != ' ' || line[2] != '-') continue;
         const char *help = strstr(line, "  ");
         while (help && help[2] == ' ') help += 1;

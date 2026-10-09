@@ -264,6 +264,10 @@ static volatile LONG input_mode_changed, output_mode_changed, code_page_changed;
 static volatile LONG halting;
 static volatile DWORD halting_thread;
 
+static int is_console(HANDLE handle, DWORD *mode) {
+    return handle != NULL && handle != INVALID_HANDLE_VALUE && GetConsoleMode(handle, mode);
+}
+
 static void ensure_restore_lock(void) {
     if (restore_lock_ready) return;
     /* Only ever first reached from main, before any control event can be taken. */
@@ -279,11 +283,26 @@ void platform_unlock_restore(void) {
     if (restore_lock_ready) LeaveCriticalSection(&restore_lock);
 }
 
+/* The console decodes what it is given with its output code page, which is a
+ * legacy one (437 or 850) until told otherwise, so the UTF-8 the program writes,
+ * the em dash in --help included, would come out as three odd characters. Put
+ * to UTF-8 for the life of the process and put back at the end, but only on a
+ * console: a pipe or a file has no code page and is left alone. */
+static void use_utf8_output(void) {
+    DWORD mode;
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (code_page_changed || !is_console(out, &mode)) return;
+    saved_output_code_page = GetConsoleOutputCP();
+    if (SetConsoleOutputCP(CP_UTF8)) code_page_changed = 1;
+}
+
 void platform_init(void) {
     /* Without this a \n written to a file or a pipe becomes \r\n: a recording
      * is not the same bytes, and a cast has a \r on every line. */
     _setmode(_fileno(stdout), _O_BINARY);
     ensure_restore_lock();
+    use_utf8_output();
+    atexit(platform_leave_output);
 }
 
 /* ---- the clock and the pace ---- */
@@ -361,10 +380,6 @@ ssize_t platform_write(int fd, const void *data, size_t length) {
 
 /* ---- the console's modes ---- */
 
-static int is_console(HANDLE handle, DWORD *mode) {
-    return handle != NULL && handle != INVALID_HANDLE_VALUE && GetConsoleMode(handle, mode);
-}
-
 int platform_enter_raw(void) {
     DWORD in_mode, out_mode, wanted;
     HANDLE in = GetStdHandle(STD_INPUT_HANDLE), out = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -386,8 +401,7 @@ int platform_enter_raw(void) {
         return -1;
     }
     output_mode_changed = 1;
-    saved_output_code_page = GetConsoleOutputCP();
-    if (SetConsoleOutputCP(CP_UTF8)) code_page_changed = 1;
+    use_utf8_output();
 
     /* No line input and no echo. Processed input stays on so that Ctrl-C is a
      * control event we can answer and not a character. Quick edit is off (and
@@ -608,7 +622,7 @@ static BOOL WINAPI console_event(DWORD type) {
 
 static void crash_handler(int signal_number) {
     if (restore_hook != NULL) restore_hook();
-    _exit(128 + signal_number);
+    _Exit(128 + signal_number); /* C99's, so no header has to be found for it. */
 }
 
 void platform_install_exit_handlers(void (*restore)(void)) {

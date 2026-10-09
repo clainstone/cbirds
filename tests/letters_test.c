@@ -628,8 +628,8 @@ static void fly_what_was_told(letters_t *letters, int *told) {
 static void test_letters_launched_in_the_step_the_rest_ends_are_told_to_the_flock(void) {
     letters_t letters;
     vt_t vt;
-    build(&letters, &vt,
-          "hello world, this is some text\r\nsecond line of text here\r\nthird line", 40, 5);
+    build(&letters, &vt, "hello world, this is some text\r\nsecond line of text here\r\nthird line",
+          40, 5);
     int count = letters.count;
     /* A pointer over the first letters, in the very step the rest runs out. */
     letters.rest_left = 0.01;
@@ -658,8 +658,7 @@ static void test_letters_launched_in_the_step_the_rest_ends_are_told_to_the_floc
     for (int step = 0; step < 60 * 120; step++) {
         letters_advance(&letters, STEP, NULL, 0);
         fly_what_was_told(&letters, told);
-        for (int i = 0; i < count; i++)
-            assert(!letter_is_airborne(&letters.letter[i]) || told[i]);
+        for (int i = 0; i < count; i++) assert(!letter_is_airborne(&letters.letter[i]) || told[i]);
         if (letters.phase == LETTERS_AT_REST) rested = 1;
     }
     assert(rested && letters.cycles >= 3);

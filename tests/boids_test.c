@@ -3509,8 +3509,8 @@ static void test_a_text_too_big_for_the_terminal_is_said_after_the_terminal_is_g
 /* Runs `work` in a child that has a terminal of its own, 80 by 24, for its input,
  * its output and its errors, as a person at the program has, and reads what it
  * wrote to the end. Returns the length, and how the child ended in `status`. */
-static size_t run_on_a_terminal(int (*work)(void *), void *context, char *output,
-                                size_t capacity, int *status) {
+static size_t run_on_a_terminal(int (*work)(void *), void *context, char *output, size_t capacity,
+                                int *status) {
     int master = posix_openpt(O_RDWR | O_NOCTTY);
     assert(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0);
     const char *name = ptsname(master);
@@ -3581,15 +3581,14 @@ static void test_a_snapshot_is_reported_after_the_terminal_is_given_back(void) {
     snprintf(bad, sizeof(bad), "%s/missing/taken.png", scratch);
     for (int written = 0; written < 2; written++) {
         reset_sign_state();
-        char *argv[] = {"cbirds", "--unlock-fps", "--frames", "30",      "-n",
-                        "200",    "--seed",       "3",        "--snapshot", written ? good : bad,
-                        NULL};
+        char *argv[] = {"cbirds", "--unlock-fps", "--frames",           "30", "-n", "200", "--seed",
+                        "3",      "--snapshot",   written ? good : bad, NULL};
         int status;
         run_on_a_terminal(run_the_program, argv, output, sizeof(output), &status);
         assert(WIFEXITED(status) && WEXITSTATUS(status) == (written ? EXIT_SUCCESS : EXIT_FAILURE));
         char message[800];
-        snprintf(message, sizeof(message), written ? "cbirds: wrote %s" : "cbirds: could not write %s",
-                 written ? good : bad);
+        snprintf(message, sizeof(message),
+                 written ? "cbirds: wrote %s" : "cbirds: could not write %s", written ? good : bad);
         const char *told = strstr(output, message);
         const char *taken = strstr(output, ALT_SCREEN_ON);
         const char *given_back = where_the_screen_was_given_back(output);
@@ -9103,8 +9102,7 @@ static void test_a_hawk_over_the_text_does_not_stop_the_cycle(void) {
      * in the air for the cycle and on their cells for the flock, and the text then
      * never rested or flew again. Two minutes is four cycles of a text left alone. */
     for (int hawks = 1; hawks <= 3; hawks++)
-        for (int seed = 1; seed <= 4; seed++)
-            assert(cycles_with_hawks(hawks, seed, 60 * 120) >= 3);
+        for (int seed = 1; seed <= 4; seed++) assert(cycles_with_hawks(hawks, seed, 60 * 120) >= 3);
 }
 
 static void test_the_panel_lies_over_the_text_and_the_letters_under_it_still_land(void) {

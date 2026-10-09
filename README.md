@@ -608,8 +608,8 @@ its own encoder. If the file name ends in `.cast` you get an
 [asciinema](https://asciinema.org) recording instead, which plays in any
 terminal. A GIF is drawn with sprites unless `--render braille` or `--render
 sextants` asks for the cells, as a text terminal would show them. For 8 seconds
-of the default flock at 30 frames a second a cast is 2.3 MB, a GIF with sprites
-8.1 MB and a GIF in braille 1.7 MB. `--snapshot` saves a live frame as a PNG, so
+of the default flock at 30 frames a second a cast is 2.4 MB, a GIF with sprites
+8.3 MB and a GIF in braille 1.7 MB. `--snapshot` saves a live frame as a PNG, so
 it wants a terminal. The commands behind every clip here, and the sample text
 one of them flies, are in [docs/README.md](docs/README.md).
 

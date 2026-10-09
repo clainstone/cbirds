@@ -290,8 +290,8 @@ a few seconds, and the flock writes the next time.
 the opaque part of the picture, where a pixel with an alpha above half is ink,
 the places spread evenly over it, and wears the picture's colour there. The
 picture is cut down to at most eight colours, which are the palette of the
-run; with `--color` given they are not, and the light and dark of the picture
-pick shades of that ramp. A bird keeps its colour while it flies, and the
+run; with `--color` or `--matrix` given they are not, and the light and dark of
+the picture pick shades of that ramp. A bird keeps its colour while it flies, and the
 picture is held, let go of and drawn again as a sign is. `--shape dot` and more
 birds, `-n 2000`, draw it best. The file is read as `--sprite` reads one: a PNG
 of up to 4 MB, in any of the colour types PNG has.

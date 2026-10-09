@@ -1003,13 +1003,21 @@ static void test_input_that_never_comes_ends_the_wait(void) {
     vt_destroy(&vt);
 }
 
+/* The patience is from the moment the writer is writing, which the test waits for:
+ * on a Mac with the address sanitizer a fork took longer than the patience, and
+ * fewer lines than five had come by the time it ran out. And a line every fifty
+ * milliseconds is a line every hundred on a machine whose sleeps run long, so it is
+ * three lines at least that it must have read, not five. */
 static void test_input_that_keeps_trickling_is_cut_off_by_patience(void) {
-    int fds[2];
-    assert(pipe(fds) == 0);
+    int fds[2], writing[2];
+    assert(pipe(fds) == 0 && pipe(writing) == 0);
     pid_t child = fork();
     assert(child >= 0);
     if (child == 0) {
         close(fds[0]);
+        close(writing[0]);
+        if (write(writing[1], "", 1) != 1) _exit(1);
+        close(writing[1]);
         for (int i = 0; i < 100; i++) {
             if (write(fds[1], "line\n", 5) < 0) _exit(1);
             usleep(50000);
@@ -1017,6 +1025,10 @@ static void test_input_that_keeps_trickling_is_cut_off_by_patience(void) {
         _exit(0);
     }
     close(fds[1]);
+    close(writing[1]);
+    char running;
+    assert(read(writing[0], &running, 1) == 1);
+    close(writing[0]);
     vt_t vt;
     assert(vt_init(&vt, 20, 4) == 0);
     letters_reading_t reading = {5.0, 0.5, 0.6, 1 << 20};
@@ -1025,7 +1037,7 @@ static void test_input_that_keeps_trickling_is_cut_off_by_patience(void) {
     assert(letters_read(&vt, fds[0], &reading, &bytes, NULL) == LETTERS_READ_IMPATIENT);
     double took = clock_seconds() - started;
     assert(took >= 0.5 && took < 1.5);
-    assert(bytes >= 5 * 5 && bytes < 100 * 5);
+    assert(bytes >= 3 * 5 && bytes < 100 * 5);
     close(fds[0]);
     int status = 0;
     waitpid(child, &status, 0);

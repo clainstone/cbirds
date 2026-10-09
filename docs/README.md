@@ -51,12 +51,16 @@ were asked for from the first frame, a text opens as the text, and a night and
 a space are not flocks that write.
 
 ```sh
-# The murmuration, with no option but --3d and the size of the flock, so that
-# it is what --3d is. Ink falls back to ash when there is no terminal to ask,
-# so the birds are grey. Twelve seconds is a tenth of the camera's orbit,
-# enough for the depth to show in motion.
+# The murmuration, in ember and with a hawk: the 3D mode at its most striking.
+# With no terminal to ask, ink falls back to ash and the birds are grey, so the
+# colour is named. The size of the flock is the default 2000. Seeds differ a
+# good deal in twelve seconds, which is a tenth of the camera's orbit: this is
+# one of 48 that were recorded and looked at, chosen because the flock closes
+# into a ring around the hawk between the third and the sixth second, and folds
+# into arcs and sheets after it. Most of the seeds are over 3 MB at this size;
+# this one is 2.9.
 ./cbirds --record docs/3d.gif --record-fps 25 --record-seconds 12 \
-         --record-size 64x18 -n 1200 --3d --seed 2
+         --record-size 64x18 --3d --color ember --hawks 1 --seed 45
 
 # Text taking flight. docs/neofetch.txt is a sample of what neofetch and
 # fastfetch print, written by hand in plain bytes: colour escape sequences, and
@@ -82,13 +86,17 @@ cat docs/neofetch.txt | ./cbirds --record docs/letters.gif --record-fps 10 \
 ./cbirds --record docs/clock.gif --record-fps 20 --record-seconds 14 \
          --record-size 64x18 -n 300 --clock-at 10:09:52 --seed 5
 
-# A picture. matrix.png is the bird the flock is made of, so no picture from
-# outside is needed: the flock draws its own bird. A picture is held as long as
-# a sign, thirty seconds at least, and the gathering takes a fifth of a second,
-# so four seconds are enough: 800 dots held for four seconds cost 0.9
-# megabytes.
-./cbirds --record docs/picture.gif --record-fps 25 --record-seconds 4 \
-         --record-size 64x18 -n 800 --shape dot --picture matrix.png --seed 5
+# A picture. docs/scene.png is a picture made for this clip: a sunset over pine
+# trees, 320 by 180 pixels, generated and not taken from anywhere. The flock cuts
+# it down to eight colours and every bird takes a place in it. A picture is held
+# as long as a sign, thirty seconds at least, and the gathering takes a fifth of
+# a second, so six seconds show it gather and then hold. 1500 birds are enough to
+# read it at 64x18 cells. At the default size a dot stands alone and the six
+# seconds cost 4.1 megabytes; at 16 pixels the dots touch and cost 2.8, and the
+# pines and the sun read as well. At 20 the dots are a solid fill, 1.5, and no
+# longer birds.
+./cbirds --record docs/picture.gif --record-fps 25 --record-seconds 6 \
+         --record-size 64x18 -n 1500 -s 16 --shape dot --picture docs/scene.png --seed 5
 
 # The fireflies, from a random start to unison. A flash rises and dies in half
 # a second, so twenty frames a second. With this seed and 200 fireflies on a
@@ -120,9 +128,9 @@ resolution. The clip at the top, 300 birds at fourteen pixels for eight
 seconds at 50 frames a second, with two hawks, is 5.4 megabytes; the text clips
 are a fraction of that, because dots compress. The cost is birds times sprite
 area times frames, so a slower, smoother clip pays for its frames with birds,
-not with resolution. The six clips of the features come to 10 megabytes
-together, from 0.9 for the picture to 2.4 for the clock; the clip at the top and
-the gallery are 15.
+not with resolution. The six clips of the features come to 13 megabytes
+together, from 1.4 for the text to 2.9 for the murmuration; the clip at the top
+and the gallery are 15.
 
 A recording whose name ends in `.cast` is an asciinema file instead: the flock
 as the braille renderer sends it, one line of escape sequences per frame,

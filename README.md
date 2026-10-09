@@ -331,9 +331,11 @@ and the picture is held, let go of and drawn again as a sign is. `--shape dot`
 and more birds, `-n 2000`, suit it. The file is read as `--sprite` reads one: a
 PNG of up to 4 MB, in any of the colour types PNG has.
 
-<p align="center"><img src="docs/picture.gif" alt="Eight hundred red dots gather into the arrowhead of the bird the flock is made of"></p>
+<p align="center"><img src="docs/picture.gif" alt="Fifteen hundred dots gather into a sunset: bands of orange, pink and purple sky, a pale sun low on the horizon, and pine trees in two greens in front of it"></p>
 
-<p align="center"><code>cbirds --picture matrix.png --shape dot</code></p>
+<p align="center"><code>cbirds --picture docs/scene.png --shape dot -n 1500 -s 16</code></p>
+
+<p align="center">docs/scene.png is a picture made for this clip, 320 by 180 pixels.</p>
 
 A hawk dives at a sign as it does at a flock, and the wave of light runs through
 the birds that fly round it. The birds that write are not lit and do not swerve,
@@ -396,9 +398,9 @@ the depth shows even in a still picture. A nearer bird is bigger and brighter
 than a far one, and a bird flying at the camera is short where one flying
 across it is long.
 
-<p align="center"><img src="docs/3d.gif" alt="A murmuration in grey over a dark sky: the birds near the camera are large and bright, those far from it small and dim, and the flock folds into sheets and ribbons"></p>
+<p align="center"><img src="docs/3d.gif" alt="A murmuration in ember over a dark sky and a blue hawk: the birds near the camera are large and bright, those far from it small and dim, and the flock closes into a ring around the hawk and then folds into arcs and sheets"></p>
 
-<p align="center"><code>cbirds --3d</code></p>
+<p align="center"><code>cbirds --3d --color ember --hawks 1</code></p>
 
 The three rules are the same, but a bird heeds its seven nearest neighbours
 however far off they are, as starlings do, and not everything within a radius.

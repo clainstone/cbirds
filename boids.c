@@ -10,6 +10,7 @@
 #include <locale.h>
 #include <math.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -705,6 +706,21 @@ static void restore_terminal(void) {
     write_all(SYNC_UPDATE_END, sizeof(SYNC_UPDATE_END) - 1);
     write_all(CURSOR_SHOW, sizeof(CURSOR_SHOW) - 1);
     write_all(ALT_SCREEN_OFF, sizeof(ALT_SCREEN_OFF) - 1);
+}
+
+/* The run ends on an error found after the terminal was taken, and the person is
+ * told why on the terminal they had: the screen is given back first. On the
+ * alternate screen, with output processing off, a message is thrown away with the
+ * screen or staircases across it, and nobody reads why the program stopped. The
+ * arguments are worked out before the terminal is touched, so an errno they report
+ * is the one that was set. */
+static void leave_saying(const char *format, ...) {
+    restore_terminal();
+    va_list arguments;
+    va_start(arguments, format);
+    vfprintf(stderr, format, arguments);
+    va_end(arguments);
+    exit(EXIT_FAILURE);
 }
 
 static void signal_handler(int signal_number) {
@@ -4421,10 +4437,8 @@ static fireflies_law_t firefly_law(void) {
  * glow has reached, or none. */
 static void light_the_night(bird_t *birds) {
     if (fireflies_grow(&night, config.birds, FIREFLY_PERIOD, FIREFLY_SPREAD, random_unit) !=
-        FIREFLIES_OK) {
-        perror("Out of memory");
-        exit(EXIT_FAILURE);
-    }
+        FIREFLIES_OK)
+        leave_saying("Out of memory: %s\n", strerror(errno));
     double startled = 1 - exp(-FIREFLY_STARTLE * frame_seconds);
     double reach = FIREFLY_LANTERN * firefly_spacing();
     for (int i = 0; i < config.birds; i++) {
@@ -7500,48 +7514,35 @@ int main(int argc, char **argv) {
         config.palette = FALLBACK_INK;
 
     spatial_grid_status_t grid_status = spatial_grid_init(&grid, SPATIAL_CELL_SIZE);
-    if (grid_status != SPATIAL_GRID_OK) {
-        fprintf(stderr, "Cannot initialize spatial grid: %s\n",
-                spatial_grid_status_string(grid_status));
-        exit(EXIT_FAILURE);
-    }
+    if (grid_status != SPATIAL_GRID_OK)
+        leave_saying("Cannot initialize spatial grid: %s\n",
+                     spatial_grid_status_string(grid_status));
     /* A named seed makes a run repeatable, which is what lets a look be shared
      * and a bug report be reproduced. */
     seed_random(requested_seed >= 0 ? (unsigned)requested_seed : (unsigned)time(NULL));
     update_screen_dimensions();
     settle_the_bird_size(); /* From the screen, if it is a sign that is being sized. */
     grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, config.birds);
-    if (grid_status != SPATIAL_GRID_OK) {
-        fprintf(stderr, "Cannot prepare spatial grid: %s\n",
-                spatial_grid_status_string(grid_status));
-        exit(EXIT_FAILURE);
-    }
+    if (grid_status != SPATIAL_GRID_OK)
+        leave_saying("Cannot prepare spatial grid: %s\n", spatial_grid_status_string(grid_status));
     /* The sprites, once, as pixels: the text renderers read them back as cells
      * every frame, and Kitty is sent them encoded and then places them by id. */
     if (drawing_with_text()) {
-        if (!prepare_text_renderer()) {
-            fprintf(stderr, "%s: cannot build the sprites to draw with\n", program_name);
-            exit(EXIT_FAILURE);
-        }
+        if (!prepare_text_renderer())
+            leave_saying("%s: cannot build the sprites to draw with\n", program_name);
     } else if (rasterise_sprites(text_sprites) != PNG_OK) {
-        fprintf(stderr, "%s: cannot build the sprites to draw with\n", program_name);
-        exit(EXIT_FAILURE);
+        leave_saying("%s: cannot build the sprites to draw with\n", program_name);
     }
     set_frame_seconds(1.0 / FRAME_RATE);
     hawk_sets_built = 1;
 
     bird_t *birds = calloc((size_t)bird_room(config.birds), sizeof(*birds));
     bird_t *snapshot = malloc(sizeof(*snapshot) * (size_t)bird_room(config.birds));
-    if (!birds || !snapshot) {
-        perror("Out of memory");
-        exit(EXIT_FAILURE);
-    }
+    if (!birds || !snapshot) leave_saying("Out of memory: %s\n", strerror(errno));
     kitty_graphics_status_t graphics_status = kitty_graphics_init(&graphics, STDOUT_FILENO);
-    if (graphics_status != KITTY_GRAPHICS_OK) {
-        fprintf(stderr, "Cannot initialize Kitty graphics: %s\n",
-                kitty_graphics_status_string(graphics_status));
-        exit(EXIT_FAILURE);
-    }
+    if (graphics_status != KITTY_GRAPHICS_OK)
+        leave_saying("Cannot initialize Kitty graphics: %s\n",
+                     kitty_graphics_status_string(graphics_status));
 
     enter_alt_screen();
     write_all("\x1b[J", sizeof("\x1b[J") - 1);
@@ -7553,11 +7554,9 @@ int main(int argc, char **argv) {
         sprites_uploaded = 1; /* Even a failed upload may have left some behind. */
         graphics_status = upload_sprite_sets(&graphics, text_sprites);
         free_sprites(text_sprites);
-        if (graphics_status != KITTY_GRAPHICS_OK) {
-            fprintf(stderr, "Cannot upload Kitty graphics: %s\n",
-                    kitty_graphics_status_string(graphics_status));
-            exit(EXIT_FAILURE);
-        }
+        if (graphics_status != KITTY_GRAPHICS_OK)
+            leave_saying("Cannot upload Kitty graphics: %s\n",
+                         kitty_graphics_status_string(graphics_status));
     }
 
     struct timespec started;
@@ -7597,18 +7596,14 @@ int main(int argc, char **argv) {
         update_screen_dimensions();
         if (reflow_the_letters(&birds, &snapshot)) live_birds = config.birds;
         sprite_fit_t fit = fit_the_sprites_to_the_window(&graphics);
-        if (fit == SPRITES_FAILED) {
-            fprintf(stderr, "%s: cannot build the sprites to draw with\n", program_name);
-            exit(EXIT_FAILURE);
-        }
+        if (fit == SPRITES_FAILED)
+            leave_saying("%s: cannot build the sprites to draw with\n", program_name);
         /* The pause was building, not flying: the next frame is one frame long. */
         if (fit == SPRITES_REBUILT) clock_gettime(CLOCK_MONOTONIC, &previous_frame);
         grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, grid_items());
-        if (grid_status != SPATIAL_GRID_OK) {
-            fprintf(stderr, "Cannot resize spatial grid: %s\n",
-                    spatial_grid_status_string(grid_status));
-            exit(EXIT_FAILURE);
-        }
+        if (grid_status != SPATIAL_GRID_OK)
+            leave_saying("Cannot resize spatial grid: %s\n",
+                         spatial_grid_status_string(grid_status));
         if (population_changed) {
             /* Grown or shrunk by a keypress, and the grid needs room for them. */
             population_changed = 0;
@@ -7617,11 +7612,9 @@ int main(int argc, char **argv) {
             else
                 config.birds = live_birds; /* Keep what we have rather than lose it. */
             grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, grid_items());
-            if (grid_status != SPATIAL_GRID_OK) {
-                fprintf(stderr, "Cannot resize spatial grid: %s\n",
-                        spatial_grid_status_string(grid_status));
-                exit(EXIT_FAILURE);
-            }
+            if (grid_status != SPATIAL_GRID_OK)
+                leave_saying("Cannot resize spatial grid: %s\n",
+                             spatial_grid_status_string(grid_status));
         }
         if (the_row.opened) {
             /* The birds that have come in, after the keys have had their say about
@@ -7629,52 +7622,41 @@ int main(int argc, char **argv) {
             sky_keep_up();
             sky_take_in(birds, &live_birds);
             grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, grid_items());
-            if (grid_status != SPATIAL_GRID_OK) {
-                fprintf(stderr, "Cannot resize spatial grid: %s\n",
-                        spatial_grid_status_string(grid_status));
-                exit(EXIT_FAILURE);
-            }
+            if (grid_status != SPATIAL_GRID_OK)
+                leave_saying("Cannot resize spatial grid: %s\n",
+                             spatial_grid_status_string(grid_status));
         }
         /* After the flock has the size it is to have, and after the screen is
          * measured: a sign is laid out for both, and reads every bird of it. */
         if (leaving <= 0) sign_advance(birds);
         memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
         grid_status = spatial_grid_build(&grid, config.birds, read_bird_position, snapshot);
-        if (grid_status != SPATIAL_GRID_OK) {
-            fprintf(stderr, "Cannot build spatial grid: %s\n",
-                    spatial_grid_status_string(grid_status));
-            exit(EXIT_FAILURE);
-        }
+        if (grid_status != SPATIAL_GRID_OK)
+            leave_saying("Cannot build spatial grid: %s\n",
+                         spatial_grid_status_string(grid_status));
         if (leaving > 0) fly_away(birds);
         graphics_status = leaving > 0 ? queue_render_frame(&graphics, birds)
                                       : render_frame(&graphics, birds, snapshot, &grid);
-        if (graphics_status != KITTY_GRAPHICS_OK) {
-            fprintf(stderr, "Cannot render Kitty graphics: %s\n",
-                    kitty_graphics_status_string(graphics_status));
-            exit(EXIT_FAILURE);
-        }
+        if (graphics_status != KITTY_GRAPHICS_OK)
+            leave_saying("Cannot render Kitty graphics: %s\n",
+                         kitty_graphics_status_string(graphics_status));
         if (leaving <= 0) sky_hand_over(birds, &live_birds);
         size_t frame_bytes = graphics.length;
         while (running && graphics.length > 0) {
             graphics_status = kitty_graphics_flush_nonblocking(&graphics);
             if (graphics_status == KITTY_GRAPHICS_AGAIN) {
-                if (wait_for_terminal_io() < 0) {
-                    perror("Cannot wait for terminal output");
-                    exit(EXIT_FAILURE);
-                }
+                if (wait_for_terminal_io() < 0)
+                    leave_saying("Cannot wait for terminal output: %s\n", strerror(errno));
                 running = handle_input();
                 continue;
             }
             if (graphics_status != KITTY_GRAPHICS_OK) {
                 /* Whatever the renderer: the text ones go through this buffer
                  * too, and a reader that went away is the usual reason. */
-                if (graphics_status == KITTY_GRAPHICS_ERR_IO)
-                    fprintf(stderr, "%s: cannot write to the terminal: %s\n", program_name,
-                            strerror(errno));
-                else
-                    fprintf(stderr, "%s: cannot write to the terminal: %s\n", program_name,
-                            kitty_graphics_status_string(graphics_status));
-                exit(EXIT_FAILURE);
+                leave_saying("%s: cannot write to the terminal: %s\n", program_name,
+                             graphics_status == KITTY_GRAPHICS_ERR_IO
+                                 ? strerror(errno)
+                                 : kitty_graphics_status_string(graphics_status));
             }
         }
         if (!running) break;
@@ -7700,11 +7682,10 @@ int main(int argc, char **argv) {
             nanosleep(&delay, NULL);
         }
     }
-    /* The terminal is back before anything is said to the person at it. */
-    if (the_sign.failures > 0) {
-        restore_terminal();
-        sign_report_failure();
-    }
+    /* The terminal is back before anything is said to the person at it: a message
+     * written on the alternate screen goes with it. */
+    if (the_sign.failures > 0 || snapshot_path != NULL) restore_terminal();
+    sign_report_failure();
     /* A snapshot asked for and not written is a failed run, so a script that
      * takes one can tell. */
     int outcome = EXIT_SUCCESS;

@@ -6726,9 +6726,11 @@ static int run_cast_recording(void) {
  * intro are never alarmed, and not one of text, in which nothing is: any other
  * clip keeps exactly the palette it always had. A sign is not the intro: it has
  * no time at which it lets go, and the birds round it have their waves from the
- * first moment, so a clip of one with hawks has the light however short it is. */
+ * first moment, so a clip of one with hawks has the light however short it is. A
+ * space has no waves, and keeps the colours its own caller asks for below. */
 static void reserve_the_light(gif_writer_t *gif, double seconds) {
-    if (config.hawks == 0 || letters_mode || seconds <= (formation.writing ? formation.until : 0))
+    if (config.hawks == 0 || letters_mode || sky_mode ||
+        seconds <= (formation.writing ? formation.until : 0))
         return;
     const uint8_t *light = highlight_colour();
     uint8_t colours[4][3];
@@ -6766,8 +6768,9 @@ static void reserve_the_flight(gif_writer_t *gif) {
  * first frame does not show everything: a size of bird nobody has flown into view
  * yet, or a hawk that is still off the screen, would be drawn in the nearest colour
  * the table has. The colours that matter are the flat tints of the sprites, each
- * a handful, and they are asked for by name. The flat flock shows everything it
- * has from the first frame, and is left as it was. */
+ * a handful, and they are asked for by name, in the order of their buckets like
+ * the text's, so that the table does not depend on how the sets are numbered. The
+ * flat flock shows everything it has from the first frame, and is left as it was. */
 static void reserve_the_colours_of_the_sprites(gif_writer_t *gif, const png_image_t *frames) {
     uint8_t colours[GIF_RESERVED_MAX][3];
     int count = 0;
@@ -6783,6 +6786,7 @@ static void reserve_the_colours_of_the_sprites(gif_writer_t *gif, const png_imag
             break;
         }
     }
+    qsort(colours, (size_t)count, sizeof(*colours), by_gif_bucket);
     gif_reserve_colours(gif, (const uint8_t(*)[3])colours, count);
 }
 

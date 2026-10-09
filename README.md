@@ -268,15 +268,15 @@ in a small loop of its own, so the strokes shimmer and stay sharp. The colour
 runs along the text, from one end of the ramp to the other. The rest of the
 flock flies round the sign, not through it. On a small terminal the sign takes
 less of it, down to half the width and half the height at 96 by 26 cells, and
-more of the flock writes, so that the birds that are left have sky to fly in. Lower case is written in
-capitals and characters the font lacks are left out. Text too long for one line
-wraps at its spaces onto two or three, as large as fits. A text the flock has
-too few birds to write is said so on stderr and left unwritten, and one that
-turns out too big for the screen once the run has started is said so there when
-the run ends, after the terminal is given back. A key does
-not end a sign. Move the pointer through it and the birds it reaches scatter,
-and come back when it has gone. A hawk does the same to the places it flies
-over, for less time.
+more of the flock writes, so that the birds that are left have sky to fly in.
+Lower case is written in capitals, and a character the font lacks, an accented
+letter or a symbol past ASCII, is left out. Text too long for one line wraps at
+its spaces onto two or three, as large as fits. A text the flock has too few
+birds to write is said so on stderr and left unwritten, and one that turns out
+too big for the screen once the run has started is said so there when the run
+ends, after the terminal is given back. A key does not end a sign. Move the
+pointer through it and the birds it reaches scatter, and come back when it has
+gone. A hawk does the same to the places it flies over, for less time.
 
 `--clock` writes the time, HH:MM, in local time, and follows the locale for the
 hour: twelve hours, with no AM or PM, if `LC_TIME` has a time format that shows

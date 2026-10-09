@@ -5036,6 +5036,32 @@ static void settle_the_sign(void) {
     }
 }
 
+/* The option that asks for a sign, or NULL if none does. It goes by what was
+ * typed and not by what came of it: --say with nothing the font can draw is no sign
+ * and the flock flies as usual, but it was still asked for, and a command that asks
+ * for a sign and for text is a mistake whichever of them turns out to be nothing. */
+static const char *the_sign_option(void) {
+    if (say_text != NULL) return "--say";
+    if (clock_start != NULL) return "--clock-at";
+    if (clock_seconds) return "--seconds";
+    if (clock_mode) return "--clock";
+    if (picture_path != NULL) return "--picture";
+    return NULL;
+}
+
+/* The text is the flock, and a sign is what the flock writes: text that is the
+ * flock leaves nobody to write a sign. Said in one line and with the status of the
+ * other usage errors, before anything is read or opened. Text on a pipe is said
+ * when it is found. */
+static void refuse_what_does_not_go_together(void) {
+    const char *sign = the_sign_option();
+    if (sign != NULL && text_path != NULL) {
+        fprintf(stderr, "%s: %s does not go with --text: the text is the flock\n", program_name,
+                sign);
+        exit(EXIT_USAGE);
+    }
+}
+
 static void read_options(int argc, char **argv) {
     char error[160];
     if (argc > 0 && argv[0] != NULL) program_name = argv[0];
@@ -5075,6 +5101,7 @@ static void read_options(int argc, char **argv) {
      * wears it. --matrix names a ramp too, the green one, and a picture beside it is
      * drawn in that: the rain is green, and a picture in its own colours would be
      * the one thing in it that is not. */
+    refuse_what_does_not_go_together();
     palette_was_asked_for = config.palette >= 0 || matrix_mode;
     if (config.palette < 0) config.palette = 0;
     /* A preset is expanded first so that a slider given after it still wins: the
@@ -5242,6 +5269,11 @@ static int take_the_text(int cols, int rows, int pipes) {
         return 0;
     }
 
+    if (the_sign_option() != NULL) {
+        fprintf(stderr, "%s: %s does not go with text on standard input: the text is the flock\n",
+                program_name, the_sign_option());
+        exit(EXIT_USAGE);
+    }
     letters_mode = 1;
     config.birds = count;
     /* A cell is eight pixels across, a quarter of the sprite the pace was tuned for:

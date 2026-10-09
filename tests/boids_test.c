@@ -7,6 +7,7 @@
 #include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
+#include <termios.h>
 
 /* A directory of the run's own for the files it writes: a fixed name in /tmp
  * collides with a second run, and may already be something else, a symlink
@@ -7008,7 +7009,7 @@ static void assert_the_terminal_shows_the_cells(const vt_t *terminal) {
 
 static void test_a_terminal_that_is_sent_everything_shows_the_text_at_every_frame_and_after_a_cycle(
     void) {
-    sign_sky_t world;
+    world_t world;
     world_open(&world, NEOFETCH_LIKE, 60, 12);
     config.pace_notch = 6;
     apply_notches();
@@ -7293,6 +7294,235 @@ static void test_standard_input_that_is_not_a_terminal_leaves_the_keys_to_the_tt
     close(master);
 }
 
+/* The whole program with text on a pipe, on a terminal of its own that is its
+ * controlling one, as `fastfetch | cbirds` has it: the text is read from the pipe,
+ * the keys from /dev/tty, the size from the terminal, and the terminal is given
+ * back as it was found. Made a controlling terminal the portable way, setsid and
+ * then TIOCSCTTY, which macOS needs and Linux takes, so that the run is the same
+ * on both. The released 1.5 said "Can't enable raw mode: Inappropriate ioctl for
+ * device" here, from tcgetattr on the pipe. */
+static void test_text_on_a_pipe_flies_on_a_terminal_and_gives_it_back(void) {
+    for (int resize = 0; resize < 2; resize++) {
+        int master = posix_openpt(O_RDWR | O_NOCTTY);
+        assert(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0);
+        const char *name = ptsname(master);
+        assert(name != NULL);
+        int watch = open(name, O_RDWR | O_NOCTTY); /* The parent's look at the terminal. */
+        assert(watch >= 0);
+        struct winsize size = {.ws_row = 24, .ws_col = 80, .ws_xpixel = 0, .ws_ypixel = 0};
+        assert(ioctl(watch, TIOCSWINSZ, &size) == 0);
+        struct termios before;
+        assert(tcgetattr(watch, &before) == 0);
+        int text[2];
+        assert(pipe(text) == 0);
+        fflush(NULL);
+        pid_t child = fork();
+        assert(child >= 0);
+        if (child == 0) {
+            alarm(60);
+            close(text[1]);
+            close(master);
+            close(watch);
+            if (setsid() < 0) _exit(90);
+            int terminal = open(name, O_RDWR);
+            if (terminal < 0 || ioctl(terminal, TIOCSCTTY, 0) < 0) _exit(91);
+            if (dup2(text[0], STDIN_FILENO) < 0 || dup2(terminal, STDOUT_FILENO) < 0 ||
+                dup2(terminal, STDERR_FILENO) < 0)
+                _exit(92);
+            close(text[0]);
+            close(terminal);
+            /* A run as from the shell: nothing the tests before this one left. */
+            reset_sign_state();
+            render_mode = RENDER_UNSET;
+            letters_mode = 0;
+            text_path = NULL;
+            forget_the_text();
+            input_fd = STDIN_FILENO;
+            terminal_is_raw = terminal_restored = alt_screen_is_on = sprites_uploaded = 0;
+            char *argv[] = {"cbirds", "--seed", "3", NULL};
+            exit(cbirds_application_main(3, argv)); /* exit: the terminal is put back. */
+        }
+        close(text[0]);
+        const char *words = "hello from a pipe\nand a second line\n";
+        assert(write(text[1], words, strlen(words)) == (ssize_t)strlen(words));
+        close(text[1]);
+
+        static char output[1 << 21];
+        size_t length = 0, drawn = 0;
+        int status = 0, typed = 0, resized = 0;
+        struct timespec began, now;
+        clock_gettime(CLOCK_MONOTONIC, &began);
+        for (;;) {
+            fd_set readable;
+            FD_ZERO(&readable);
+            FD_SET(master, &readable);
+            struct timeval tick = {0, 50000};
+            if (select(master + 1, &readable, NULL, NULL, &tick) > 0) {
+                ssize_t got = read(master, output + length, sizeof(output) - 1 - length);
+                if (got <= 0) break;
+                length += (size_t)got;
+                output[length] = '\0';
+            }
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            double since = elapsed_seconds(&began, &now);
+            if (!drawn && since > 1.0 && strstr(output, ALT_SCREEN_ON) != NULL) drawn = length;
+            /* Drawn, and then a bigger window, which it lays the text out again for. */
+            if (resize && !resized && since > 1.0 && strstr(output, ALT_SCREEN_ON) != NULL) {
+                struct winsize bigger = {
+                    .ws_row = 30, .ws_col = 100, .ws_xpixel = 0, .ws_ypixel = 0};
+                assert(ioctl(master, TIOCSWINSZ, &bigger) == 0);
+                resized = 1;
+            }
+            if (!typed && since > (resize ? 2.0 : 1.0) && strstr(output, ALT_SCREEN_ON) != NULL) {
+                assert(write(master, "q", 1) == 1);
+                typed = 1;
+            }
+            if (waitpid(child, &status, WNOHANG) == child) {
+                child = -1;
+                break;
+            }
+            assert(since < 30); /* It ends, and does not hang. */
+        }
+        if (child > 0) assert(waitpid(child, &status, 0) == child);
+        assert(typed);
+        assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS);
+        /* It took the screen, drew the words, and gave the screen back, and nothing
+         * about the terminal went wrong on the way. */
+        const char *taken = strstr(output, ALT_SCREEN_ON);
+        assert(taken != NULL && drawn > (size_t)(taken - output));
+        /* What a terminal fed it all shows a second in: the words, at home. */
+        vt_t shown;
+        assert(vt_init(&shown, 80, 24) == 0);
+        vt_feed(&shown, taken, drawn - (size_t)(taken - output));
+        int found = 0;
+        for (int row = 0; row < 24 && !found; row++) {
+            char line[81];
+            for (int col = 0; col < 80; col++) {
+                uint32_t glyph = vt_cell(&shown, col, row)->glyph;
+                line[col] = glyph >= 32 && glyph < 127 ? (char)glyph : ' ';
+            }
+            line[80] = '\0';
+            found = strstr(line, "hello from a pipe") != NULL;
+        }
+        vt_destroy(&shown);
+        assert(found);
+        const char *given_back = NULL;
+        for (const char *at = strstr(output, ALT_SCREEN_OFF); at != NULL;
+             at = strstr(at + 1, ALT_SCREEN_OFF))
+            given_back = at;
+        assert(given_back != NULL && given_back > taken);
+        assert(strstr(output, "ioctl") == NULL && strstr(output, "raw mode") == NULL);
+        /* And the terminal is as it was: echo and lines, and the same characters. */
+        struct termios after;
+        assert(tcgetattr(watch, &after) == 0);
+        assert(after.c_lflag == before.c_lflag && after.c_iflag == before.c_iflag);
+        assert(after.c_oflag == before.c_oflag);
+        assert(memcmp(after.c_cc, before.c_cc, sizeof(before.c_cc)) == 0);
+        close(watch);
+        close(master);
+    }
+}
+
+/* Text on a pipe with no terminal anywhere, as from a service or an editor's run
+ * button: said in words, with a failed status, and not as a failed ioctl. */
+static void test_text_on_a_pipe_with_no_terminal_says_so(void) {
+    int text[2], said[2];
+    assert(pipe(text) == 0 && pipe(said) == 0);
+    fflush(NULL);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        alarm(20);
+        close(text[1]);
+        close(said[0]);
+        if (setsid() < 0) _exit(90); /* No controlling terminal. */
+        if (dup2(text[0], STDIN_FILENO) < 0 || dup2(said[1], STDOUT_FILENO) < 0 ||
+            dup2(said[1], STDERR_FILENO) < 0)
+            _exit(92);
+        reset_sign_state();
+        render_mode = RENDER_UNSET;
+        letters_mode = 0;
+        text_path = NULL;
+        forget_the_text();
+        input_fd = STDIN_FILENO;
+        terminal_is_raw = terminal_restored = alt_screen_is_on = sprites_uploaded = 0;
+        char *argv[] = {"cbirds", NULL};
+        exit(cbirds_application_main(1, argv));
+    }
+    close(text[0]);
+    close(said[1]);
+    assert(write(text[1], "hello\n", 6) == 6);
+    close(text[1]);
+    char message[1024];
+    size_t length = 0;
+    ssize_t got;
+    while ((got = read(said[0], message + length, sizeof(message) - 1 - length)) > 0)
+        length += (size_t)got;
+    message[length] = '\0';
+    close(said[0]);
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_FAILURE);
+    assert(strstr(message, "needs a terminal") != NULL && strstr(message, "/dev/tty") != NULL);
+    assert(strstr(message, "ioctl") == NULL);
+}
+
+/* A run that reads text from standard input and also asks for a sign. */
+static int status_of_text_piped_in_with(int argc, char **argv, const char *file) {
+    fflush(NULL);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        alarm(20);
+        int quiet = open("/dev/null", O_WRONLY), fd = open(file, O_RDONLY);
+        if (quiet < 0 || fd < 0 || dup2(quiet, STDERR_FILENO) < 0 || dup2(fd, STDIN_FILENO) < 0)
+            _exit(99);
+        read_options(argc, argv);
+        _exit(take_the_text(60, 12, 1) ? 0 : 3); /* A flock goes on when there was no text. */
+    }
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+/* Text is the flock, and a sign is what the flock writes: a text leaves nobody to
+ * write a sign. Refused as every usage error is, in either order on the line, and
+ * for text on a pipe when it is found; a pipe with nothing in it is no text, and
+ * the sign goes on. */
+static void test_a_sign_is_refused_with_text(void) {
+    char text[600], empty[600], picture[600];
+    scratch_file(text, sizeof(text), "signs_refuse.txt");
+    scratch_file(empty, sizeof(empty), "signs_refuse_empty.txt");
+    world_write(text, "hello, world\n");
+    world_write(empty, "");
+    write_a_picture("refuse.png", 1, 255);
+    scratch_file(picture, sizeof(picture), "refuse.png");
+    const char *signs[][2] = {{"--say", "hi"},
+                              {"--clock", NULL},
+                              {"--clock-at", "10:00"},
+                              {"--seconds", NULL},
+                              {"--picture", NULL}};
+    for (size_t k = 0; k < sizeof(signs) / sizeof(*signs); k++) {
+        const char *value = signs[k][1];
+        if (strcmp(signs[k][0], "--picture") == 0) value = picture;
+        char *first[7] = {"cbirds", (char *)signs[k][0]},
+             *last[7] = {"cbirds", "--text", text, (char *)signs[k][0]};
+        int n = 2, m = 4;
+        if (value != NULL) first[n++] = (char *)value, last[m++] = (char *)value;
+        first[n++] = "--text";
+        first[n++] = text;
+        first[n] = last[m] = NULL;
+        assert(exit_status_of(n, first) == EXIT_USAGE);
+        assert(exit_status_of(m, last) == EXIT_USAGE);
+        char *alone[4] = {"cbirds", (char *)signs[k][0], (char *)value, NULL};
+        int count = value != NULL ? 3 : 2;
+        assert(status_of_text_piped_in_with(count, alone, text) == EXIT_USAGE);
+        assert(status_of_text_piped_in_with(count, alone, empty) == 3);
+    }
+    assert(unlink(text) == 0 && unlink(empty) == 0 && unlink(picture) == 0);
+    reset_sign_state();
+}
+
 static void test_keys_and_colour_questions_use_the_descriptor_that_was_chosen(void) {
     int keys[2];
     assert(pipe(keys) == 0);
@@ -7464,6 +7694,9 @@ int main(void) {
     test_text_that_does_not_fit_the_screen_it_is_laid_out_on_scrolls();
     test_a_benchmark_of_text_flies_it_from_the_first_frame();
     test_standard_input_that_is_not_a_terminal_leaves_the_keys_to_the_tty();
+    test_text_on_a_pipe_flies_on_a_terminal_and_gives_it_back();
+    test_text_on_a_pipe_with_no_terminal_says_so();
+    test_a_sign_is_refused_with_text();
     test_keys_and_colour_questions_use_the_descriptor_that_was_chosen();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);

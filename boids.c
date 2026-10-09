@@ -5245,6 +5245,11 @@ static int run_benchmark(void) {
 
     kitty_graphics_destroy(&graphics);
     spatial_grid_destroy(&grid);
+    if (drawing_with_text()) {
+        cells_destroy(&text_cells);
+        png_image_free(&text_canvas);
+        free_sprites(text_sprites);
+    }
     fireflies_destroy(&night);
     letters_destroy(&the_letters);
     forget_the_text();

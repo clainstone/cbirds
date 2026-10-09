@@ -6220,8 +6220,11 @@ static int status_of_a_run_that_may_exit(void (*run)(void *), void *context, cha
         _exit(0);
     }
     close(errors[1]);
-    ssize_t got = read(errors[0], said, size - 1);
-    said[got > 0 ? got : 0] = '\0';
+    /* To its end, so that a child that says more than a line is not killed for it. */
+    size_t length = 0;
+    ssize_t got;
+    while ((got = read(errors[0], said + length, size - 1 - length)) > 0) length += (size_t)got;
+    said[length] = '\0';
     close(errors[0]);
     int status = 0;
     assert(waitpid(child, &status, 0) == child);

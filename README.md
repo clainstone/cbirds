@@ -354,9 +354,11 @@ is one of the flock until it is home, and is lit with the rest. Move the pointer
 through a sign and the birds it reaches scatter, and come back when it has gone.
 A hawk does the same to the places it flies over, for less time: a fifth of a
 second to two fifths, and only the places within a hawk's own width of its path.
-With one hawk up, 800 birds and a screen of 96 by 26 cells, about 5% of the
-writers are scattered at any moment, and about 10% with two; a clock stays
-readable. A hawk that dives through a letter still tears it.
+A hawk is turned from the text as the flock is, if less firmly than it is drawn
+to its prey, so it hunts round the sign with the river and crosses it when a
+chase takes it there. With one hawk up, 800 birds and a screen of 96 by 26
+cells, 3 to 5% of the writers are scattered at any moment, and 6 to 8% with two;
+a clock stays readable. A hawk that dives through a letter still tears it.
 
 A sign is what the flock writes, so it does not go with a flock that is
 something else: `--say`, `--clock` and `--picture` stop with a usage error

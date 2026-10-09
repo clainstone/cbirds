@@ -153,6 +153,8 @@ cbirds --depth --trails             a second sky behind the first
 cbirds --matrix                     it is raining birds
 cbirds --say "back in five"         the flock writes it, and holds it as a sign
 cbirds --clock                      the flock tells the time
+cbirds --clock --seconds            and the seconds, HH:MM:SS
+cbirds --say "ciao" --font-size 8   letters eight rows tall, from 4 to 10
 cbirds --picture logo.png           the flock draws a PNG; --shape dot and -n 2000 suit it
 cbirds --screensaver --clock        a lock screen that tells the time; any key quits
 ```
@@ -202,20 +204,43 @@ up. A sign is for reading, so it is held for thirty to forty-five seconds, and
 then the flock lets go for eight to twelve, flies as a murmuration, and writes
 it again. The birds that write do not stand still: each hovers round its place
 in a small loop of its own, so the strokes shimmer and stay sharp. The colour
-runs along the text, from one end of the ramp to the other. The rest of the
-flock flies round the sign, not through it. On a small terminal the sign takes
-less of it, down to half the width and half the height at 96 by 26 cells, and
-more of the flock writes, so that the birds that are left have sky to fly in. Lower case is written in
-capitals, and an accented letter as its plain one, so that città is CITTA and
-Straße is STRASSE; a symbol, or a letter of another alphabet, has no plain letter
-and is left out. Text too long for one line
-wraps at its spaces onto two or three, as large as fits. A text the flock has
-too few birds to write is said so on stderr and left unwritten, and one that
-turns out too big for the screen once the run has started is said so there when
-the run ends, after the terminal is given back. A key does
-not end a sign. Move the pointer through it and the birds it reaches scatter,
-and come back when it has gone. A hawk does the same to the places it flies
-over, for less time.
+runs along the text, from one end of the ramp to the other.
+
+<p align="center"><img src="docs/say.gif" alt="Birds gather into the words BACK IN FIVE on two lines, and hover in their places while the rest of the flock wheels round the sign"></p>
+
+<p align="center"><code>cbirds --say "back in five"</code></p>
+
+The rest of the flock wheels round the sign, not through it: all of it the same
+way, on an ellipse round the text, as one river that bunches and thins, and the
+other way round the next time the sign is written. Each bird of it wears the
+colour of its heading, so the sky round the text turns like a wheel.
+
+The letters are a seventh of the window's rows tall: four rows at 80 by 24,
+five at 120 by 34, seven at 200 by 50. `--font-size ROWS` sets them from 4 to
+10 rows, on any window. Under four the text is lost in the river, and over ten
+the birds, which are as wide as the cells of the letters, are as heavy as a
+flock with nothing to write and the river is two bands above and below the
+text. A sign never takes more than half the width of the screen and not quite
+half its height, or half and half on a small terminal, so that the river has
+room; a size that does not fit there is made as large as fits, on up to three
+lines, and a long text that would be too small to read takes up to two thirds
+by three fifths. On a small terminal more of the flock writes, so that the
+birds that are left have sky to fly in.
+
+Lower case is written in capitals, and an accented letter as its plain one, so
+that città is CITTA and Straße is STRASSE; a symbol, or a letter of another
+alphabet, has no plain letter and is left out. A text the flock has too few
+birds to write is said so on stderr and left unwritten, and one that turns out
+too big for the screen once the run has started is said so there when the run
+ends, after the terminal is given back. A key does not end a sign. Move the
+pointer through it and the birds it reaches scatter, and come back when it has
+gone. A hawk does the same to the places it flies over, for less time: a fifth
+of a second to two fifths, and only the places within a hawk's own width of its
+path. A hawk is turned from the text as the flock is, if less firmly than it is
+drawn to its prey, so it hunts round the sign with the river and crosses it when
+a chase takes it there. With one hawk up, 800 birds and a screen of 96 by 26
+cells, about 3% of the writers are scattered at any moment, and about 7% with
+two; a clock stays readable.
 
 `--clock` writes the time, HH:MM, in local time, and follows the locale for the
 hour: twelve hours, with no AM or PM, if `LC_TIME` has a time format that shows
@@ -224,6 +249,15 @@ settles once a second. At each new minute the digits that change let go and
 other birds write the new ones, while the rest of the time stays where it is,
 so the clock can be read at any moment. On the hour the whole of it lets go for
 a few seconds, and the flock writes the next time.
+
+<p align="center"><img src="docs/clock.gif" alt="The flock writes 10:09, and a few seconds later the two digits that change let go and other birds write 10:10 while the rest of the time stays where it is"></p>
+
+<p align="center"><code>cbirds --clock-at 10:09:52</code></p>
+
+`--seconds` shows the seconds too, HH:MM:SS, and is a clock on its own, as
+`--clock-at` is. A digit of the seconds is not let go: its own birds hop over to
+the next one, which takes them a fraction of a second, so the seconds can be
+read as they tick. The minutes and the hour change as they do without it.
 
 `--picture FILE` has the flock draw a PNG instead. Every bird takes a place in
 the opaque part of the picture, where a pixel with an alpha above half is ink,
@@ -236,14 +270,14 @@ birds, `-n 2000`, draw it best. The file is read as `--sprite` reads one: a PNG
 of up to 4 MB, in any of the colour types PNG has.
 
 A sign picks a bird as wide as the distance between the cells of its letters
-unless you give `--size`, so a short text is written with the usual bird and a
-long one on a small terminal with a smaller one. `--shape dot` is the
-crispest, and more birds make thicker strokes.
+unless you give `--size`, so larger letters are written by larger birds, up to
+the usual thirty pixels, and the whole flock flies at that size. `--shape dot`
+is the crispest, and more birds make thicker strokes.
 
 A recording runs on its own clock, not the wall's, so the time a recorded
 `--clock` tells is the local time at which the recording started, moved on by
 its frames. `--clock-at 10:09:50` starts it from a time you choose instead,
-which is how to record a change of minute.
+which is how to record a change of minute. On its own it starts a clock.
 
 ## Screensaver
 
@@ -317,6 +351,8 @@ Sign
       --say TEXT                the flock writes TEXT and holds it as a sign
       --clock                   the flock tells the time, HH:MM, in local time
       --clock-at TIME           start the clock at HH:MM or HH:MM:SS, not now
+      --seconds                 the clock shows the seconds too, HH:MM:SS
+      --font-size ROWS          how many rows tall a sign's letters are, 4 to 10
       --picture FILE            the flock draws a PNG, in its colours unless --color is given
 
 Oddities

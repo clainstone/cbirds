@@ -36,6 +36,18 @@ make
 ./cbirds --record docs/sextants.gif --record-fps 50 --record-seconds 7 \
          --record-size 80x22 -n 360 -s 12 --color acid --render sextants --speed 2 --seed 5
 
+# A sign. The flock writes it from the first frame and holds it for thirty
+# seconds at least, so eight seconds show the writing, the hovering and the
+# flock wheeling round it. 400 birds are enough for ten letters on two lines.
+./cbirds --record docs/say.gif --record-fps 20 --record-seconds 8 \
+         --record-size 64x18 -n 400 --say "back in five" --seed 5
+
+# The clock, started eight seconds before the next minute so that the change
+# of minute is in the clip: at 8 seconds the two digits that change let go and
+# other birds write the new ones, and the rest of the time does not move.
+./cbirds --record docs/clock.gif --record-fps 20 --record-seconds 14 \
+         --record-size 64x18 -n 300 --clock-at 10:09:52 --seed 5
+
 # And the asciinema cast, at the default pace, with the braille birds at the
 # 60 pixels they were drawn at before 30 became the default everywhere.
 ./cbirds --record docs/demo.cast --record-fps 30 --record-seconds 8 \

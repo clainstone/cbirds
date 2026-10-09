@@ -8560,6 +8560,8 @@ static void world_open(world_t *world, const char *text, int cols, int rows) {
     config.palette = palette_named("ember");
     config.pace_notch = DEFAULT_PACE_NOTCH;
     apply_notches();
+    reflow_wait = 0;
+    reflow_empty_cols = reflow_empty_rows = 0;
     apply_screen_size(cols, rows, cols * 8, rows * 16);
     text_path = path;
     assert(take_the_text(cols, rows, 0) == 1);
@@ -9369,11 +9371,73 @@ static void test_a_window_that_changes_size_lays_the_text_out_again(void) {
     assert(memcmp(picture, after, (size_t)count_before * sizeof(cell_t)) == 0);
     free(picture);
     free(after);
+    world_close(&world);
+}
 
-    /* A window with no room for any of it keeps what it has. */
-    apply_screen_size(80, 8, 0, 0);
-    forget_the_text();
-    assert(reflow_the_letters(&world.birds, &world.snapshot) == 0);
+/* The text is on the first row of twenty and the lines after it are empty, so a
+ * screen of ten has scrolled it away and a larger one has no letter to show. */
+static const char TEXT_AT_THE_TOP[] = "hello world\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n";
+
+static void test_a_window_with_none_of_the_text_left_keeps_the_letters_and_their_size(void) {
+    world_t world;
+    world_open(&world, TEXT_AT_THE_TOP, 40, 20);
+    int before = config.birds;
+    assert(before == 10 && the_letters.cols == 40 && the_letters.rows == 20);
+
+    /* A bigger screen, with nothing of the text on it once it is laid out there. The
+     * letters are still the ones laid out on forty by twenty, in arrays of that size,
+     * and the size they say is the size they are: a sanitizer sees the arrays. */
+    apply_screen_size(100, 10, 0, 0);
+    assert(text_renderer_fits_the_screen());
+    for (int frame = 0; frame < 120; frame++)
+        assert(reflow_the_letters(&world.birds, &world.snapshot) == 0);
+    assert(the_letters.cols == 40 && the_letters.rows == 20 && config.birds == before);
+    assert(the_letters.grid != NULL && the_letters.at != NULL && the_letters.claim != NULL);
+    /* It was looked at once and found empty, and is not looked at again. */
+    assert(reflow_wait == 0);
+
+    /* The text is still painted, in the corner of a screen that has more room. */
+    int cells;
+    cell_t *picture = world_picture(&world, &cells);
+    assert(cells == 100 * 10);
+    assert(picture[0].glyph == 'h' && picture[4].glyph == 'o' && picture[6].glyph == 'w');
+    free(picture);
+
+    /* And it flies and comes home on the screen it does not fit. */
+    assert(spatial_grid_prepare(&world.grid, screen.width, screen.height, config.birds) ==
+           SPATIAL_GRID_OK);
+    feed_input("\r");
+    assert(world_run_until(&world, LETTERS_IN_FLIGHT, 60 * 6) > 0);
+    for (int frame = 0; frame < 120; frame++) {
+        world_step(&world);
+        picture = world_picture(&world, &cells);
+        free(picture);
+    }
+    feed_input("\r");
+    assert(world_run_until(&world, LETTERS_AT_REST, 60 * 40) > 0 && world_all_home(&world));
+
+    /* A smaller screen is no different: what there is stays. */
+    apply_screen_size(20, 5, 0, 0);
+    assert(text_renderer_fits_the_screen());
+    for (int frame = 0; frame < 120; frame++)
+        assert(reflow_the_letters(&world.birds, &world.snapshot) == 0);
+    assert(the_letters.cols == 40 && the_letters.rows == 20);
+    picture = world_picture(&world, &cells);
+    assert(cells == 20 * 5 && picture[0].glyph == 'h');
+    free(picture);
+
+    /* A size where it does show is laid out, whatever the sizes before were. */
+    apply_screen_size(60, 20, 0, 0);
+    assert(text_renderer_fits_the_screen());
+    int laid_out = 0;
+    for (int frame = 0; frame < 60 && !laid_out; frame++)
+        laid_out = reflow_the_letters(&world.birds, &world.snapshot);
+    assert(laid_out && the_letters.cols == 60 && the_letters.rows == 20 && config.birds == before);
+    /* The size that had nothing is still known to have nothing. */
+    apply_screen_size(100, 10, 0, 0);
+    for (int frame = 0; frame < 120; frame++)
+        assert(reflow_the_letters(&world.birds, &world.snapshot) == 0);
+    assert(the_letters.cols == 60 && the_letters.rows == 20);
     world_close(&world);
 }
 
@@ -12137,6 +12201,7 @@ int main(void) {
     test_a_text_recording_is_the_text_flying();
     test_a_text_recording_as_a_gif_is_painted_with_the_font();
     test_a_window_that_changes_size_lays_the_text_out_again();
+    test_a_window_with_none_of_the_text_left_keeps_the_letters_and_their_size();
     test_text_that_does_not_fit_the_screen_it_is_laid_out_on_scrolls();
     test_a_benchmark_of_text_flies_it_from_the_first_frame();
     test_standard_input_that_is_not_a_terminal_leaves_the_keys_to_the_tty();

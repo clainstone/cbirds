@@ -279,37 +279,106 @@ typedef struct {
     link_sender_t who;
 } window_t;
 
-static int by_name(const void *a, const void *b) {
-    return strcmp(((const window_t *)a)->name, ((const window_t *)b)->name);
-}
-
 static int path_for(const link_t *link, const char *name, char *out, size_t size) {
     int written = snprintf(out, size, "%s/%s", link->directory, name);
     return written > 0 && (size_t)written < size;
 }
 
+/* How the directory stands: when anything last came into it or went out of it. */
+static int stamp_of_the_directory(const link_t *link, long long *seconds, long *nanoseconds) {
+    struct stat info;
+    if (lstat(link->directory, &info) < 0) return 0;
+#if defined(__APPLE__)
+    *seconds = info.st_mtimespec.tv_sec;
+    *nanoseconds = info.st_mtimespec.tv_nsec;
+#else
+    *seconds = info.st_mtim.tv_sec;
+    *nanoseconds = info.st_mtim.tv_nsec;
+#endif
+    return 1;
+}
+
+static int is_refused(const link_t *link, const char *name) {
+    for (int i = 0; i < link->refused_count; i++)
+        if (strcmp(link->refused[i], name) == 0) return 1;
+    return 0;
+}
+
+/* The refusals are good for the directory as it was. Something has come or gone
+ * since: an entry may be another one under the same name, and is looked at again. */
+static void forget_refusals_if_the_directory_changed(link_t *link) {
+    long long seconds;
+    long nanoseconds;
+    if (link->refused_count == 0) return;
+    if (!stamp_of_the_directory(link, &seconds, &nanoseconds) || seconds != link->refused_seconds ||
+        nanoseconds != link->refused_nanoseconds)
+        link->refused_count = 0;
+}
+
+/* An entry that was sent to and refused for a reason that will not mend (it is no
+ * socket of ours, it is gone) is let be, and not made a neighbour again at the next
+ * look and the one after, announcing to it and giving it up every time. */
+static void refuse(link_t *link, const char *name) {
+    long long seconds;
+    long nanoseconds;
+    if (!stamp_of_the_directory(link, &seconds, &nanoseconds)) return;
+    forget_refusals_if_the_directory_changed(link);
+    if (is_refused(link, name)) return;
+    if (link->refused_count == LINK_REFUSED_MAX) {
+        memmove(link->refused[0], link->refused[1],
+                sizeof(link->refused[0]) * (LINK_REFUSED_MAX - 1));
+        link->refused_count--;
+    }
+    strcpy(link->refused[link->refused_count++], name);
+    link->refused_seconds = seconds;
+    link->refused_nanoseconds = nanoseconds;
+}
+
+/* What a window needs of the directory, and no more: the windows beside it, and
+ * when the last one joined. There is no list to cut short, so there is nothing a
+ * crowd of entries can push a window off. */
+typedef struct {
+    window_t left, right;
+    int has_left, has_right;
+    uint64_t latest; /* When the latest of them joined; zero if there are none. */
+} sky_t;
+
 /* The windows that are there, in the order they joined. A socket whose process
  * is gone is a leftover of one that was killed, and is removed; one whose pid is
- * alive is taken at its word, and found out by the first datagram it refuses. */
-static int read_the_sky(const link_t *link, window_t *windows) {
+ * alive is taken at its word, and found out by the first datagram it refuses.
+ * Only a socket can be a window, so a link, a directory or a file by a window's
+ * name is not one; and an entry that was refused is not, until the directory has
+ * changed. `mine` is this window's name, or NULL before it has one. */
+static void read_the_sky(link_t *link, const char *mine, sky_t *sky) {
     DIR *directory = opendir(link->directory);
-    int count = 0;
-    if (directory == NULL) return 0;
+    memset(sky, 0, sizeof(*sky));
+    if (directory == NULL) return;
+    forget_refusals_if_the_directory_changed(link);
     for (struct dirent *entry; (entry = readdir(directory)) != NULL;) {
         window_t window;
+        char path[LINK_PATH_SIZE];
+        struct stat info;
         if (strlen(entry->d_name) >= sizeof(window.name)) continue;
         if (!parse_name(entry->d_name, &window.who)) continue;
         strcpy(window.name, entry->d_name);
+        if (!path_for(link, window.name, path, sizeof(path))) continue;
         if (kill((pid_t)window.who.pid, 0) < 0 && errno == ESRCH) {
-            char path[LINK_PATH_SIZE];
-            if (path_for(link, window.name, path, sizeof(path))) unlink(path);
+            unlink(path);
             continue;
         }
-        if (count < LINK_WINDOWS_MAX) windows[count++] = window;
+        if (lstat(path, &info) < 0 || !S_ISSOCK(info.st_mode)) continue;
+        if (window.who.joined > sky->latest) sky->latest = window.who.joined;
+        if (mine == NULL || strcmp(window.name, mine) == 0 || is_refused(link, window.name))
+            continue;
+        if (strcmp(window.name, mine) < 0) {
+            if (!sky->has_left || strcmp(window.name, sky->left.name) > 0) sky->left = window;
+            sky->has_left = 1;
+        } else {
+            if (!sky->has_right || strcmp(window.name, sky->right.name) < 0) sky->right = window;
+            sky->has_right = 1;
+        }
     }
     closedir(directory);
-    qsort(windows, (size_t)count, sizeof(*windows), by_name);
-    return count;
 }
 
 static int same_sender(const link_sender_t *a, const link_sender_t *b) {
@@ -434,6 +503,7 @@ static void neighbour_is_gone(link_t *link, int side, int error) {
     char path[LINK_PATH_SIZE];
     if (error == ECONNREFUSED && path_for(link, link->next[side].name, path, sizeof(path)))
         unlink(path);
+    refuse(link, link->next[side].name);
     forget(&link->next[side]);
     link->scan_wanted = 1;
 }
@@ -451,24 +521,23 @@ static void announce(link_t *link) {
 /* Reads the directory and works out who is on either side. If this window's own
  * socket has been taken out from under it (a tidy up of the temporary
  * directory, a careless rm) it is made again, under the same name, so that it
- * keeps its place. */
+ * keeps its place. It looks for its own file by name, and not for its name in what
+ * was listed: a listing is no proof that it is not there. */
 static void scan(link_t *link) {
-    window_t windows[LINK_WINDOWS_MAX];
-    int count = read_the_sky(link, windows);
-    int mine = -1;
-    for (int i = 0; i < count && mine < 0; i++)
-        if (same_sender(&windows[i].who, &link->me)) mine = i;
+    sky_t sky;
+    struct stat info;
+    read_the_sky(link, link->name, &sky);
     link->scanned = link->now;
     link->scan_wanted = 0;
-    if (mine < 0) {
+    if (lstat(link->path, &info) < 0 || !S_ISSOCK(info.st_mode)) {
         adopt(&link->next[LINK_LEFT], NULL);
         adopt(&link->next[LINK_RIGHT], NULL);
         int old = link->fd;
         if (bind_the_socket(link) == LINK_OK && old >= 0) close(old);
         return;
     }
-    adopt(&link->next[LINK_LEFT], mine > 0 ? &windows[mine - 1] : NULL);
-    adopt(&link->next[LINK_RIGHT], mine + 1 < count ? &windows[mine + 1] : NULL);
+    adopt(&link->next[LINK_LEFT], sky.has_left ? &sky.left : NULL);
+    adopt(&link->next[LINK_RIGHT], sky.has_right ? &sky.right : NULL);
 }
 
 static uint64_t nanoseconds_now(void) {
@@ -504,11 +573,10 @@ link_status_t link_open(link_t *link, const char *directory, double now) {
     if (status != LINK_OK) return status;
 
     /* After the last to join, even if the clock has been set back since. */
-    window_t windows[LINK_WINDOWS_MAX];
-    int count = read_the_sky(link, windows);
+    sky_t others;
+    read_the_sky(link, NULL, &others);
     uint64_t joined = nanoseconds_now();
-    for (int i = 0; i < count; i++)
-        if (windows[i].who.joined >= joined) joined = windows[i].who.joined + 1;
+    if (others.latest >= joined) joined = others.latest + 1;
     link->me.joined = joined;
     format_name(link->name, sizeof(link->name), &link->me);
     if (!path_for(link, link->name, link->path, sizeof(link->path))) return LINK_ERR_PATH_TOO_LONG;

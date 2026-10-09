@@ -29,8 +29,10 @@ typedef struct {
 } sign_lines_t;
 
 /* The text as the font can draw it: capitals, one space between words and none
- * at the ends, and no character the font lacks. Returns how many letters, digits
- * and marks are left (spaces do not count), zero when there is nothing to draw. */
+ * at the ends, an accented letter as its plain letter (é is E, ß is SS), and no
+ * character the font still lacks. The text is UTF-8. Returns how many letters,
+ * digits and marks are left (spaces do not count), zero when there is nothing to
+ * draw. */
 int sign_clean(const char *text, char *out, size_t size);
 
 /* How many rows of cells the lines take, and how many columns the widest line. */

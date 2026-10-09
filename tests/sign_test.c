@@ -16,12 +16,14 @@ static void test_the_text_is_cleaned_down_to_what_the_font_can_draw(void) {
     assert(sign_clean("Hello, world!", out, sizeof(out)) == 12);
     assert(strcmp(out, "HELLO, WORLD!") == 0);
 
-    /* Characters the font lacks are skipped, not turned into spaces: a word with
-     * an accent in it is a word with a letter missing and no more. */
+    /* Characters the font still lacks are skipped, not turned into spaces: a word
+     * with one in it is a word with a letter missing and no more. */
     assert(sign_clean("caf\xc3\xa9 \xe2\x82\xac"
                       "5",
-                      out, sizeof(out)) == 4);
-    assert(strcmp(out, "CAF 5") == 0);
+                      out, sizeof(out)) == 5);
+    assert(strcmp(out, "CAFE 5") == 0);
+    assert(sign_clean("5 \xe2\x82\xac 6", out, sizeof(out)) == 2);
+    assert(strcmp(out, "5 6") == 0);
     /* The font carries the rest of printable ASCII as well, so a tilde is drawn;
      * it is the control characters and the bytes past ASCII that it lacks. */
     assert(sign_clean("a~b", out, sizeof(out)) == 3);
@@ -50,6 +52,84 @@ static void test_the_text_is_cleaned_down_to_what_the_font_can_draw(void) {
     memset(guarded, '#', sizeof(guarded));
     char long_text[SIGN_TEXT_MAX * 3];
     memset(long_text, 'x', sizeof(long_text) - 1);
+    long_text[sizeof(long_text) - 1] = '\0';
+    sign_clean(long_text, guarded, SIGN_TEXT_MAX);
+    assert(strlen(guarded) == SIGN_TEXT_MAX - 1);
+    assert(guarded[SIGN_TEXT_MAX] == '#');
+}
+
+/* An accented letter is written as its plain letter, in the languages the
+ * maintainer and the people he writes to use: Italian, French, German, Spanish. */
+static void test_an_accented_letter_is_written_as_its_plain_letter(void) {
+    char out[SIGN_TEXT_MAX];
+    struct {
+        const char *text, *written;
+    } words[] = {
+        /* Italian: every vowel with its grave or acute, as a word ends in one. */
+        {"citt\xc3\xa0", "CITTA"},
+        {"perch\xc3\xa9", "PERCHE"},
+        {"pi\xc3\xb9, caff\xc3\xa8, cos\xc3\xac, per\xc3\xb2", "PIU, CAFFE, COSI, PERO"},
+        {"\xc3\x88 tardi", "E TARDI"},
+        {"Perch\xc3\x89 no?", "PERCHE NO?"},
+        /* French. */
+        {"\xc3\xa9t\xc3\xa9, fran\xc3\xa7"
+         "ais, o\xc3\xb9",
+         "ETE, FRANCAIS, OU"},
+        {"No\xc3\xabl \xc5\x93uvre", "NOEL OEUVRE"},
+        {"\xc3\x80 bient\xc3\xb4t", "A BIENTOT"},
+        /* German: the sharp s is two letters. */
+        {"Stra\xc3\x9f"
+         "e",
+         "STRASSE"},
+        {"Gr\xc3\xb6\xc3\x9f"
+         "e, \xc3\xbc"
+         "ber, M\xc3\xa4"
+         "dchen",
+         "GROSSE, UBER, MADCHEN"},
+        /* Spanish: the marks that open a sentence are not letters. */
+        {"\xc2\xbfqu\xc3\xa9? ni\xc3\xb1o", "QUE? NINO"},
+        /* The typographic marks text is full of. */
+        {"l\xe2\x80\x99"
+         "anno \xe2\x80\x9c"
+         "x\xe2\x80\x9d",
+         "L'ANNO \"X\""},
+        {"a\xc2\xa0"
+         "b",
+         "A B"},
+    };
+    for (size_t i = 0; i < sizeof(words) / sizeof(*words); i++) {
+        int kept = sign_clean(words[i].text, out, sizeof(out));
+        assert(strcmp(out, words[i].written) == 0);
+        int letters = 0;
+        for (const char *c = out; *c != '\0'; c++) letters += *c != ' ';
+        assert(kept == letters); /* Counted as written: spaces are not letters. */
+    }
+
+    /* Counted as the letters that are written, a sharp s as two. */
+    assert(sign_clean("Stra\xc3\x9f"
+                      "e",
+                      out, sizeof(out)) == 7);
+    /* A letter that is not Latin-1 and has no plain letter is dropped, and so is a
+     * byte that begins nothing, and a sequence that is cut short. */
+    assert(sign_clean("a\xc4\x9d"
+                      "b",
+                      out, sizeof(out)) == 2 &&
+           strcmp(out, "AB") == 0);
+    assert(sign_clean("a\xff"
+                      "b\xc3",
+                      out, sizeof(out)) == 2 &&
+           strcmp(out, "AB") == 0);
+    assert(sign_clean("a\xe2\x82", out, sizeof(out)) == 1 && strcmp(out, "A") == 0);
+
+    /* The room it was given is kept to with two letters for one. */
+    char small[4];
+    assert(sign_clean("a\xc3\x9f\xc3\x9f", small, sizeof(small)) == 3);
+    assert(strcmp(small, "ASS") == 0);
+    char guarded[2 + SIGN_TEXT_MAX];
+    memset(guarded, '#', sizeof(guarded));
+    char long_text[SIGN_TEXT_MAX * 3];
+    memset(long_text, 'x', sizeof(long_text));
+    for (size_t i = 0; i + 2 < sizeof(long_text); i += 2) memcpy(long_text + i, "\xc3\x9f", 2);
     long_text[sizeof(long_text) - 1] = '\0';
     sign_clean(long_text, guarded, SIGN_TEXT_MAX);
     assert(strlen(guarded) == SIGN_TEXT_MAX - 1);
@@ -391,6 +471,7 @@ static void test_a_unit_belongs_to_its_id(void) {
 
 int main(void) {
     test_the_text_is_cleaned_down_to_what_the_font_can_draw();
+    test_an_accented_letter_is_written_as_its_plain_letter();
     test_a_long_text_wraps_at_its_spaces_as_large_as_fits();
     test_a_cell_is_never_larger_than_the_largest();
     test_a_reference_width_keeps_a_clock_the_same_size();

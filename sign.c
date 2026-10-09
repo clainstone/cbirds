@@ -11,6 +11,50 @@
 /* M_PI is not C99, and this file asks for no feature macros. */
 static const double PI = 3.14159265358979323846;
 
+/* The next character of UTF-8 text and the bytes it takes. A byte that begins
+ * nothing well formed is one byte and U+FFFD, which the font has no letter for. */
+static uint32_t next_code_point(const char *c, int *length) {
+    const unsigned char *at = (const unsigned char *)c;
+    int more = at[0] >= 0xC2 && at[0] <= 0xDF   ? 1
+               : at[0] >= 0xE0 && at[0] <= 0xEF ? 2
+               : at[0] >= 0xF0 && at[0] <= 0xF4 ? 3
+                                                : 0;
+    uint32_t point = more == 1 ? at[0] & 0x1Fu : more == 2 ? at[0] & 0x0Fu : at[0] & 0x07u;
+    *length = 1;
+    if (more == 0) return 0xFFFD;
+    for (int i = 1; i <= more; i++) {
+        if ((at[i] & 0xC0) != 0x80) return 0xFFFD; /* Cut short, or not UTF-8 at all. */
+        point = (point << 6) | (at[i] & 0x3Fu);
+    }
+    *length = more + 1;
+    return point;
+}
+
+/* What a character past ASCII is written as: its plain letter, the font's own
+ * word for it where there is one (é is E, a curly quote a straight one), or two
+ * letters where one would be a lie: ß is SS, as it is when a German capitalises
+ * it, and the ligatures are AE and OE. Nothing for what the font cannot say. */
+static int plain_letters(uint32_t point, char letters[2]) {
+    switch (point) {
+        case 0xDF: /* ß */
+            letters[0] = letters[1] = 'S';
+            return 2;
+        case 0xC6: /* Æ */
+        case 0xE6: /* æ */
+            letters[0] = 'A';
+            letters[1] = 'E';
+            return 2;
+        case 0x152: /* Œ */
+        case 0x153: /* œ */
+            letters[0] = 'O';
+            letters[1] = 'E';
+            return 2;
+        default:
+            letters[0] = (char)font_plain_letter(point);
+            return letters[0] != '\0' ? 1 : 0;
+    }
+}
+
 int sign_clean(const char *text, char *out, size_t size) {
     size_t at = 0;
     int kept = 0;
@@ -18,17 +62,25 @@ int sign_clean(const char *text, char *out, size_t size) {
     if (size == 0) return 0;
     out[0] = '\0';
     if (text == NULL) return 0;
-    for (const char *c = text; *c != '\0' && at + 1 < size && at + 1 < SIGN_TEXT_MAX; c++) {
-        char wanted = *c;
-        /* A new line in the middle of a sentence is a space, not a missing letter. */
-        if (wanted == '\t' || wanted == '\n' || wanted == '\r') wanted = ' ';
-        if (wanted == ' ') {
-            if (at > 0 && out[at - 1] != ' ') out[at++] = ' ';
-            continue;
+    for (const char *c = text; *c != '\0' && at + 1 < size && at + 1 < SIGN_TEXT_MAX;) {
+        char letters[2] = {*c, '\0'};
+        int count = 1, length = 1;
+        if ((unsigned char)*c >= 0x80) {
+            count = plain_letters(next_code_point(c, &length), letters);
         }
-        if (font_glyph(wanted) == NULL) continue; /* Skipped, as if it were not there. */
-        out[at++] = (char)toupper((unsigned char)wanted);
-        kept++;
+        c += length;
+        for (int i = 0; i < count && at + 1 < size && at + 1 < SIGN_TEXT_MAX; i++) {
+            char wanted = letters[i];
+            /* A new line in the middle of a sentence is a space, not a missing letter. */
+            if (wanted == '\t' || wanted == '\n' || wanted == '\r') wanted = ' ';
+            if (wanted == ' ') {
+                if (at > 0 && out[at - 1] != ' ') out[at++] = ' ';
+                continue;
+            }
+            if (font_glyph(wanted) == NULL) continue; /* Skipped, as if it were not there. */
+            out[at++] = (char)toupper((unsigned char)wanted);
+            kept++;
+        }
     }
     while (at > 0 && out[at - 1] == ' ') at--;
     out[at] = '\0';

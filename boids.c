@@ -2663,6 +2663,7 @@ static void place_one_hawk(int i) {
     hawks[i].wing = 0;
     hawks[i].wing_clock = 0;
     hawks[i].diving = 0;
+    hawks[i].layer = 0;
 }
 
 static void place_hawks(void) {

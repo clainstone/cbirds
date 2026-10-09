@@ -10371,7 +10371,7 @@ static void test_resizing_the_flock_keeps_every_bird_and_starts_every_new_one_cl
     for (int i = FROM; i < MORE; i++) {
         assert(birds[i].perched == 0 && birds[i].alarmed == 0 && birds[i].scattered == 0);
         assert(birds[i].gliding == 0 && birds[i].trail_at == 0 && birds[i].trail_held == 0);
-        assert(birds[i].layer == 0 && birds[i].flock == 0);
+        assert(birds[i].layer == 0 && birds[i].flock == 0 && birds[i].shape == 0);
         assert(birds[i].direction > 0 && birds[i].direction < 2 * M_PI); /* Placed. */
         assert(wave_busy(&waves[i]) == 0);
         assert(birds[i].x >= 0 && birds[i].x <= screen.width);
@@ -10421,6 +10421,26 @@ static void test_resizing_the_flock_keeps_every_bird_and_starts_every_new_one_cl
     close_the_world(&world);
     reset_the_waves();
     reset_sign_state();
+}
+
+/* A hawk that is placed, by the program at the start or by k later, starts from
+ * nothing in every field, the size it is drawn at in a space included: the slot it
+ * takes may have held a hawk that was drawn at any size before it was sent away. */
+static void test_a_new_hawk_starts_from_nothing(void) {
+    reset_test_config();
+    apply_screen_size(120, 34, 120 * 8, 34 * 16);
+    config.hawks = 2;
+    seed_random(3);
+    memset(hawks, 0x5a, sizeof(hawks));
+    place_one_hawk(1);
+    assert(hawks[1].prey == -1 && hawks[1].commitment == 0 && hawks[1].passing == 0);
+    assert(hawks[1].wing == 0 && hawks[1].wing_clock == 0 && hawks[1].diving == 0);
+    assert(hawks[1].layer == 0);
+    assert(hawks[1].frame >= 0 && hawks[1].frame < ROTATION_FRAMES);
+    /* And the one beside it is not touched. */
+    assert(hawks[0].layer == 0x5a5a5a5a && hawks[0].diving == 0x5a5a5a5a);
+    memset(hawks, 0, sizeof(hawks));
+    reset_test_config();
 }
 
 /* The pointer whipped through a sign: the letters it reaches scatter, and the ones
@@ -10713,6 +10733,7 @@ int main(void) {
     test_a_screensaver_reads_the_descriptor_that_was_chosen();
     test_a_screensaver_is_a_lock_screen_for_every_mode();
     test_resizing_the_flock_keeps_every_bird_and_starts_every_new_one_clean();
+    test_a_new_hawk_starts_from_nothing();
     test_a_whipped_pointer_scatters_a_sign_and_lights_the_letters_it_scattered();
     test_a_sign_recording_with_hawks_has_the_light_in_its_palette();
     /* Every test removes what it wrote, so this fails if one did not. */

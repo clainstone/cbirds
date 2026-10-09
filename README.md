@@ -233,8 +233,7 @@ file can be copied anywhere. `make test` runs the tests, among them one that
 starts the real program in a pseudo console and plays terminal to it.
 
 `--render kitty` is for terminals that speak the Kitty graphics protocol, here
-as everywhere, and Windows Terminal does not. Braille, sextants and blocks are
-what you get there.
+as everywhere. Braille, sextants and blocks work in every Windows console.
 
 ## Options
 

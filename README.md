@@ -206,7 +206,9 @@ runs along the text, from one end of the ramp to the other. The rest of the
 flock flies round the sign, not through it. On a small terminal the sign takes
 less of it, down to half the width and half the height at 96 by 26 cells, and
 more of the flock writes, so that the birds that are left have sky to fly in. Lower case is written in
-capitals and characters the font lacks are left out. Text too long for one line
+capitals, and an accented letter as its plain one, so that città is CITTA and
+Straße is STRASSE; a symbol, or a letter of another alphabet, has no plain letter
+and is left out. Text too long for one line
 wraps at its spaces onto two or three, as large as fits. A text the flock has
 too few birds to write is said so on stderr and left unwritten, and one that
 turns out too big for the screen once the run has started is said so there when

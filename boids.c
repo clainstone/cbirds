@@ -1478,7 +1478,7 @@ static void sign_text_now(char *out, size_t size) {
     if (the_sign.kind == SIGN_CLOCK) {
         struct tm local;
         sign_local_now(&local);
-        sign_clock_text(&local, the_sign.twelve_hours, out, size);
+        sign_clock_text(&local, the_sign.twelve_hours, 0, out, size);
     } else {
         snprintf(out, size, "%s", sign_words);
     }
@@ -1653,7 +1653,7 @@ static int sign_place(const char *clean, int reference_columns, int lift_the_col
         for (int minute = 0; minute < 60; minute++) {
             char time_text[SIGN_TEXT_MAX];
             when.tm_min = minute;
-            sign_clock_text(&when, the_sign.twelve_hours, time_text, sizeof(time_text));
+            sign_clock_text(&when, the_sign.twelve_hours, 0, time_text, sizeof(time_text));
             if (font_text_cells(time_text) > budget) budget = font_text_cells(time_text);
         }
     }

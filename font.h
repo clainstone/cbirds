@@ -10,11 +10,17 @@
 #ifndef FONT_H
 #define FONT_H
 
+#include <stdint.h>
+
 enum { FONT_WIDTH = 5, FONT_HEIGHT = 7, FONT_ADVANCE = FONT_WIDTH + 1 };
 
 /* The 35 cells of a glyph, row major, '#' set and anything else clear. Returns
  * NULL for a character the font does not carry. Space returns all clear. */
 const char *font_glyph(char character);
+
+/* The plain letter or sign that stands in for an accented or typographic one, or
+ * zero: é is e, a curly quote is a straight one. */
+uint32_t font_plain_letter(uint32_t glyph);
 
 /* Cells that would be set if the text were laid out: what a caller has to make
  * room for. */

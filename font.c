@@ -78,6 +78,42 @@ const char *font_glyph(char character) {
     return NULL;
 }
 
+/* U+00C0 to U+00FF, the letters of Latin-1 with the accents taken off. A byte for
+ * each: the multiplication and division signs, which are not letters, stand for
+ * themselves, and so do the few that have no plain letter (the thorn, the sharp
+ * s). */
+static const char LATIN1_BASE[] =
+    "AAAAAAACEEEEIIII"  /* C0 */
+    "DNOOOOOxOUUUUYTs"  /* D0 */
+    "aaaaaaaceeeeiiii"  /* E0 */
+    "dnooooo/ouuuuyty"; /* F0 */
+
+uint32_t font_plain_letter(uint32_t glyph) {
+    if (glyph >= 0xC0 && glyph <= 0xFF) return (unsigned char)LATIN1_BASE[glyph - 0xC0];
+    /* Typographic quotes and dashes, which text is full of. */
+    switch (glyph) {
+        case 0x2018:
+        case 0x2019:
+            return '\'';
+        case 0x201C:
+        case 0x201D:
+            return '"';
+        case 0x2010:
+        case 0x2011:
+        case 0x2012:
+        case 0x2013:
+        case 0x2014:
+        case 0x2212:
+            return '-';
+        case 0x2026:
+            return '.';
+        case 0x00A0:
+            return ' ';
+        default:
+            return 0;
+    }
+}
+
 int font_text_cells(const char *text) {
     int cells = 0;
     if (text == NULL) return 0;

@@ -16,12 +16,14 @@ static void test_the_text_is_cleaned_down_to_what_the_font_can_draw(void) {
     assert(sign_clean("Hello, world!", out, sizeof(out)) == 12);
     assert(strcmp(out, "HELLO, WORLD!") == 0);
 
-    /* Characters the font lacks are skipped, not turned into spaces: a word with
-     * an accent in it is a word with a letter missing and no more. */
+    /* Characters the font still lacks are skipped, not turned into spaces: a word
+     * with one in it is a word with a letter missing and no more. */
     assert(sign_clean("caf\xc3\xa9 \xe2\x82\xac"
                       "5",
-                      out, sizeof(out)) == 4);
-    assert(strcmp(out, "CAF 5") == 0);
+                      out, sizeof(out)) == 5);
+    assert(strcmp(out, "CAFE 5") == 0);
+    assert(sign_clean("5 \xe2\x82\xac 6", out, sizeof(out)) == 2);
+    assert(strcmp(out, "5 6") == 0);
     assert(sign_clean("a~b", out, sizeof(out)) == 2);
     assert(strcmp(out, "AB") == 0);
 
@@ -44,6 +46,86 @@ static void test_the_text_is_cleaned_down_to_what_the_font_can_draw(void) {
     memset(guarded, '#', sizeof(guarded));
     char long_text[SIGN_TEXT_MAX * 3];
     memset(long_text, 'x', sizeof(long_text) - 1);
+    long_text[sizeof(long_text) - 1] = '\0';
+    sign_clean(long_text, guarded, SIGN_TEXT_MAX);
+    assert(strlen(guarded) == SIGN_TEXT_MAX - 1);
+    assert(guarded[SIGN_TEXT_MAX] == '#');
+}
+
+/* An accented letter is written as its plain letter, in the languages the
+ * maintainer and the people he writes to use: Italian, French, German, Spanish. */
+static void test_an_accented_letter_is_written_as_its_plain_letter(void) {
+    char out[SIGN_TEXT_MAX];
+    struct {
+        const char *text, *written;
+    } words[] = {
+        /* Italian: every vowel with its grave or acute, as a word ends in one. */
+        {"citt\xc3\xa0", "CITTA"},
+        {"perch\xc3\xa9", "PERCHE"},
+        {"pi\xc3\xb9, caff\xc3\xa8, cos\xc3\xac, per\xc3\xb2", "PIU, CAFFE, COSI, PERO"},
+        {"\xc3\x88 tardi", "E TARDI"},
+        {"Perch\xc3\x89 no?", "PERCHE NO?"},
+        /* French. */
+        {"\xc3\xa9t\xc3\xa9, fran\xc3\xa7"
+         "ais, o\xc3\xb9",
+         "ETE, FRANCAIS, OU"},
+        {"No\xc3\xabl \xc5\x93uvre", "NOEL OEUVRE"},
+        {"\xc3\x80 bient\xc3\xb4t", "A BIENTOT"},
+        /* German: the sharp s is two letters. */
+        {"Stra\xc3\x9f"
+         "e",
+         "STRASSE"},
+        {"Gr\xc3\xb6\xc3\x9f"
+         "e, \xc3\xbc"
+         "ber, M\xc3\xa4"
+         "dchen",
+         "GROSSE, UBER, MADCHEN"},
+        /* Spanish: the marks that open a sentence are not letters. */
+        {"\xc2\xbfqu\xc3\xa9? ni\xc3\xb1o", "QUE? NINO"},
+        /* The typographic marks text is full of: a curly apostrophe is the straight
+         * one, and curly quotes are the straight double quote, which the font does
+         * not carry, so they are left out. */
+        {"l\xe2\x80\x99"
+         "anno \xe2\x80\x9c"
+         "x\xe2\x80\x9d",
+         "L'ANNO X"},
+        {"a\xc2\xa0"
+         "b",
+         "A B"},
+    };
+    for (size_t i = 0; i < sizeof(words) / sizeof(*words); i++) {
+        int kept = sign_clean(words[i].text, out, sizeof(out));
+        assert(strcmp(out, words[i].written) == 0);
+        int letters = 0;
+        for (const char *c = out; *c != '\0'; c++) letters += *c != ' ';
+        assert(kept == letters); /* Counted as written: spaces are not letters. */
+    }
+
+    /* Counted as the letters that are written, a sharp s as two. */
+    assert(sign_clean("Stra\xc3\x9f"
+                      "e",
+                      out, sizeof(out)) == 7);
+    /* A letter that is not Latin-1 and has no plain letter is dropped, and so is a
+     * byte that begins nothing, and a sequence that is cut short. */
+    assert(sign_clean("a\xc4\x9d"
+                      "b",
+                      out, sizeof(out)) == 2 &&
+           strcmp(out, "AB") == 0);
+    assert(sign_clean("a\xff"
+                      "b\xc3",
+                      out, sizeof(out)) == 2 &&
+           strcmp(out, "AB") == 0);
+    assert(sign_clean("a\xe2\x82", out, sizeof(out)) == 1 && strcmp(out, "A") == 0);
+
+    /* The room it was given is kept to with two letters for one. */
+    char small[4];
+    assert(sign_clean("a\xc3\x9f\xc3\x9f", small, sizeof(small)) == 3);
+    assert(strcmp(small, "ASS") == 0);
+    char guarded[2 + SIGN_TEXT_MAX];
+    memset(guarded, '#', sizeof(guarded));
+    char long_text[SIGN_TEXT_MAX * 3];
+    memset(long_text, 'x', sizeof(long_text));
+    for (size_t i = 0; i + 2 < sizeof(long_text); i += 2) memcpy(long_text + i, "\xc3\x9f", 2);
     long_text[sizeof(long_text) - 1] = '\0';
     sign_clean(long_text, guarded, SIGN_TEXT_MAX);
     assert(strlen(guarded) == SIGN_TEXT_MAX - 1);
@@ -160,38 +242,38 @@ static void test_the_clock_text_follows_the_convention(void) {
     /* 24 hour: two digits each. */
     when.tm_hour = 0;
     when.tm_min = 5;
-    sign_clock_text(&when, 0, out, sizeof(out));
+    sign_clock_text(&when, 0, 0, out, sizeof(out));
     assert(strcmp(out, "00:05") == 0);
     when.tm_hour = 13;
     when.tm_min = 7;
-    sign_clock_text(&when, 0, out, sizeof(out));
+    sign_clock_text(&when, 0, 0, out, sizeof(out));
     assert(strcmp(out, "13:07") == 0);
     when.tm_hour = 23;
     when.tm_min = 59;
-    sign_clock_text(&when, 0, out, sizeof(out));
+    sign_clock_text(&when, 0, 0, out, sizeof(out));
     assert(strcmp(out, "23:59") == 0);
 
     /* 12 hour: no AM and no PM, midnight and noon are twelve, and no zero in front
      * of the hour. */
     when.tm_hour = 0;
     when.tm_min = 5;
-    sign_clock_text(&when, 1, out, sizeof(out));
+    sign_clock_text(&when, 1, 0, out, sizeof(out));
     assert(strcmp(out, "12:05") == 0);
     when.tm_hour = 12;
     when.tm_min = 0;
-    sign_clock_text(&when, 1, out, sizeof(out));
+    sign_clock_text(&when, 1, 0, out, sizeof(out));
     assert(strcmp(out, "12:00") == 0);
     when.tm_hour = 13;
     when.tm_min = 7;
-    sign_clock_text(&when, 1, out, sizeof(out));
+    sign_clock_text(&when, 1, 0, out, sizeof(out));
     assert(strcmp(out, "1:07") == 0);
     when.tm_hour = 9;
     when.tm_min = 30;
-    sign_clock_text(&when, 1, out, sizeof(out));
+    sign_clock_text(&when, 1, 0, out, sizeof(out));
     assert(strcmp(out, "9:30") == 0);
     when.tm_hour = 23;
     when.tm_min = 59;
-    sign_clock_text(&when, 1, out, sizeof(out));
+    sign_clock_text(&when, 1, 0, out, sizeof(out));
     assert(strcmp(out, "11:59") == 0);
 
     /* Every minute of the day reads as time in both, and fits the font. */
@@ -199,12 +281,65 @@ static void test_the_clock_text_follows_the_convention(void) {
         when.tm_hour = minute / 60;
         when.tm_min = minute % 60;
         for (int twelve = 0; twelve < 2; twelve++) {
-            sign_clock_text(&when, twelve, out, sizeof(out));
+            sign_clock_text(&when, twelve, 0, out, sizeof(out));
             char clean[16];
             assert(sign_clean(out, clean, sizeof(clean)) == (int)strlen(out));
             assert(strlen(out) <= 5 && strchr(out, ':') != NULL);
         }
     }
+}
+
+/* With the seconds: two digits of them after a second colon, on either clock, and
+ * the hour as it is without them. */
+static void test_the_clock_text_with_seconds(void) {
+    struct tm when;
+    char out[16];
+    memset(&when, 0, sizeof(when));
+    when.tm_hour = 0;
+    when.tm_min = 5;
+    when.tm_sec = 9;
+    sign_clock_text(&when, 0, 1, out, sizeof(out));
+    assert(strcmp(out, "00:05:09") == 0);
+    sign_clock_text(&when, 1, 1, out, sizeof(out));
+    assert(strcmp(out, "12:05:09") == 0);
+    when.tm_hour = 13;
+    when.tm_min = 7;
+    when.tm_sec = 0;
+    sign_clock_text(&when, 0, 1, out, sizeof(out));
+    assert(strcmp(out, "13:07:00") == 0);
+    sign_clock_text(&when, 1, 1, out, sizeof(out));
+    assert(strcmp(out, "1:07:00") == 0);
+    when.tm_hour = 23;
+    when.tm_min = 59;
+    when.tm_sec = 59;
+    sign_clock_text(&when, 0, 1, out, sizeof(out));
+    assert(strcmp(out, "23:59:59") == 0);
+    /* A leap second is said as the clock says it. */
+    when.tm_sec = 60;
+    sign_clock_text(&when, 0, 1, out, sizeof(out));
+    assert(strcmp(out, "23:59:60") == 0);
+    /* Without them, a struct tm with seconds in it reads as it always did. */
+    sign_clock_text(&when, 0, 0, out, sizeof(out));
+    assert(strcmp(out, "23:59") == 0);
+
+    /* Every second of the day reads as time in both, fits the font, and is as wide
+     * as 00:00:00 at the most, which is what sizes the cells. */
+    for (int second = 0; second < 24 * 60 * 60; second++) {
+        when.tm_hour = second / 3600;
+        when.tm_min = second / 60 % 60;
+        when.tm_sec = second % 60;
+        for (int twelve = 0; twelve < 2; twelve++) {
+            sign_clock_text(&when, twelve, 1, out, sizeof(out));
+            char clean[16];
+            assert(sign_clean(out, clean, sizeof(clean)) == (int)strlen(out));
+            assert(strlen(out) <= 8 && strchr(out, ':') != strrchr(out, ':'));
+            assert(sign_columns(out) <= sign_columns("00:00:00"));
+        }
+    }
+    /* A buffer too small is cut short and still ended. */
+    char small[4];
+    sign_clock_text(&when, 0, 1, small, sizeof(small));
+    assert(strlen(small) == 3);
 }
 
 static void test_the_locale_says_which_clock(void) {
@@ -385,10 +520,12 @@ static void test_a_unit_belongs_to_its_id(void) {
 
 int main(void) {
     test_the_text_is_cleaned_down_to_what_the_font_can_draw();
+    test_an_accented_letter_is_written_as_its_plain_letter();
     test_a_long_text_wraps_at_its_spaces_as_large_as_fits();
     test_a_cell_is_never_larger_than_the_largest();
     test_a_reference_width_keeps_a_clock_the_same_size();
     test_the_clock_text_follows_the_convention();
+    test_the_clock_text_with_seconds();
     test_the_locale_says_which_clock();
     test_a_hovering_bird_stays_within_its_loop();
     test_every_bird_has_a_loop_of_its_own();

@@ -8426,6 +8426,120 @@ static void test_what_was_not_asked_for_is_settled_together(void) {
     forget_the_options();
 }
 
+/* A line read in a child, for the lines that end the run. */
+static void read_the_line_in_a_child(void *line) {
+    read_the_line((const char *)line);
+}
+
+/* The same line, and then the text found on a pipe. */
+typedef struct {
+    const char *line, *text_file;
+} piped_line_t;
+
+static void take_the_text_piped_in_on_a_line(void *context) {
+    const piped_line_t *piped = context;
+    read_the_line(piped->line);
+    int fd = open(piped->text_file, O_RDONLY);
+    if (fd < 0 || dup2(fd, STDIN_FILENO) < 0) _exit(98);
+    int taken = take_the_text(60, 12, 1);
+    _exit(taken ? 0 : 3); /* A flock goes on when there was nothing to see. */
+}
+
+/* A night, a text and a sign each want the flock: a night has no letters to write
+ * with and a text leaves nobody to write a sign. Said in one line, naming the two,
+ * with the status of every other usage error, in either order on the line, and
+ * before the picture is read. */
+static void test_a_sign_is_refused_with_a_night_and_with_text(void) {
+    char text[600], empty[600], picture[600], said[512], line[1200];
+    scratch_file(text, sizeof(text), "signs_refuse.txt");
+    scratch_file(empty, sizeof(empty), "signs_refuse_empty.txt");
+    world_write(text, "hello, world\n");
+    world_write(empty, "");
+    write_a_picture("refuse.png", 1, 255);
+    scratch_file(picture, sizeof(picture), "refuse.png");
+
+    const char *signs[][2] = {
+        {"--say hi", "--say"},
+        {"--clock", "--clock"},
+        {"--clock-at 10:00", "--clock-at"},
+        {"--picture /nowhere/at/all.png", "--picture"}, /* Never opened. */
+    };
+    for (size_t s = 0; s < sizeof(signs) / sizeof(*signs); s++) {
+        const char *asked = signs[s][0], *name = signs[s][1];
+        char expected[128];
+
+        /* A night, either way round. */
+        snprintf(line, sizeof(line), "--fireflies %s", asked);
+        assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, line, said, sizeof(said)) ==
+               EXIT_USAGE);
+        snprintf(expected, sizeof(expected), "--fireflies does not go with %s:", name);
+        assert(strstr(said, expected) != NULL);
+        assert(strchr(said, '\n') == said + strlen(said) - 1);
+        snprintf(line, sizeof(line), "%s --fireflies", asked);
+        assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, line, said, sizeof(said)) ==
+               EXIT_USAGE);
+        assert(strstr(said, expected) != NULL && strchr(said, '\n') == said + strlen(said) - 1);
+
+        /* A text file, either way round, before anything is opened. */
+        snprintf(line, sizeof(line), "%s --text %s", asked, text);
+        assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, line, said, sizeof(said)) ==
+               EXIT_USAGE);
+        snprintf(expected, sizeof(expected), "%s does not go with --text:", name);
+        assert(strstr(said, expected) != NULL);
+        assert(strchr(said, '\n') == said + strlen(said) - 1);
+        snprintf(line, sizeof(line), "--text %s %s", text, asked);
+        assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, line, said, sizeof(said)) ==
+               EXIT_USAGE);
+        assert(strstr(said, expected) != NULL);
+        /* And the text of standard input, named, which is the same text. */
+        snprintf(line, sizeof(line), "--text - %s", asked);
+        assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, line, said, sizeof(said)) ==
+               EXIT_USAGE);
+
+        /* Text on a pipe is said when it is found, and the status is the same. */
+        if (strstr(asked, "--picture") != NULL)
+            snprintf(line, sizeof(line), "--picture %s", picture);
+        else
+            snprintf(line, sizeof(line), "%s", asked);
+        piped_line_t piped = {line, text};
+        assert(status_of_a_run_that_may_exit(take_the_text_piped_in_on_a_line, &piped, said,
+                                             sizeof(said)) == EXIT_USAGE);
+        snprintf(expected, sizeof(expected), "%s does not go with text on standard input:", name);
+        assert(strstr(said, expected) != NULL);
+        assert(strchr(said, '\n') == said + strlen(said) - 1);
+        /* A pipe with nothing in it is no text, and the sign goes on. */
+        piped.text_file = empty;
+        assert(status_of_a_run_that_may_exit(take_the_text_piped_in_on_a_line, &piped, said,
+                                             sizeof(said)) == 3);
+        assert(said[0] == '\0');
+    }
+
+    /* Asked for is asked for, whatever came of it: a text the font cannot draw is
+     * no sign, and a text beside it is still a mistake. */
+    snprintf(line, sizeof(line), "--say \x01 --text %s", text);
+    assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, line, said, sizeof(said)) ==
+           EXIT_USAGE);
+    assert(strstr(said, "--say does not go with --text") != NULL);
+
+    /* What does go with them goes: the lock screen goes with everything. */
+    const char *fine[] = {"--screensaver --fireflies", "--screensaver --say hi",
+                          "--screensaver --clock", "--screensaver --clock-at 10:00"};
+    for (size_t f = 0; f < sizeof(fine) / sizeof(*fine); f++) {
+        assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, (void *)fine[f], said,
+                                             sizeof(said)) == 0);
+        assert(said[0] == '\0');
+    }
+    snprintf(line, sizeof(line), "--screensaver --text %s", text);
+    assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, line, said, sizeof(said)) == 0);
+    assert(said[0] == '\0');
+    snprintf(line, sizeof(line), "--screensaver --picture %s", picture);
+    assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, line, said, sizeof(said)) == 0);
+    assert(said[0] == '\0');
+
+    assert(unlink(text) == 0 && unlink(empty) == 0 && unlink(picture) == 0);
+    forget_the_options();
+}
+
 int main(void) {
     make_scratch();
     trig_lookup_init();
@@ -8590,6 +8704,7 @@ int main(void) {
     test_the_text_is_the_flock_and_a_night_is_refused_with_it();
     test_a_whip_is_read_from_the_descriptor_that_was_chosen();
     test_what_was_not_asked_for_is_settled_together();
+    test_a_sign_is_refused_with_a_night_and_with_text();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);
     return 0;

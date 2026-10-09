@@ -5561,6 +5561,42 @@ static void settle_the_sign(void) {
     }
 }
 
+/* The option that asks for a sign, or NULL if none does. It goes by what was
+ * typed and not by what came of it: --say with nothing the font can draw is no sign
+ * and the flock flies as usual, but it was still asked for, and a command that asks
+ * for a sign and for text is a mistake whichever of them turns out to be nothing. */
+static const char *the_sign_option(void) {
+    if (say_text != NULL) return "--say";
+    if (clock_start != NULL) return "--clock-at";
+    if (clock_mode) return "--clock";
+    if (picture_path != NULL) return "--picture";
+    return NULL;
+}
+
+/* Things that each want to be the whole flock. A night is the flock, the text is
+ * the flock, and a sign is what the flock writes: a night has no letters to write
+ * with, and text that is the flock leaves nobody to write a sign. The one or the
+ * other, said in one line and with the status of the other usage errors, before
+ * anything is read or opened. Text on a pipe is said when it is found. */
+static void refuse_what_does_not_go_together(void) {
+    const char *sign = the_sign_option();
+    if (fireflies_mode && text_path != NULL) {
+        fprintf(stderr, "%s: --fireflies does not go with --text: the text is the flock\n",
+                program_name);
+        exit(EXIT_USAGE);
+    }
+    if (fireflies_mode && sign != NULL) {
+        fprintf(stderr, "%s: --fireflies does not go with %s: a night cannot write\n", program_name,
+                sign);
+        exit(EXIT_USAGE);
+    }
+    if (sign != NULL && text_path != NULL) {
+        fprintf(stderr, "%s: %s does not go with --text: the text is the flock\n", program_name,
+                sign);
+        exit(EXIT_USAGE);
+    }
+}
+
 /*
  * What was not asked for.
  *
@@ -5628,13 +5664,7 @@ static void read_options(int argc, char **argv) {
         fprintf(stderr, "Try '%s --help'.\n", program_name);
         exit(EXIT_USAGE);
     }
-    /* The text is the flock, and so is the night: the one or the other, and said
-     * before anything is read or opened. Text on a pipe is said when it is found. */
-    if (fireflies_mode && text_path != NULL) {
-        fprintf(stderr, "%s: --fireflies does not go with --text: the text is the flock\n",
-                program_name);
-        exit(EXIT_USAGE);
-    }
+    refuse_what_does_not_go_together();
     if (fireflies_mode) settle_the_night();
     settle_the_defaults();
     /* A preset is expanded first so that a slider given after it still wins: the
@@ -5806,6 +5836,11 @@ static int take_the_text(int cols, int rows, int pipes) {
         fprintf(stderr,
                 "%s: --fireflies does not go with text on standard input: the text is the flock\n",
                 program_name);
+        exit(EXIT_USAGE);
+    }
+    if (the_sign_option() != NULL) {
+        fprintf(stderr, "%s: %s does not go with text on standard input: the text is the flock\n",
+                program_name, the_sign_option());
         exit(EXIT_USAGE);
     }
     letters_mode = 1;

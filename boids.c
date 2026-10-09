@@ -4909,6 +4909,9 @@ static void fly_away(bird_t *birds) {
         birds[i].direction = 3 * M_PI / 2;
         birds[i].y -= config.base_speed;
         birds[i].frame = direction_frame(birds[i].direction);
+        /* Nothing steers any more, so nothing is swerving: a bird that was lit when q
+         * was pressed went up lit for the whole of the way out. */
+        birds[i].alarmed = 0;
     }
     /* They go up still flashing, and not with whatever glow they had on. */
     if (fireflies_mode) light_the_night(birds);

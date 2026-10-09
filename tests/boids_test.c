@@ -8534,6 +8534,41 @@ static void test_a_night_tells_no_alarm(void) {
     end_the_night(&run);
 }
 
+/* A bird that is lit, swerving in a wave, when q is pressed flies out of the top
+ * as every other bird does, and not lit: nothing steers on the way out, so nothing
+ * is swerving. The control is the flock a moment before q, which has lit birds. */
+static void test_a_lit_bird_flies_out_unlit(void) {
+    reset_sign_state();
+    config.pace_notch = DEFAULT_PACE_NOTCH;
+    apply_notches();
+    apply_screen_size(120, 36, 960, 576);
+    frame_seconds = 1.0 / 60;
+    update_speed();
+    sign_sky_t world;
+    open_the_world(&world, 400, 4);
+    config.hawks = 2;
+    place_hawks();
+    reset_the_waves();
+    int lit = 0;
+    for (double at = 0.02; at < 20 && lit == 0; at += 1.0 / 60) {
+        step_the_world(&world, at);
+        for (int i = 0; i < config.birds; i++) lit += world.birds[i].alarmed;
+    }
+    assert(lit > 0); /* There are lit birds when q is pressed. */
+
+    double before[400];
+    for (int i = 0; i < config.birds; i++) before[i] = world.birds[i].y;
+    for (int frame = 0; frame < 3; frame++) {
+        fly_away(world.birds);
+        for (int i = 0; i < config.birds; i++) assert(!world.birds[i].alarmed);
+    }
+    for (int i = 0; i < config.birds; i++) assert(world.birds[i].y < before[i]);
+    config.hawks = 0;
+    close_the_world(&world);
+    reset_the_waves();
+    reset_sign_state();
+}
+
 /* --- Text as the flock ---------------------------------------------------------- */
 
 /* A world of letters, built the way main builds one: the text goes through a file
@@ -12117,6 +12152,7 @@ int main(void) {
     test_the_light_of_a_wave_stands_clear_of_everything();
     test_a_bird_in_a_wave_is_lit_in_every_renderer();
     test_a_night_tells_no_alarm();
+    test_a_lit_bird_flies_out_unlit();
     test_text_piped_in_becomes_the_flock();
     test_a_flock_of_letters_is_slower_than_a_flock_of_birds_unless_asked();
     test_nothing_to_see_leaves_the_flock_as_it_was();

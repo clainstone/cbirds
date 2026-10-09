@@ -234,12 +234,16 @@ kitty` draws text too. The panel is laid over the text, and the letters under it
 still land there.
 
 When standard input is not a terminal, the keys are read from the terminal
-itself. A pipe is read to its end, or until it has been quiet for a second and a
+itself, its controlling one, `/dev/tty`, on Linux and on macOS alike; with no
+terminal at all, as from a service or an editor's run button, cbirds says that it
+needs one and stops. A pipe is read to its end, or until it has been quiet for a second and a
 half, or has gone on for eight seconds, or has sent a megabyte, and what is kept
 is the last screenful, as a terminal would keep it; `tail -f log | cbirds` shows
 what the log had when it went quiet. A pipe that sends nothing for three seconds,
 and text with nothing to see in it, give the ordinary flock. If the window
-changes size, the text is laid out again on the new one.
+changes size, the text is laid out again on the new one. A sign is what the flock
+writes, and text is the flock, so `--say`, `--clock`, `--seconds` and `--picture`
+stop with a usage error beside `--text` or beside text on a pipe.
 
 Recordings take text too, and then run a whole cycle, 34 seconds, unless
 `--record-seconds` says otherwise:

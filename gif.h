@@ -27,6 +27,14 @@ typedef struct gif_writer gif_writer_t;
 gif_status_t gif_open(gif_writer_t **writer, const char *path, int width, int height,
                       int delay_hundredths);
 
+/* Colours that will turn up in later frames and are not in the first, which is the
+ * only one the table is chosen from: a flock of letters is at rest in the first,
+ * in the colours of the text, and flies in the flock's. Each given gets an entry of
+ * its own, up to GIF_SEEDS of them in all, as count triples of red, green and blue.
+ * Only before the first frame. */
+enum { GIF_SEEDS = 32 };
+gif_status_t gif_hint_colours(gif_writer_t *writer, const uint8_t *rgb, int count);
+
 /* RGBA in, alpha ignored: a GIF frame is opaque. */
 gif_status_t gif_add_frame(gif_writer_t *writer, const png_image_t *frame);
 

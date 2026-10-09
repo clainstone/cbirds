@@ -10,6 +10,8 @@ options_test
 png_test
 gif_test
 cells_test
+vt_test
+letters_test
 sixel_test
 *.o
 *.dSYM/

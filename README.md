@@ -157,6 +157,7 @@ cbirds --clock --seconds            and the seconds, HH:MM:SS
 cbirds --say "ciao" --font-size 8   letters eight rows tall, from 4 to 10
 cbirds --picture logo.png           the flock draws a PNG; --shape dot and -n 2000 suit it
 cbirds --screensaver --clock        a lock screen that tells the time; any key quits
+fastfetch | cbirds                  the letters of anything take flight
 ```
 
 It opens by writing BOIDS, lets go, and flocks. Move the pointer into the
@@ -196,6 +197,61 @@ fps.
 | `0` | back to the defaults | `Tab` | next preset |
 | `+` `-` | more birds, fewer | `k` `K` | a hawk more, one fewer |
 | `e` | tails | `q` | quit |
+| `Enter` | letters off, or home | | |
+
+## Anything can fly
+
+Pipe text into cbirds and the text is the flock.
+
+```
+fastfetch | cbirds
+figlet -f big hello | cbirds
+ls --color=always -la | cbirds
+git log --oneline --graph --color=always | cbirds
+cbirds --text poem.txt
+```
+
+It opens with the text exactly as the command printed it, in its own colours,
+laid out as a terminal would have laid it out: cbirds reads the escape
+sequences, so a logo with its information beside it comes out as a logo with its
+information beside it. A few seconds later one letter leaves and the ones near
+it follow, a wave that crosses the screen in about a second, and the letters
+fly as a flock. After twenty seconds or so they are called home, and every
+letter lands on its own cell: the screen is what the command printed again, to
+the cell. After a pause it happens again.
+
+`Enter` sends the letters off, or calls them home at once. Move the pointer
+through the text at rest and the letters it touches fly up, and they come back
+when it has gone. `q` sends them off the top, as it does the birds.
+
+A letter is drawn as itself, in its own colours, with its bold and underline,
+wherever it is; one with no colour of its own takes the flock's while it flies.
+A background colour stays where it was printed. Wide characters take two cells.
+Hawks work, and are arrows over text. `--birds`, `--flocks`, `--depth`,
+`--matrix`, `--shape`, `--sprite`, `--size` and tails do not apply: the text
+decides how many letters there are, and a letter has no sprite. `--render
+kitty` draws text too. The panel is laid over the text, and the letters under it
+still land there.
+
+When standard input is not a terminal, the keys are read from the terminal
+itself. A pipe is read to its end, or until it has been quiet for a second and a
+half, or has gone on for eight seconds, or has sent a megabyte, and what is kept
+is the last screenful, as a terminal would keep it; `tail -f log | cbirds` shows
+what the log had when it went quiet. A pipe that sends nothing for three seconds,
+and text with nothing to see in it, give the ordinary flock. If the window
+changes size, the text is laid out again on the new one.
+
+Recordings take text too, and then run a whole cycle, 34 seconds, unless
+`--record-seconds` says otherwise:
+
+```
+fastfetch | cbirds --record fetch.cast
+cbirds --text poem.txt --record poem.gif --record-fps 20
+```
+
+A GIF of text is drawn with a 5 by 7 font in cells of 12 by 20 pixels, so it
+shows the letters rather than dots. `--snapshot` takes text, and `--bench` takes
+`--text` and never a pipe it happens to be in.
 
 ## Signs
 
@@ -357,6 +413,7 @@ Sign
 
 Oddities
       --matrix                  it is raining birds
+      --text FILE               a file whose letters take flight; text piped in does the same
 
 Output
       --bench N                 run N frames with no terminal, print the numbers, quit
@@ -364,7 +421,7 @@ Output
       --snapshot FILE           write the last frame as a PNG
       --record FILE             record a GIF, or a .cast for asciinema, with no terminal, and quit
       --record-fps RATE         frames a second; a GIF can carry up to 50 (default 25)
-      --record-seconds SECONDS  how long the recording runs (default 6)
+      --record-seconds SECONDS  how long the recording runs (default 6, 34 for text)
       --record-size COLSxROWS   the size to record at, in cells (default 96x26)
 
 General

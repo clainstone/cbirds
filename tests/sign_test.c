@@ -24,7 +24,13 @@ static void test_the_text_is_cleaned_down_to_what_the_font_can_draw(void) {
     assert(strcmp(out, "CAFE 5") == 0);
     assert(sign_clean("5 \xe2\x82\xac 6", out, sizeof(out)) == 2);
     assert(strcmp(out, "5 6") == 0);
-    assert(sign_clean("a~b", out, sizeof(out)) == 2);
+    /* The font carries the rest of printable ASCII as well, so a tilde is drawn;
+     * it is the control characters and the bytes past ASCII that it lacks. */
+    assert(sign_clean("a~b", out, sizeof(out)) == 3);
+    assert(strcmp(out, "A~B") == 0);
+    assert(sign_clean("a\x01\x7f"
+                      "b",
+                      out, sizeof(out)) == 2);
     assert(strcmp(out, "AB") == 0);
 
     /* Spaces: one between words, none at the ends, and a new line or a tab is a
@@ -82,13 +88,11 @@ static void test_an_accented_letter_is_written_as_its_plain_letter(void) {
          "GROSSE, UBER, MADCHEN"},
         /* Spanish: the marks that open a sentence are not letters. */
         {"\xc2\xbfqu\xc3\xa9? ni\xc3\xb1o", "QUE? NINO"},
-        /* The typographic marks text is full of: a curly apostrophe is the straight
-         * one, and curly quotes are the straight double quote, which the font does
-         * not carry, so they are left out. */
+        /* The typographic marks text is full of. */
         {"l\xe2\x80\x99"
          "anno \xe2\x80\x9c"
          "x\xe2\x80\x9d",
-         "L'ANNO X"},
+         "L'ANNO \"X\""},
         {"a\xc2\xa0"
          "b",
          "A B"},

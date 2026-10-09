@@ -4,17 +4,19 @@
 #define _DARWIN_C_SOURCE
 
 #include <errno.h>
+#include <fcntl.h>
 #include <langinfo.h>
 #include <limits.h>
 #include <locale.h>
 #include <math.h>
-#include <poll.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/select.h>
+#include <sys/time.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -23,12 +25,14 @@
 #include "font.h"
 #include "gif.h"
 #include "kitty_graphics.h"
+#include "letters.h"
 #include "options.h"
 #include "picture.h"
 #include "png.h"
 #include "sign.h"
 #include "spatial_grid.h"
 #include "sprite_png.h"
+#include "vt.h"
 
 enum {
     /* Sixty rotations, six degrees apart. It was ninety, and at four degrees a
@@ -331,6 +335,9 @@ typedef struct {
     double trail_x[TRAIL_LENGTH], trail_y[TRAIL_LENGTH];
     int trail_at, trail_held;
     double scattered; /* Seconds a bird of a sign stays away from its place. */
+    /* A letter that is at home and not flying: it neither moves nor is seen by the
+     * birds that do. Always zero for a bird. */
+    int perched;
 } bird_t;
 
 typedef struct {
@@ -412,6 +419,20 @@ static const char *const RENDER_NAMES[] = {"kitty", "braille", "sextants", "bloc
 static int render_mode = RENDER_UNSET;
 /* --depth: a second plane of birds further off. The default is the one. */
 static int deep_look;
+/* Text as the flock: --text, or text piped in. The letters are the birds, one for
+ * each, and letters.c holds what is about text. */
+static const char *text_path;
+static int letters_mode;
+static letters_t the_letters;
+/* The text as it was read, so that it can be laid out again when the window changes
+ * size, and how long the window has been a size the letters are not laid out for. */
+static uint8_t *the_text;
+static size_t the_text_length;
+static double reflow_wait;
+/* Where the keys come from, and the terminal's modes are set and queried: the
+ * standard input, unless that is a pipe with text in it, in which case the
+ * controlling terminal. */
+static int input_fd = STDIN_FILENO;
 
 static int drawing_with_text(void) {
     return render_mode == RENDER_BRAILLE || render_mode == RENDER_SEXTANTS ||
@@ -490,7 +511,7 @@ static void restore_terminal(void) {
     if (terminal_restored) return;
     terminal_restored = 1;
     if (terminal_is_raw) {
-        tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios);
+        tcsetattr(input_fd, TCSAFLUSH, &saved_termios);
         terminal_is_raw = 0;
     }
     if (!alt_screen_is_on) return; /* The probe failed before we took the screen. */
@@ -639,7 +660,22 @@ static size_t terminal_query(const char *request, size_t request_length, char *r
             memcpy(wanted, request, wanted_length);
         }
     }
-    write_all(request, request_length);
+    /* The question goes out the way the answer comes back: through the controlling
+     * terminal when that is where the keys are read, since the standard output may
+     * be anywhere. */
+    if (input_fd == STDIN_FILENO) {
+        write_all(request, request_length);
+    } else {
+        const char *bytes = request;
+        size_t left = request_length;
+        while (left > 0) {
+            ssize_t written = write(input_fd, bytes, left);
+            if (written < 0 && errno == EINTR) continue;
+            if (written <= 0) break;
+            bytes += written;
+            left -= (size_t)written;
+        }
+    }
     clock_gettime(CLOCK_MONOTONIC, &start);
 
     for (;;) {
@@ -647,15 +683,21 @@ static size_t terminal_query(const char *request, size_t request_length, char *r
         long spent = (now.tv_sec - start.tv_sec) * 1000L + (now.tv_nsec - start.tv_nsec) / 1000000L;
         if (spent >= milliseconds) break;
 
-        struct pollfd wait = {.fd = STDIN_FILENO, .events = POLLIN};
-        int ready = poll(&wait, 1, (int)(milliseconds - spent));
+        /* select and not poll: macOS's poll does not answer for /dev/tty, which is
+         * where the keys come from when the standard input is a pipe. */
+        fd_set readable;
+        FD_ZERO(&readable);
+        FD_SET(input_fd, &readable);
+        long left = milliseconds - spent;
+        struct timeval timeout = {left / 1000, (left % 1000) * 1000};
+        int ready = select(input_fd + 1, &readable, NULL, NULL, &timeout);
         if (ready < 0) {
             if (errno == EINTR) continue;
             break;
         }
         if (ready == 0) break;
 
-        ssize_t got = read(STDIN_FILENO, reply + length, reply_size - 1 - length);
+        ssize_t got = read(input_fd, reply + length, reply_size - 1 - length);
         if (got <= 0) break;
         length += (size_t)got;
         reply[length] = '\0';
@@ -686,6 +728,8 @@ static size_t terminal_query(const char *request, size_t request_length, char *r
 
 /* What a live run draws with: braille unless something else was asked for. */
 static int live_render_mode(void) {
+    /* Letters are text: --render kitty draws sprites, and a letter has none. */
+    if (letters_mode) return RENDER_BRAILLE;
     return render_mode == RENDER_UNSET ? RENDER_BRAILLE : render_mode;
 }
 
@@ -698,7 +742,7 @@ static void enter_alt_screen(void) {
 
 static int enter_terminal(void) {
     struct termios raw;
-    if (tcgetattr(STDIN_FILENO, &raw) < 0) return -1;
+    if (tcgetattr(input_fd, &raw) < 0) return -1;
     saved_termios = raw;
     raw.c_iflag &= (tcflag_t) ~(tcflag_t)(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
     raw.c_oflag &= (tcflag_t) ~(tcflag_t)OPOST;
@@ -707,7 +751,7 @@ static int enter_terminal(void) {
     raw.c_cc[VSUSP] = _POSIX_VDISABLE;
     raw.c_cc[VMIN] = 0;
     raw.c_cc[VTIME] = 0;
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) < 0) return -1;
+    if (tcsetattr(input_fd, TCSAFLUSH, &raw) < 0) return -1;
     terminal_is_raw = 1;
     return 0;
 }
@@ -768,6 +812,10 @@ static void update_screen_dimensions(void) {
     struct winsize size;
     memset(&size, 0, sizeof(size));
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0) memset(&size, 0, sizeof(size));
+    /* Text is measured in cells, and a cell is eight by sixteen pixels here whatever
+     * it is on this screen: the same letters fly the same way in a window and on a
+     * high density display, in a recording and live. */
+    if (letters_mode) size.ws_xpixel = size.ws_ypixel = 0;
     apply_screen_size(size.ws_col, size.ws_row, size.ws_xpixel, size.ws_ypixel);
 }
 
@@ -1266,7 +1314,9 @@ static int direction_frame(double radians) {
  * makes the panel unreachable rather than merely unwelcoming, and the margin
  * follows the distance covered by this simulation step. */
 static int legend_turn_zone(double x, double y) {
-    return screen.legend_width > 0 && x < screen.legend_width + config.speed &&
+    /* Over text the panel is a window laid on top of it, not a wall: the letters
+     * under it have homes there, and one that can never land is not a letter. */
+    return !letters_mode && screen.legend_width > 0 && x < screen.legend_width + config.speed &&
            y < screen.legend_height + config.speed;
 }
 
@@ -2307,6 +2357,7 @@ static int sign_shade_for(int index) {
  * watch. A keypress ends it early, and a screen too small for the word simply
  * starts flocking. */
 static void begin_the_intro(void) {
+    if (letters_mode) return; /* The text is the intro. */
     /* A sign is what the flock writes instead, if one was asked for. */
     if (a_sign_is_asked_for()) {
         begin_the_sign();
@@ -2489,7 +2540,7 @@ static int nearest_bird(const bird_t *birds, double x, double y, int self, int u
     double best_distance = 0;
     double floor_squared = no_nearer_than * no_nearer_than;
     for (int b = 0; b < config.birds; b++) {
-        if (birds[b].layer > 0) continue; /* The hawk hunts its own sky. */
+        if (birds[b].layer > 0 || birds[b].perched) continue; /* Its own sky, and in the air. */
         if (unclaimed) {
             int taken = 0;
             for (int h = 0; h < config.hawks && !taken; h++)
@@ -2909,7 +2960,13 @@ static void place_one_bird(bird_t *bird, int index) {
                                     : (int)(random_unit() * palette_shades()) % palette_shades();
 }
 
+static void place_the_letters(bird_t *birds);
+
 static void initialize_birds(bird_t *birds) {
+    if (letters_mode) {
+        place_the_letters(birds);
+        return;
+    }
     for (int i = 0; i < config.birds; i++) place_one_bird(&birds[i], i);
 }
 
@@ -3157,8 +3214,9 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
                 const bird_t *other = &birds[i];
                 double dx = target->x - other->x, dy = target->y - other->y;
                 if (dx * dx + dy * dy >= config.vision_radius_squared) continue;
-                /* The far layer is another sky: a bird sees nothing in the other. */
-                if (other->layer != target->layer) continue;
+                /* The far layer is another sky: a bird sees nothing in the other. A
+                 * letter at home is not in the air at all. */
+                if (other->layer != target->layer || other->perched) continue;
                 /* Separation is physical and applies to every bird in reach.
                  * Alignment and cohesion are social, and a bird only reads its
                  * own flock: two flocks pass through each other, swirl, and
@@ -3346,9 +3404,122 @@ static double sign_scatter_left(const bird_t *was, int index) {
     return staying > left ? staying : left;
 }
 
+/*
+ * Text as the flock.
+ *
+ * Every letter is a bird whose home is its cell. What is about text, who is where
+ * and when each one leaves, lives in letters.c; what is here is what is about
+ * flying. A letter at home is perched and the birds neither see it nor move it. A
+ * letter that has left is a bird like the rest, flocking by the same rules, and
+ * the one thing it adds is that it can be called home: it then steers at its cell
+ * and lands on it exactly, as the intro's formation does, with a guarantee on top.
+ */
+enum { MAX_LETTERS = 16384, LETTERS_PACE_NOTCH = 0 };
+/* The pointer scatters what it is on: five cells across and three down, or so. A
+ * letter it has scattered comes down when its home is a third of a screen's
+ * thickness clear of it, wider than the touch so that it does not land to be
+ * scattered again. Hawks are bigger. */
+static const double POINTER_TOUCH_X = 20.0, POINTER_TOUCH_Y = 26.0, POINTER_CLEAR = 64.0;
+static const double HAWK_TOUCH = 44.0, HAWK_CLEAR = 100.0;
+/* A letter leaves with a hop, not at full speed: it climbs for this long, from a
+ * fifth of its pace, so that a wave is seen to lift the text before it flies. */
+static const double LETTER_LIFT_SECONDS = 0.4, LETTER_LIFT_FLOOR = 0.2;
+/* Banking is for flocking. A letter coming home turns freely once it is within this
+ * many turning circles of its cell, since to bank there is to orbit. */
+static const double LETTER_FREE_TURNS = 3.0;
+
+static void read_letter_pose(const void *context, int index, letters_pose_t *pose) {
+    const bird_t *birds = context;
+    pose->x = birds[index].x;
+    pose->y = birds[index].y;
+    pose->shade = birds[index].shade;
+}
+
+static void place_the_letters(bird_t *birds) {
+    for (int i = 0; i < config.birds; i++) {
+        birds[i] = (bird_t){0};
+        birds[i].x = the_letters.letter[i].home_x;
+        birds[i].y = the_letters.letter[i].home_y;
+        birds[i].perched = 1;
+    }
+}
+
+/* One frame of the cycle, before the flight: who is scattered, who leaves. The
+ * letters that left are put in the air at their homes, facing the way they go. The
+ * snapshot is told as well, because it was taken before this and the flight reads
+ * it. */
+static void tick_the_letters(bird_t *birds, bird_t *snapshot) {
+    letters_disturbance_t disturbances[1 + MAX_HAWKS];
+    int count = 0;
+    if (mouse.present)
+        disturbances[count++] = (letters_disturbance_t){
+            mouse.x, mouse.y, POINTER_TOUCH_X, POINTER_TOUCH_Y, POINTER_CLEAR, POINTER_CLEAR};
+    for (int h = 0; h < config.hawks; h++)
+        disturbances[count++] = (letters_disturbance_t){hawks[h].x, hawks[h].y, HAWK_TOUCH,
+                                                        HAWK_TOUCH, HAWK_CLEAR, HAWK_CLEAR};
+    letters_advance(&the_letters, frame_seconds, disturbances, count);
+    for (int k = 0; k < the_letters.launched_count; k++) {
+        int i = the_letters.launched[k];
+        const letter_t *letter = &the_letters.letter[i];
+        birds[i].x = letter->home_x;
+        birds[i].y = letter->home_y;
+        birds[i].direction = letter->launch_direction;
+        birds[i].frame = direction_frame(birds[i].direction);
+        birds[i].perched = 0;
+        snapshot[i] = birds[i];
+    }
+}
+
+/* How much of its pace a letter has in the first moments in the air. */
+static double letter_lift(int index) {
+    double t = the_letters.letter[index].airborne / LETTER_LIFT_SECONDS;
+    if (t >= 1) return 1;
+    return LETTER_LIFT_FLOOR + (1 - LETTER_LIFT_FLOOR) * t * t * (3 - 2 * t);
+}
+
+/* A letter that has been called home steers at its cell and goes no further than
+ * it: the last step is the distance left, and it is put on its home exactly, which
+ * is what makes the text whole again. Up to a couple of seconds after the call it
+ * banks like a bird, except near home where banking would only make it orbit; after
+ * that nothing holds it back, and the pace rises with the time left so that the last
+ * of them are in by the deadline whatever they were doing. Returns whether it was
+ * one of these. */
+static int steer_a_letter_home(bird_t *birds, const bird_t *snapshot, int i) {
+    letter_t *letter = &the_letters.letter[i];
+    if (letter->state != LETTER_HOMING) return 0;
+    double dx = letter->home_x - snapshot[i].x, dy = letter->home_y - snapshot[i].y;
+    double remaining = sqrt(dx * dx + dy * dy);
+    double step = config.speed;
+    int relaxed = letter->homing_for >= LETTERS_HOMING_RELAX;
+    if (relaxed) {
+        double left = LETTERS_HOMING_DEADLINE - letter->homing_for;
+        double needed = left > frame_seconds ? remaining * frame_seconds / left : remaining;
+        if (needed > step) step = needed;
+    }
+    if (remaining <= step) {
+        birds[i].x = letter->home_x;
+        birds[i].y = letter->home_y;
+        birds[i].perched = 1;
+        letters_land(&the_letters, i);
+        return 1;
+    }
+    double heading = normalized_angle(dy, dx);
+    double limit = turn_limit();
+    double turning_circle = limit > 1e-9 ? step / limit : 1e9;
+    if (!relaxed && remaining > LETTER_FREE_TURNS * turning_circle + step)
+        heading = turn_towards(snapshot[i].direction, heading, limit);
+    birds[i].direction = heading;
+    birds[i].x = snapshot[i].x + step * cos(heading);
+    birds[i].y = snapshot[i].y + step * sin(heading);
+    birds[i].shade = shade_for(&birds[i]);
+    return 1;
+}
+
 static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_grid_t *grid) {
     measure_flocks(snapshot);
     for (int i = 0; i < config.birds; i++) {
+        if (snapshot[i].perched) continue; /* A letter at home stays where it is. */
+        if (letters_mode && steer_a_letter_home(birds, snapshot, i)) continue;
         double direction = flock_direction(snapshot, grid, i);
         /* Banking is for flocking. Two things are not flocking and are exempt: a
          * bird writing a letter, which has to be able to land on it, and a bird
@@ -3364,6 +3535,7 @@ static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_gr
          * what makes a letter crisp instead of a cloud orbiting one. */
         double step = config.speed * flock_pace(snapshot[i].flock);
         if (snapshot[i].layer > 0) step *= FAR_PACE; /* Further away moves slower: parallax. */
+        if (letters_mode) step *= letter_lift(i);
         if (writing) {
             double dx = want_x - birds[i].x, dy = want_y - birds[i].y;
             double remaining = sqrt(dx * dx + dy * dy);
@@ -3382,7 +3554,7 @@ static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_gr
             birds[i].shade = picture_shade[i]; /* The picture's colour, flying or home. */
         else if (writing && formation.sign && config.flocks == 1 && palette_shades() > 1)
             birds[i].shade = sign_shade_for(i);
-        beat_wings(&birds[i]);
+        if (!letters_mode) beat_wings(&birds[i]); /* Letters do not have wings. */
         if (config.trails && i % TRAIL_EVERY == 0) {
             /* Where it was, not where it is: a tail behind, never under. */
             birds[i].trail_x[birds[i].trail_at] = snapshot[i].x;
@@ -3419,7 +3591,9 @@ static int bench_frames;
 static const char *snapshot_path;
 static const char *record_path;
 static int record_fps = 25;
-static int record_seconds = 6;
+/* Zero until asked for: six seconds for a flock, and for text the whole cycle of it
+ * (see settle_the_recording_length). */
+static int record_seconds;
 /* The size of the recording, in cells, as one thing: two flags for one idea, and
  * nobody was ever going to reach for four hundred by a hundred and twenty. */
 static int record_columns = 96;
@@ -3628,7 +3802,8 @@ static int terminal_has_truecolor(void) {
 }
 
 static int prepare_text_renderer(void) {
-    if (rasterise_sprites(text_sprites) != PNG_OK) return 0;
+    /* Letters are drawn as themselves: there is nothing to rasterise. */
+    if (!letters_mode && rasterise_sprites(text_sprites) != PNG_OK) return 0;
     if (cells_init(&text_cells, terminal_has_truecolor()) != CELLS_OK) return 0;
     return 1;
 }
@@ -3637,14 +3812,46 @@ static int prepare_text_renderer(void) {
  * under a text renderer, and the colour a far bird's tint is pulled towards. The
  * live screen is never painted, so this is the one place a background exists. */
 static const uint8_t PICTURE_GROUND[3] = {18, 18, 24};
+/* A cell of a picture of text: the 5 by 7 font at twice its size with a pixel of air
+ * a side, which is as small as it reads in a GIF on a page. */
+enum { LETTER_PICTURE_WIDTH = 12, LETTER_PICTURE_HEIGHT = 20 };
 
 /* Sized to the screen, and resized with it. */
 static int text_renderer_fits_the_screen(void) {
-    if (text_canvas.width != screen.width || text_canvas.height != screen.height) {
+    if (!letters_mode &&
+        (text_canvas.width != screen.width || text_canvas.height != screen.height)) {
         png_image_free(&text_canvas);
         if (png_image_alloc(&text_canvas, screen.width, screen.height) != PNG_OK) return 0;
     }
     return cells_resize(&text_cells, screen.cols, screen.rows) == CELLS_OK;
+}
+
+/* A hawk over text is an arrow in the hawk's colour, pointing the way it flies:
+ * east, then clockwise round the compass on a screen whose y runs down. */
+static const uint32_t HAWK_ARROWS[8] = {0x2192, 0x2198, 0x2193, 0x2199,
+                                        0x2190, 0x2196, 0x2191, 0x2197};
+
+/* The text as it is this frame: the letters at home as printed, the ones in the air
+ * where they are, in the flock's colours if they have none of their own, and the
+ * hawks on top. */
+static void paint_the_letters(const bird_t *birds) {
+    letters_look_t look = {NULL, 0};
+    if (sprite_path == NULL && palette()->tints != NULL) {
+        look.ramp = palette()->tints;
+        look.ramp_shades = palette()->shades;
+    }
+    letters_paint(&the_letters, &text_cells, read_letter_pose, birds, &look);
+    for (int h = 0; h < config.hawks; h++) {
+        int col = (int)floor(hawks[h].x / screen.cell_width);
+        int row = (int)floor(hawks[h].y / screen.cell_height);
+        cell_t *cell = cells_at(&text_cells, col, row);
+        if (cell == NULL || cell->wide != CELLS_NARROW) continue;
+        cell->glyph = HAWK_ARROWS[(int)floor(hawks[h].direction / (M_PI / 4) + 0.5) & 7];
+        memcpy(cell->fg, hawk_colour(), 3);
+        cell->fg_kind = CELLS_COLOUR_RGB;
+        cell->has_fg = 1;
+        cell->attributes = CELLS_BOLD;
+    }
 }
 
 static kitty_graphics_status_t queue_text_frame(kitty_graphics_t *graphics, const bird_t *birds) {
@@ -3661,8 +3868,12 @@ static kitty_graphics_status_t queue_text_frame(kitty_graphics_t *graphics, cons
     cells_keep_out_of(&text_cells, legend_drawn ? LEGEND_COLUMNS : 0,
                       legend_drawn ? legend_rows() : 0);
 
-    compose_onto(&text_canvas, text_sprites, birds, 0);
-    cells_read(&text_cells, text_style(), &text_canvas, screen.cell_width, screen.cell_height);
+    if (letters_mode) {
+        paint_the_letters(birds);
+    } else {
+        compose_onto(&text_canvas, text_sprites, birds, 0);
+        cells_read(&text_cells, text_style(), &text_canvas, screen.cell_width, screen.cell_height);
+    }
     if (cells_emit(&text_cells) != CELLS_OK) return KITTY_GRAPHICS_ERR_MEMORY;
     if (status == KITTY_GRAPHICS_OK)
         status = kitty_graphics_write_raw(graphics, text_cells.text, text_cells.length);
@@ -3685,6 +3896,7 @@ static void set_frame_seconds(double seconds);
  * simulation run that many times, which --bench shows.
  */
 static void fly(bird_t *birds, bird_t *snapshot, spatial_grid_t *grid) {
+    if (letters_mode) tick_the_letters(birds, snapshot);
     int steps = (int)ceil(config.pace - 1e-9);
     if (steps < 1) steps = 1;
     double whole = frame_seconds;
@@ -3706,7 +3918,33 @@ static void fly(bird_t *birds, bird_t *snapshot, spatial_grid_t *grid) {
  * At the shipped pace whatever the slider says, so that leaving takes the same
  * moment every time: at a fifth of the pace the flock was still on the screen
  * when the program closed it. */
+/* The same for letters, which are mostly at home when it comes: each goes up at a
+ * speed of its own after a short wait of its own, so that the text does not rise
+ * as one sheet. The wait is kept in the field a letter never uses for gliding, and
+ * the speed in the one it never uses for its wings. */
+static void fly_the_letters_away(bird_t *birds) {
+    for (int i = 0; i < config.birds; i++) {
+        if (birds[i].perched) {
+            birds[i].perched = 0;
+            letters_release(&the_letters, i);
+            birds[i].gliding = 0.15 * random_unit();
+            birds[i].wing_clock = 0.6 + 0.8 * random_unit();
+        }
+        birds[i].direction = 3 * M_PI / 2;
+        if (birds[i].gliding > 0) {
+            birds[i].gliding -= frame_seconds;
+            continue;
+        }
+        birds[i].y -= config.base_speed * birds[i].wing_clock;
+        birds[i].frame = direction_frame(birds[i].direction);
+    }
+}
+
 static void fly_away(bird_t *birds) {
+    if (letters_mode) {
+        fly_the_letters_away(birds);
+        return;
+    }
     for (int i = 0; i < config.birds; i++) {
         birds[i].direction = 3 * M_PI / 2;
         birds[i].y -= config.base_speed;
@@ -3918,6 +4156,8 @@ static const option_t OPTIONS[] = {
 
     {0, "matrix", NULL, OPTION_FLAG, &matrix_mode, 0, 0, NULL, NULL, "it is raining birds",
      "Oddities", 0},
+    {0, "text", NULL, OPTION_STRING, &text_path, 0, 0, NULL, "FILE",
+     "a file whose letters take flight; text piped in does the same", "Oddities", 0},
 
     {0, "bench", NULL, OPTION_INT, &bench_frames, 0, 1000000, NULL, "N",
      "run N frames with no terminal, print the numbers, quit", "Output", 0},
@@ -3930,7 +4170,7 @@ static const option_t OPTIONS[] = {
     {0, "record-fps", NULL, OPTION_INT, &record_fps, 2, MAX_CAST_FPS, NULL, "RATE",
      "frames a second; a GIF can carry up to 50 (default 25)", "Output", 0},
     {0, "record-seconds", NULL, OPTION_INT, &record_seconds, 1, 120, NULL, "SECONDS",
-     "how long the recording runs (default 6)", "Output", 0},
+     "how long the recording runs (default 6, 34 for text)", "Output", 0},
     {0, "record-size", NULL, OPTION_STRING, &requested_record_size, 0, 0, NULL, "COLSxROWS",
      "the size to record at, in cells (default 96x26)", "Output", 0},
 
@@ -3946,7 +4186,7 @@ enum { OPTION_COUNT = sizeof(OPTIONS) / sizeof(*OPTIONS) };
     "\nKeys   b/B s/S a/A t/T p/P v/V   one notch down / up\n"                     \
     "       space pause   . step   0 reset   +/- birds   Tab preset\n"             \
     "       h panel   e trails   k/K hawks   g/G flocks avoid, with two or more\n" \
-    "       q quit\n"
+    "       enter letters off, or home (with text)   q quit\n"
 
 enum { EXIT_USAGE = 2 }; /* A mistyped command is not a run that went wrong. */
 
@@ -3959,6 +4199,7 @@ static const option_example_t EXAMPLES[] = {
     {"cbirds --render kitty", "sprites, in Kitty or Ghostty"},
     {"cbirds --say \"back in five\"", "the flock writes it and holds it"},
     {"cbirds --screensaver --clock", "a lock screen that tells the time"},
+    {"fastfetch | cbirds", "its letters take flight, and come home"},
     {"cbirds --record flock.gif", "a GIF, with no terminal in the way"},
     {NULL, NULL},
 };
@@ -3974,7 +4215,7 @@ static void apply_preset_defaults(void) {
      * it down with t could not see what they did and had nothing else to undo it
      * with. And the speed, which no preset touches, so this is its only way home. */
     config.turning_notch = DEFAULT_TURNING_NOTCH;
-    config.pace_notch = DEFAULT_PACE_NOTCH;
+    config.pace_notch = letters_mode ? LETTERS_PACE_NOTCH : DEFAULT_PACE_NOTCH;
     config.avoid_notch = DEFAULT_NOTCH;
     apply_notches();
 }
@@ -4088,7 +4329,7 @@ static int handle_input(void) {
     static char sequence[32];
     static size_t sequence_length;
     char input[INPUT_BUFFER_SIZE];
-    ssize_t length = read(STDIN_FILENO, input, sizeof(input));
+    ssize_t length = read(input_fd, input, sizeof(input));
     if (length > 0) last_key_at = clock_state.seconds;
     /* A screensaver goes at the first sign of anybody: a key, a click, a pointer
      * that moves, an arrow. Whatever arrives in its first moments is what started
@@ -4200,16 +4441,21 @@ static int handle_input(void) {
             case '0':
                 apply_preset_defaults();
                 continue;
+            case '\r': /* Enter: the letters off, or home. */
+            case '\n':
+                if (letters_mode) letters_poke(&the_letters);
+                continue;
             case '+':
             case '=':
-                if (config.birds < MAX_BIRDS) {
+                /* The text decides how many letters there are. */
+                if (!letters_mode && config.birds < MAX_BIRDS) {
                     config.birds += config.birds / 4 + 1;
                     if (config.birds > MAX_BIRDS) config.birds = MAX_BIRDS;
                     population_changed = 1;
                 }
                 continue;
             case '-':
-                if (config.birds > 1) {
+                if (!letters_mode && config.birds > 1) {
                     config.birds -= config.birds / 5 + 1;
                     if (config.birds < 1) config.birds = 1;
                     population_changed = 1;
@@ -4236,7 +4482,8 @@ static int handle_input(void) {
                 if (config.turning_notch > 0) config.turning_notch--;
                 continue;
             case 'e':
-                config.trails = !config.trails;
+                /* A tail behind a letter is a smear of the text it is made of. */
+                if (!letters_mode) config.trails = !config.trails;
                 continue;
             case '\t':
                 requested_preset = (requested_preset + 1) % PRESET_COUNT;
@@ -4301,13 +4548,17 @@ static int handle_input(void) {
 }
 
 static int wait_for_terminal_io(void) {
-    struct pollfd descriptors[] = {
-        {.fd = STDIN_FILENO, .events = POLLIN},
-        {.fd = STDOUT_FILENO, .events = POLLOUT},
-    };
     int result;
     do {
-        result = poll(descriptors, sizeof(descriptors) / sizeof(*descriptors), -1);
+        /* The sets are rebuilt each time round: select leaves in them only what was
+         * ready. */
+        fd_set readable, writable;
+        FD_ZERO(&readable);
+        FD_ZERO(&writable);
+        FD_SET(input_fd, &readable);
+        FD_SET(STDOUT_FILENO, &writable);
+        result = select((input_fd > STDOUT_FILENO ? input_fd : STDOUT_FILENO) + 1, &readable,
+                        &writable, NULL, NULL);
     } while (result < 0 && errno == EINTR);
     return result < 0 ? -1 : 0;
 }
@@ -4618,7 +4869,9 @@ static int write_snapshot(const char *path, const bird_t *birds) {
 
     png_status_t status = PNG_OK;
     if (drawing_with_text()) {
-        if (cells_paint(&text_cells, text_style(), &canvas, screen.cell_width, screen.cell_height,
+        if (cells_paint(&text_cells, letters_mode ? CELLS_TEXT : text_style(), &canvas,
+                        letters_mode ? LETTER_PICTURE_WIDTH : screen.cell_width,
+                        letters_mode ? LETTER_PICTURE_HEIGHT : screen.cell_height,
                         ground) != CELLS_OK)
             status = PNG_ERR_MEMORY;
     } else {
@@ -4889,6 +5142,172 @@ static void read_options(int argc, char **argv) {
     }
 }
 
+static void forget_the_text(void) {
+    free(the_text);
+    the_text = NULL;
+    the_text_length = 0;
+}
+
+/*
+ * Where the keys come from, and where the text does.
+ *
+ * Text piped in takes the standard input, so the keys have to come from the
+ * terminal itself: its controlling one, /dev/tty. That is not new ground, the
+ * program only ever asked its standard input for two things, keys and answers to
+ * its colour questions, and both go through one descriptor now.
+ */
+static void open_the_keys(void) {
+    if (isatty(STDIN_FILENO)) return;
+    int fd = open("/dev/tty", O_RDWR);
+    if (fd < 0) {
+        fprintf(stderr,
+                "%s: needs a terminal, and standard input is not one and /dev/tty cannot be "
+                "opened: %s\n",
+                program_name, strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    input_fd = fd;
+}
+
+/* The file --text names, opened, or the reason it cannot be and an end to the run. */
+static int open_the_text_file(void) {
+    int fd = open(text_path, O_RDONLY);
+    if (fd < 0) {
+        fprintf(stderr, "%s: cannot open %s: %s\n", program_name, text_path, strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    return fd;
+}
+
+/* How much of a pipe is read, and for how long. A command that prints and ends is
+ * read to its end; one that never ends (tail -f) is read until it has been quiet
+ * for a moment, or has gone on long enough, or has sent a megabyte, and the text is
+ * what it had sent by then. One that sends nothing at all is given a few seconds,
+ * and then the flock flies as it always did. */
+static const letters_reading_t PIPE_READING = {3.0, 1.5, 8.0, 1 << 20};
+
+/*
+ * Takes the text from --text or from a pipe, lays it out on a screen of this many
+ * cells, and makes the letters the flock. Returns whether it did: no text, empty
+ * text, and text with nothing to see in it leave the flock as it is. `pipes` says
+ * whether a standard input that is not a terminal counts, which a benchmark has no
+ * business assuming.
+ */
+static int take_the_text(int cols, int rows, int pipes) {
+    int fd = -1, opened = 0;
+    if (text_path != NULL && strcmp(text_path, "-") != 0) {
+        fd = open_the_text_file();
+        opened = 1;
+    } else if (text_path != NULL) {
+        if (isatty(STDIN_FILENO)) {
+            fprintf(stderr, "%s: --text - reads standard input, and that is a terminal\n",
+                    program_name);
+            exit(EXIT_USAGE);
+        }
+        fd = STDIN_FILENO;
+    } else if (pipes && !isatty(STDIN_FILENO)) {
+        fd = STDIN_FILENO;
+    }
+    if (fd < 0) return 0;
+
+    vt_t vt;
+    if (vt_init(&vt, cols, rows) != 0) {
+        fprintf(stderr, "%s: out of memory\n", program_name);
+        exit(EXIT_FAILURE);
+    }
+    size_t bytes = 0;
+    free(the_text);
+    the_text = NULL;
+    letters_read_end_t end = letters_read(&vt, fd, &PIPE_READING, &bytes, &the_text);
+    the_text_length = bytes;
+    if (opened) close(fd);
+    if (end == LETTERS_READ_ERROR && text_path != NULL) {
+        fprintf(stderr, "%s: cannot read %s\n", program_name, text_path);
+        exit(EXIT_FAILURE);
+    }
+    int count = end == LETTERS_READ_ERROR
+                    ? 0
+                    : letters_build(&the_letters, &vt, DEFAULT_CELL_WIDTH, DEFAULT_CELL_HEIGHT,
+                                    MAX_LETTERS, random_unit);
+    vt_destroy(&vt);
+    if (count < 0) {
+        fprintf(stderr, "%s: out of memory\n", program_name);
+        exit(EXIT_FAILURE);
+    }
+    if (count == 0) {
+        forget_the_text();
+        if (text_path != NULL)
+            fprintf(stderr, "%s: nothing to see in %s, so here are birds\n", program_name,
+                    text_path);
+        return 0;
+    }
+
+    letters_mode = 1;
+    config.birds = count;
+    /* A cell is eight pixels across, a quarter of the sprite the pace was tuned for:
+     * at the default a letter crosses two cells a frame and the eye sees it skip,
+     * and at the slowest it is a cell a frame, which is a flight a letter can be
+     * followed in. A speed that was asked for is left alone. */
+    if (config.pace_notch == DEFAULT_PACE_NOTCH) config.pace_notch = LETTERS_PACE_NOTCH;
+    apply_notches();
+    /* One flock, on one plane, with no tails and no rain: the text is what is
+     * flying, and the things that would draw over it are for birds. */
+    config.flocks = 1;
+    deep_look = 0;
+    config.trails = 0;
+    the_rain_is_falling = 0;
+    return 1;
+}
+
+static const double REFLOW_SETTLE_SECONDS = 0.3;
+
+/* The window has a size the letters were not laid out for. The text is laid out
+ * again on this one, as it would have been had the command run here, and the cycle
+ * begins again from the text at rest: a letter in the air has nowhere to land on a
+ * grid that is gone. Waits until the size has held still for a moment, so that
+ * dragging a corner is not a layout a frame. Returns whether it laid out afresh. */
+static int reflow_the_letters(bird_t **birds, bird_t **snapshot) {
+    if (!letters_mode || the_text == NULL) return 0;
+    if (screen.cols == the_letters.cols && screen.rows == the_letters.rows) {
+        reflow_wait = 0;
+        return 0;
+    }
+    reflow_wait += frame_seconds;
+    if (reflow_wait < REFLOW_SETTLE_SECONDS) return 0;
+    reflow_wait = 0;
+
+    vt_t vt;
+    if (vt_init(&vt, screen.cols, screen.rows) != 0) return 0;
+    vt_feed(&vt, the_text, letters_text_end(the_text, the_text_length));
+    vt_finish(&vt);
+    letters_t fresh;
+    int count = letters_build(&fresh, &vt, DEFAULT_CELL_WIDTH, DEFAULT_CELL_HEIGHT, MAX_LETTERS,
+                              random_unit);
+    vt_destroy(&vt);
+    bird_t *grown = count > 0 ? malloc(sizeof(**birds) * (size_t)count) : NULL;
+    bird_t *grown_snapshot = count > 0 ? malloc(sizeof(**snapshot) * (size_t)count) : NULL;
+    if (count <= 0 || grown == NULL || grown_snapshot == NULL) {
+        /* Nothing of it fits on the new screen, or no memory: what there is stays, and
+         * the size it was laid out for is the size to compare with from now on. */
+        free(grown);
+        free(grown_snapshot);
+        letters_destroy(&fresh);
+        the_letters.cols = screen.cols;
+        the_letters.rows = screen.rows;
+        return 0;
+    }
+    free(*birds);
+    free(*snapshot);
+    *birds = grown;
+    *snapshot = grown_snapshot;
+    letters_destroy(&the_letters);
+    the_letters = fresh;
+    config.birds = count;
+    place_the_letters(*birds);
+    memcpy(*snapshot, *birds, sizeof(**birds) * (size_t)count);
+    return 1;
+}
+
 static long elapsed_microseconds(const struct timespec *start, const struct timespec *end) {
     return (end->tv_sec - start->tv_sec) * 1000000L + (end->tv_nsec - start->tv_nsec) / 1000L;
 }
@@ -4956,6 +5375,16 @@ static void settle_the_palette_without_a_terminal(void) {
     if (palette_follows_the_theme()) config.palette = FALLBACK_PALETTE;
 }
 
+/* Six seconds is a flock's clip. A text's is a cycle: four seconds at rest, a wave
+ * of one, a flight of up to twenty-two, and four to come home, and the text whole
+ * again for the last two. */
+enum { FLOCK_RECORD_SECONDS = 6, TEXT_RECORD_SECONDS = 34 };
+
+static void settle_the_recording_length(void) {
+    if (record_seconds == 0)
+        record_seconds = letters_mode ? TEXT_RECORD_SECONDS : FLOCK_RECORD_SECONDS;
+}
+
 /* JSON needs its control characters spelled out, and an escape sequence is
  * nothing but control characters and text. Everything else, braille included,
  * goes through as the UTF-8 it already is. */
@@ -4982,6 +5411,7 @@ static void write_json_string(FILE *out, const char *text, size_t length) {
  */
 static int run_cast_recording(void) {
     spatial_grid_t grid;
+    settle_the_recording_length();
     int total = record_fps * record_seconds;
     settle_the_palette_without_a_terminal();
     set_frame_seconds(1.0 / record_fps);
@@ -5040,8 +5470,13 @@ static int run_cast_recording(void) {
         spatial_grid_build(&grid, config.birds, read_bird_position, snapshot);
         fly(birds, snapshot, &grid);
 
-        compose_onto(&text_canvas, text_sprites, birds, 0);
-        cells_read(&text_cells, CELLS_BRAILLE, &text_canvas, screen.cell_width, screen.cell_height);
+        if (letters_mode) {
+            paint_the_letters(birds);
+        } else {
+            compose_onto(&text_canvas, text_sprites, birds, 0);
+            cells_read(&text_cells, CELLS_BRAILLE, &text_canvas, screen.cell_width,
+                       screen.cell_height);
+        }
         if (cells_emit(&text_cells) != CELLS_OK) break;
         /* Inside a synchronized update, for the players that honour it. */
         fprintf(out, "[%.4f, \"o\", ", clock_state.seconds);
@@ -5069,15 +5504,17 @@ static int run_cast_recording(void) {
     png_image_free(&text_canvas);
     free_sprites(text_sprites);
     spatial_grid_destroy(&grid);
+    letters_destroy(&the_letters);
+    forget_the_text();
     free(snapshot);
     free(birds);
     if (!closed) {
         fprintf(stderr, "%s: %s: %s\n", program_name, record_path, strerror(errno));
         return EXIT_FAILURE;
     }
-    printf("%s: %d frames, %dx%d cells, %d fps, %.1fs, %.1f KB of braille\n", record_path, total,
-           screen.cols, screen.rows, record_fps, (double)total / record_fps,
-           (double)bytes / 1024.0);
+    printf("%s: %d frames, %dx%d cells, %d fps, %.1fs, %.1f KB of %s\n", record_path, total,
+           screen.cols, screen.rows, record_fps, (double)total / record_fps, (double)bytes / 1024.0,
+           letters_mode ? "text" : "braille");
     sign_report_failure();
     return EXIT_SUCCESS;
 }
@@ -5098,6 +5535,7 @@ static int run_recording(void) {
      * claimed. Every simulated frame is recorded, and the simulation steps at the
      * recording rate, so the motion in the GIF runs at life speed. */
     settle_the_palette_without_a_terminal();
+    settle_the_recording_length();
     int delay = record_delay_for(record_fps);
     /* The rate a hundredth-of-a-second delay really gives, which is not always a
      * whole number: a delay of 17 plays at 5.88 a second, not 5. */
@@ -5120,24 +5558,41 @@ static int run_recording(void) {
     if (spatial_grid_init(&grid, SPATIAL_CELL_SIZE) != SPATIAL_GRID_OK) return EXIT_FAILURE;
     if (spatial_grid_prepare(&grid, screen.width, screen.height, config.birds) != SPATIAL_GRID_OK)
         return EXIT_FAILURE;
-    if (rasterise_sprites(frames) != PNG_OK) {
+    if (!letters_mode && rasterise_sprites(frames) != PNG_OK) {
         fprintf(stderr, "%s: cannot build the sprites to record with\n", program_name);
         return EXIT_FAILURE;
     }
     if (png_image_alloc(&canvas, screen.width, screen.height) != PNG_OK) return EXIT_FAILURE;
     /* Under --render braille, sextants or blocks the GIF is of the cells, painted
      * the way a text terminal shows them, because a GIF of the pixels the cells
-     * were read from would be a picture of something nobody saw. */
-    int as_text = drawing_with_text();
+     * were read from would be a picture of something nobody saw. Text is always
+     * that: it is drawn with the font, in cells of a size the font reads at. */
+    int as_text = letters_mode || drawing_with_text();
     png_image_t painted = {0, 0, NULL};
+    int picture_cell_width = letters_mode ? LETTER_PICTURE_WIDTH : screen.cell_width;
+    int picture_cell_height = letters_mode ? LETTER_PICTURE_HEIGHT : screen.cell_height;
     if (as_text && (cells_init(&text_cells, 1) != CELLS_OK ||
                     cells_resize(&text_cells, screen.cols, screen.rows) != CELLS_OK))
         return EXIT_FAILURE;
 
-    gif_status_t gif_status = gif_open(&gif, record_path, screen.width, screen.height, delay);
+    gif_status_t gif_status =
+        gif_open(&gif, record_path, as_text ? screen.cols * picture_cell_width : screen.width,
+                 as_text ? screen.rows * picture_cell_height : screen.height, delay);
     if (gif_status != GIF_OK) {
         fprintf(stderr, "%s: %s: %s\n", program_name, record_path, gif_status_string(gif_status));
         return EXIT_FAILURE;
+    }
+
+    /* The first frame is the text at rest, which is where the table is chosen: the
+     * colours the letters will fly in are promised to it. */
+    if (letters_mode) {
+        uint8_t flying[GIF_SEEDS * 3];
+        int colours = 0;
+        for (int shade = 0; shade < palette()->shades && colours < GIF_SEEDS - 1;
+             shade++, colours++)
+            memcpy(flying + colours * 3, palette()->tints[shade], 3);
+        if (config.hawks > 0) memcpy(flying + 3 * colours++, hawk_colour(), 3);
+        gif_hint_colours(gif, flying, colours);
     }
 
     bird_t *birds = calloc((size_t)config.birds, sizeof(*birds));
@@ -5163,12 +5618,17 @@ static int run_recording(void) {
         fly(birds, snapshot, &grid);
 
         if (as_text) {
-            compose_onto(&canvas, frames, birds, 0);
-            cells_read(&text_cells, text_style(), &canvas, screen.cell_width, screen.cell_height);
+            if (letters_mode) {
+                paint_the_letters(birds);
+            } else {
+                compose_onto(&canvas, frames, birds, 0);
+                cells_read(&text_cells, text_style(), &canvas, screen.cell_width,
+                           screen.cell_height);
+            }
             png_image_free(&painted);
             if (cells_emit(&text_cells) != CELLS_OK ||
-                cells_paint(&text_cells, text_style(), &painted, screen.cell_width,
-                            screen.cell_height, PICTURE_GROUND) != CELLS_OK) {
+                cells_paint(&text_cells, letters_mode ? CELLS_TEXT : text_style(), &painted,
+                            picture_cell_width, picture_cell_height, PICTURE_GROUND) != CELLS_OK) {
                 gif_status = GIF_ERR_MEMORY;
                 break;
             }
@@ -5187,6 +5647,8 @@ static int run_recording(void) {
     png_image_free(&painted);
     if (as_text) cells_destroy(&text_cells);
     spatial_grid_destroy(&grid);
+    letters_destroy(&the_letters);
+    forget_the_text();
     free(snapshot);
     free(birds);
 
@@ -5194,8 +5656,10 @@ static int run_recording(void) {
         fprintf(stderr, "%s: %s: %s\n", program_name, record_path, gif_status_string(gif_status));
         return EXIT_FAILURE;
     }
-    printf("%s: %d frames, %dx%d, %.4g fps, %.1fs, %.1f KB\n", record_path, written, screen.width,
-           screen.height, actual_fps, written / actual_fps, (double)bytes / 1024.0);
+    printf("%s: %d frames, %dx%d, %.4g fps, %.1fs, %.1f KB\n", record_path, written,
+           as_text ? screen.cols * picture_cell_width : screen.width,
+           as_text ? screen.rows * picture_cell_height : screen.height, actual_fps,
+           written / actual_fps, (double)bytes / 1024.0);
     if (delay != record_delay_for(record_fps) || (int)(actual_fps + 0.5) != record_fps)
         fprintf(stderr,
                 "%s: asked for %d fps, recorded at %.4g. A GIF's delay between frames is\n"
@@ -5218,6 +5682,7 @@ static int run_benchmark(void) {
      * other renderer is measured as asked for, sprites built the way it builds
      * them. */
     if (render_mode == RENDER_UNSET) render_mode = RENDER_KITTY;
+    if (letters_mode) render_mode = RENDER_BRAILLE; /* Letters are text. */
     settle_the_bird_size();
     if (drawing_with_text() && !prepare_text_renderer()) return EXIT_FAILURE;
     set_frame_seconds(1.0 / FRAME_RATE);
@@ -5235,6 +5700,9 @@ static int run_benchmark(void) {
     /* The default bench has never written anything, and still does not; a sign
      * is measured with the clock it would have at sixty frames a second. */
     if (a_sign_is_asked_for()) begin_the_intro();
+    /* Text at rest costs nothing, which is not what anybody wants to know: the wave
+     * is started at once, and the frames are those of a flock in the air. */
+    if (letters_mode) letters_poke(&the_letters);
 
     double bytes = 0;
     clock_gettime(CLOCK_MONOTONIC, &start);
@@ -5256,6 +5724,8 @@ static int run_benchmark(void) {
         (double)(finish.tv_sec - start.tv_sec) + (double)(finish.tv_nsec - start.tv_nsec) / 1e9;
     double per_frame = seconds / bench_frames;
     printf("birds        %d\n", config.birds);
+    if (letters_mode)
+        printf("letters      %d of %d glyphs\n", the_letters.count, the_letters.cells_with_glyphs);
     printf("flocks       %d\n", config.flocks);
     printf("hawks        %d\n", config.hawks);
     printf("viewport     %dx%d px\n", screen.width, screen.height);
@@ -5269,6 +5739,8 @@ static int run_benchmark(void) {
 
     kitty_graphics_destroy(&graphics);
     spatial_grid_destroy(&grid);
+    letters_destroy(&the_letters);
+    forget_the_text();
     free(snapshot);
     free(birds);
     return EXIT_SUCCESS;
@@ -5281,10 +5753,25 @@ int main(int argc, char **argv) {
     clock_gettime(CLOCK_MONOTONIC, &launched);
     read_options(argc, argv);
     trig_lookup_init();
-    if (bench_frames > 0) return run_benchmark();
-    if (record_path != NULL) return run_recording();
+    if (bench_frames > 0) {
+        /* A benchmark reads a file it is named, never a pipe it happens to be in. */
+        take_the_text(200, 50, 0);
+        return run_benchmark();
+    }
+    if (record_path != NULL) {
+        take_the_text(record_columns, record_rows, 1);
+        return run_recording();
+    }
     install_signal_handlers();
     atexit(restore_terminal);
+
+    /* The keys, and then the text, before the terminal is taken: the text is laid
+     * out on a screen of the size this one is, and reading it may take a moment. */
+    /* A file that is not there is said first: it is the mistake, and the keys are not. */
+    if (text_path != NULL && strcmp(text_path, "-") != 0) close(open_the_text_file());
+    open_the_keys();
+    update_screen_dimensions();
+    take_the_text(screen.cols, screen.rows, 1);
 
     /* The terminal is asked its questions before anything is built for it: can
      * you draw this at all, and what colours do you use? The sprites are then
@@ -5393,6 +5880,7 @@ int main(int argc, char **argv) {
             formation_clear();
         maybe_drift();
         update_screen_dimensions();
+        if (reflow_the_letters(&birds, &snapshot)) live_birds = config.birds;
         grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, config.birds);
         if (grid_status != SPATIAL_GRID_OK) {
             fprintf(stderr, "Cannot resize spatial grid: %s\n",
@@ -5495,6 +5983,8 @@ int main(int argc, char **argv) {
     }
     spatial_grid_destroy(&grid);
     kitty_graphics_destroy(&graphics);
+    letters_destroy(&the_letters);
+    forget_the_text();
     free(snapshot);
     free(birds);
     return outcome;

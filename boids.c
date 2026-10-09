@@ -1791,8 +1791,13 @@ static const double SCATTER_STAGGER = 1.0;
 static const double HAWK_SCATTER = 0.35;
 static const double HAWK_SCATTER_SECONDS = 0.4, HAWK_SCATTER_STAGGER = 0.6;
 /* A lock command is started by the key that is about to be pressed: input in the
- * first half second is whatever started it. */
+ * first half second is whatever started it. That is the first half second of the
+ * program and not of its first frame: a space builds its flock, and a Kitty
+ * terminal is sent its sprites, before there is a first frame, and a key typed in
+ * all that time is somebody waking the screen, long after what started it, and
+ * would be thrown away. So the grace is over when the start took longer than it. */
 static const double SCREENSAVER_GRACE = 0.5;
+static double launch_lag; /* Seconds from the program's first line to its first frame. */
 
 /* What a picture brings: the share of it that is ink, which says how far apart
  * the birds that draw it are, the light and the dark of its colours, which say
@@ -5253,7 +5258,8 @@ static int handle_input(void) {
      * that moves, all of which arrive here as bytes. Whatever arrives in its first
      * moments is what started it, or the terminal answering something, and is read
      * and thrown away. */
-    if (screensaver_mode && length > 0) return clock_state.seconds < SCREENSAVER_GRACE;
+    if (screensaver_mode && length > 0)
+        return clock_state.seconds < SCREENSAVER_GRACE && launch_lag <= SCREENSAVER_GRACE;
     for (ssize_t i = 0; i < length; i++) {
         unsigned char key = (unsigned char)input[i];
         int *notch = NULL, step = 0;
@@ -7025,7 +7031,8 @@ static int run_benchmark(void) {
 int main(int argc, char **argv) {
     kitty_graphics_t graphics;
     spatial_grid_t grid;
-    struct timespec frame_start, frame_end;
+    struct timespec frame_start, frame_end, launched;
+    clock_gettime(CLOCK_MONOTONIC, &launched);
     read_options(argc, argv);
     trig_lookup_init();
     if (bench_frames > 0) {
@@ -7125,6 +7132,7 @@ int main(int argc, char **argv) {
 
     struct timespec started;
     clock_gettime(CLOCK_MONOTONIC, &started);
+    launch_lag = elapsed_seconds(&launched, &started);
     struct timespec previous_frame = started;
     int live_birds = config.birds;
     int running = 1;

@@ -10199,6 +10199,17 @@ static void test_a_screensaver_reads_the_descriptor_that_was_chosen(void) {
     clock_state.seconds = SCREENSAVER_GRACE - 0.1;
     assert(write(keys[1], "\033[<35;10;5M", 10) == 10);
     assert(handle_input() == 1);
+    /* But the first half second of the program, not of its first frame: a start that
+     * took longer than that has no key in it that started anything, and the one
+     * typed meanwhile is somebody waking the screen. A quick start is as it was. */
+    clock_state.seconds = 0;
+    launch_lag = SCREENSAVER_GRACE / 2;
+    assert(write(keys[1], "x", 1) == 1);
+    assert(handle_input() == 1);
+    launch_lag = SCREENSAVER_GRACE + 1.5;
+    assert(write(keys[1], "x", 1) == 1);
+    assert(handle_input() == 0);
+    launch_lag = 0;
 
     input_fd = saved;
     assert(dup2(saved_stdin, STDIN_FILENO) == STDIN_FILENO);
@@ -10209,7 +10220,7 @@ static void test_a_screensaver_reads_the_descriptor_that_was_chosen(void) {
 }
 
 /* The whole program, on a terminal of its own, as a flock, a night, a clock, a
- * sign, a text from a file and a text on a pipe, each of them a lock screen: it
+ * sign, a space, a text from a file and a text on a pipe, each of them a lock screen: it
  * runs until a key is typed after the grace, and then goes at once with the
  * status of a run that went well, having given the terminal back. */
 static void test_a_screensaver_is_a_lock_screen_for_every_mode(void) {
@@ -10223,6 +10234,8 @@ static void test_a_screensaver_is_a_lock_screen_for_every_mode(void) {
         {"--say", "hi", NULL, NULL},
         {"--text", text, NULL, NULL},
         {"--hawks", "2", NULL, NULL},
+        {"--3d", NULL, NULL, NULL},
+        {"--3d", "--hawks", "1", NULL},
         {NULL, NULL, NULL, NULL} /* The text of this one is on a pipe. */,
     };
     int count = (int)(sizeof(runs) / sizeof(*runs));
@@ -10308,7 +10321,11 @@ static void test_a_screensaver_is_a_lock_screen_for_every_mode(void) {
         assert(typed == 1);
         if (child > 0) assert(waitpid(child, &status, 0) == child);
         assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS);
-        assert(strstr(tail, ALT_SCREEN_OFF) != NULL); /* The terminal is given back. */
+        /* The tail is filled from its end, so a run that said little has NULs in front
+         * of it, and a run that was told to go before its first frame said little. */
+        const char *said = tail;
+        while (said < tail + sizeof(tail) - 1 && *said == '\0') said++;
+        assert(strstr(said, ALT_SCREEN_OFF) != NULL); /* The terminal is given back. */
         close(master);
     }
     assert(unlink(text) == 0);

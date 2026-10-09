@@ -704,8 +704,12 @@ static void restore_terminal(void) {
 }
 
 static void signal_handler(int signal_number) {
+    /* The socket first, which is an unlink and a close and so cannot wait for
+     * anything, where putting the terminal back can: tcsetattr drains the output,
+     * and a terminal that has stopped reading holds it there while the window is
+     * still in the sky. */
+    link_close(&the_row);
     restore_terminal();
-    link_close(&the_row); /* Nothing but unlink and close, so it is fit for here. */
     _exit(128 + signal_number);
 }
 

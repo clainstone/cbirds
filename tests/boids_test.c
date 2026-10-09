@@ -11742,7 +11742,8 @@ static void test_a_shared_sky_is_refused_with_a_space_a_night_and_a_text(void) {
 
 /* A window that is told to die leaves no socket behind, whichever way. */
 static void test_a_signal_removes_the_socket(void) {
-    static const int SIGNALS[] = {SIGINT, SIGTERM, SIGHUP, SIGQUIT};
+    static const int SIGNALS[] = {SIGINT,  SIGTERM, SIGHUP, SIGQUIT,
+                                  SIGSEGV, SIGFPE,  SIGBUS, SIGABRT};
     char directory[64];
 
     make_a_short_directory(directory, sizeof(directory));

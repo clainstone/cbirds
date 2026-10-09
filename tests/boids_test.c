@@ -2706,6 +2706,15 @@ static void test_a_screensaver_quits_at_the_first_sign_of_anybody(void) {
     assert(feed_input("\033[<35;10;5M") == 1);
     assert(feed_input("q") == 1); /* Not even q: it is not a key for anything yet. */
     assert(!paused);
+    /* But the first half second of the program, not of its first frame: a start that
+     * took longer than that has no key in it that started anything, and the one
+     * typed meanwhile is somebody waking the screen. A quick start is as it was. */
+    clock_state.seconds = 0;
+    launch_lag = SCREENSAVER_GRACE / 2;
+    assert(feed_input("x") == 1);
+    launch_lag = SCREENSAVER_GRACE + 1.5;
+    assert(feed_input("x") == 0);
+    launch_lag = 0;
 
     /* After it, a key, a click, a pointer that moves, an arrow: any of them. */
     clock_state.seconds = SCREENSAVER_GRACE + 0.01;

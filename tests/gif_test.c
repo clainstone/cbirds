@@ -307,8 +307,10 @@ static void test_a_colour_the_first_frame_lacks_can_be_reserved(void) {
     char none[600];
     snprintf(none, sizeof(none), "%s/none.gif", scratch);
     assert(gif_open(&writer, none, W, H, 5) == GIF_OK);
-    assert(gif_reserve_colours(writer, NULL, 0) == GIF_ERR_ARGUMENT);
+    assert(gif_reserve_colours(writer, NULL, 0) == GIF_OK);
     assert(gif_reserve_colours(writer, RESERVED, 0) == GIF_OK);
+    assert(gif_reserve_colours(writer, NULL, 1) == GIF_ERR_ARGUMENT);
+    assert(gif_reserve_colours(writer, RESERVED, -1) == GIF_ERR_ARGUMENT);
     assert(gif_add_frame(writer, &first) == GIF_OK);
     assert(gif_add_frame(writer, &second) == GIF_OK);
     assert(gif_close(writer, NULL, NULL) == GIF_OK);
@@ -330,26 +332,24 @@ static void test_a_colour_the_first_frame_lacks_can_be_reserved(void) {
     assert(gif_open(&writer, reserved, W, H, 5) == GIF_OK);
     assert(gif_reserve_colours(writer, RESERVED, 2) == GIF_OK);
     assert(gif_add_frame(writer, &first) == GIF_OK);
-    /* Too late once the table is written, and too many at any time. */
-    assert(gif_reserve_colours(writer, RESERVED, 2) == GIF_ERR_ARGUMENT);
+    /* Too late once a frame has gone in. */
+    assert(gif_reserve_colours(writer, RESERVED, 1) == GIF_ERR_ARGUMENT);
     assert(gif_add_frame(writer, &second) == GIF_OK);
     assert(gif_close(writer, NULL, NULL) == GIF_OK);
     assert(read_gif(reserved, &read));
     got = read.palette[read.indices[0]];
-    for (int c = 0; c < 3; c++) assert(abs(got[c] - GOLD[c]) <= 8);
+    for (int c = 0; c < 3; c++) assert(got[c] == GOLD[c]);
     got = read.palette[read.indices[W - 1]]; /* The blue, on the other side. */
     assert(abs(got[0] - 60) <= 8 && abs(got[1] - 120) <= 8 && abs(got[2] - 220) <= 8);
     got = read.palette[read.indices[(H - 1) * W + 20]]; /* And the ground. */
     assert(abs(got[0] - 18) <= 8 && abs(got[2] - 24) <= 8);
+    /* The first entries, in the order given. */
+    for (int r = 0; r < 2; r++)
+        for (int c = 0; c < 3; c++) assert(read.palette[r][c] == RESERVED[r][c]);
     free(read.indices);
 
-    uint8_t too_many[GIF_RESERVED_MAX + 1][3] = {{0}};
-    assert(gif_open(&writer, reserved, W, H, 5) == GIF_OK);
-    assert(gif_reserve_colours(writer, (const uint8_t(*)[3])too_many, GIF_RESERVED_MAX + 1) ==
-           GIF_ERR_ARGUMENT);
-    assert(gif_reserve_colours(writer, (const uint8_t(*)[3])too_many, GIF_RESERVED_MAX) == GIF_OK);
+    /* A null writer is refused, and a writer is not told anything it cannot keep. */
     assert(gif_reserve_colours(NULL, RESERVED, 2) == GIF_ERR_ARGUMENT);
-    assert(gif_close(writer, NULL, NULL) == GIF_OK);
 
     png_image_free(&first);
     png_image_free(&second);
@@ -358,47 +358,65 @@ static void test_a_colour_the_first_frame_lacks_can_be_reserved(void) {
     remove(reserved);
 }
 
-/* The table is chosen from the first frame. A colour that only turns up later has
- * no entry of its own and is drawn as the nearest one that has, unless it was
- * promised. */
-static void test_a_colour_promised_for_later_has_an_entry_of_its_own(void) {
-    enum { W = 32, H = 16 };
-    static const uint8_t late[3] = {200, 100, 250};
-    for (int promised = 0; promised < 2; promised++) {
-        const char *path = scratch_file("promised.gif");
-        gif_writer_t *writer = NULL;
-        png_image_t frame = {0, 0, NULL};
-        reading_t read;
-        assert(gif_open(&writer, path, W, H, 5) == GIF_OK);
-        assert(png_image_alloc(&frame, W, H) == PNG_OK);
-        if (promised) assert(gif_hint_colours(writer, late, 1) == GIF_OK);
-        paint(&frame, 0);
-        assert(gif_add_frame(writer, &frame) == GIF_OK);
-        /* Too late for the table once a frame has gone in. */
-        assert(gif_hint_colours(writer, late, 1) == GIF_ERR_ARGUMENT);
-        for (size_t i = 0; i < (size_t)W * H; i++) {
-            frame.pixels[i * 4 + 0] = late[0];
-            frame.pixels[i * 4 + 1] = late[1];
-            frame.pixels[i * 4 + 2] = late[2];
-        }
-        assert(gif_add_frame(writer, &frame) == GIF_OK);
-        assert(gif_close(writer, NULL, NULL) == GIF_OK);
-        assert(read_gif(path, &read));
-        const uint8_t *got = read.palette[read.indices[0]];
-        int near = got[0] > 192 && got[0] < 208 && got[1] > 92 && got[1] < 108 && got[2] > 242;
-        assert(near == promised);
-        free(read.indices);
-        png_image_free(&frame);
-        remove(path);
-    }
+/* The rest of the contract: what shares a bucket, what is in the first frame
+ * already, how calls add up, and how many there can be. */
+static void test_reserved_colours_share_buckets_add_up_and_have_a_limit(void) {
+    enum { W = 16, H = 8 };
+    /* The first two are in one bucket (five bits a channel), the third is not. */
+    static const uint8_t NEAR[3][3] = {{96, 96, 96}, {100, 103, 99}, {200, 100, 250}};
     gif_writer_t *writer = NULL;
-    assert(gif_hint_colours(NULL, late, 1) == GIF_ERR_ARGUMENT);
-    assert(gif_open(&writer, scratch_file("hint.gif"), 4, 4, 5) == GIF_OK);
-    assert(gif_hint_colours(writer, NULL, 1) == GIF_ERR_ARGUMENT);
-    assert(gif_hint_colours(writer, NULL, 0) == GIF_OK);
-    assert(gif_hint_colours(writer, late, -1) == GIF_ERR_ARGUMENT);
+    png_image_t first = {0, 0, NULL};
+    reading_t read;
+    const char *path = scratch_file("buckets.gif");
+
+    assert(png_image_alloc(&first, W, H) == PNG_OK);
+    for (size_t i = 0; i < (size_t)W * H; i++) {
+        /* The ground, and a third of the picture in a colour of the first bucket. */
+        uint8_t *p = first.pixels + i * 4;
+        p[0] = (i % 3 == 0) ? 98 : 18;
+        p[1] = (i % 3 == 0) ? 99 : 18;
+        p[2] = (i % 3 == 0) ? 97 : 24;
+        p[3] = 255;
+    }
+
+    /* Two calls add up, in order, and two of a bucket are one entry, their mean.
+     * What the first frame had in that bucket is drawn in it. */
+    assert(gif_open(&writer, path, W, H, 5) == GIF_OK);
+    assert(gif_reserve_colours(writer, NEAR, 2) == GIF_OK);
+    assert(gif_reserve_colours(writer, NEAR + 2, 1) == GIF_OK);
+    assert(gif_add_frame(writer, &first) == GIF_OK);
     assert(gif_close(writer, NULL, NULL) == GIF_OK);
-    remove(scratch_file("hint.gif"));
+    assert(read_gif(path, &read));
+    assert(read.palette[0][0] == 98 && read.palette[0][1] == 99 && read.palette[0][2] == 97);
+    for (int c = 0; c < 3; c++) assert(read.palette[1][c] == NEAR[2][c]);
+    assert(read.indices[0] == 0 && read.indices[1] != 0);
+    free(read.indices);
+    remove(path);
+
+    /* A call that would pass the limit is refused whole, and changes nothing. */
+    uint8_t many[GIF_RESERVED_MAX + 1][3];
+    for (int i = 0; i <= GIF_RESERVED_MAX; i++) {
+        many[i][0] = (uint8_t)(i * 8);
+        many[i][1] = 200;
+        many[i][2] = 40;
+    }
+    assert(gif_open(&writer, path, W, H, 5) == GIF_OK);
+    assert(gif_reserve_colours(writer, (const uint8_t(*)[3])many, GIF_RESERVED_MAX + 1) ==
+           GIF_ERR_ARGUMENT);
+    assert(gif_reserve_colours(writer, (const uint8_t(*)[3])many, GIF_RESERVED_MAX - 1) == GIF_OK);
+    assert(gif_reserve_colours(writer, (const uint8_t(*)[3])many, 2) == GIF_ERR_ARGUMENT);
+    assert(gif_reserve_colours(writer, (const uint8_t(*)[3])many + GIF_RESERVED_MAX - 1, 1) ==
+           GIF_OK);
+    assert(gif_reserve_colours(writer, (const uint8_t(*)[3])many, 1) == GIF_ERR_ARGUMENT);
+    assert(gif_add_frame(writer, &first) == GIF_OK);
+    assert(gif_close(writer, NULL, NULL) == GIF_OK);
+    assert(read_gif(path, &read));
+    for (int i = 0; i < GIF_RESERVED_MAX; i++)
+        for (int c = 0; c < 3; c++) assert(read.palette[i][c] == many[i][c]);
+    free(read.indices);
+    remove(path);
+
+    png_image_free(&first);
 }
 
 int main(void) {
@@ -407,7 +425,7 @@ int main(void) {
     test_refusals();
     test_flat_frames_compress();
     test_a_colour_the_first_frame_lacks_can_be_reserved();
-    test_a_colour_promised_for_later_has_an_entry_of_its_own();
+    test_reserved_colours_share_buckets_add_up_and_have_a_limit();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);
     return 0;

@@ -4995,6 +4995,29 @@ static void reserve_the_light(gif_writer_t *gif, double seconds) {
     gif_reserve_colours(gif, (const uint8_t(*)[3])colours, 4);
 }
 
+/* Ascending by the bucket gif.c counts a colour in, five bits a channel. */
+static int by_gif_bucket(const void *a, const void *b) {
+    const uint8_t *x = a, *y = b;
+    for (int c = 0; c < 3; c++)
+        if ((x[c] >> 3) != (y[c] >> 3)) return (x[c] >> 3) - (y[c] >> 3);
+    return 0;
+}
+
+/* The first frame of a text is the text at rest, in the colours of the command, and
+ * the colours the letters fly in are on no frame until they lift: the ramp they wear
+ * by heading, and the hawk's. They are asked for in the order of their buckets, so
+ * that a table is the same whichever way round a ramp is written. */
+static void reserve_the_flight(gif_writer_t *gif) {
+    uint8_t flying[GIF_RESERVED_MAX][3];
+    int colours = 0;
+    for (int shade = 0; shade < palette()->shades && colours < GIF_RESERVED_MAX - 1;
+         shade++, colours++)
+        memcpy(flying[colours], palette()->tints[shade], 3);
+    if (config.hawks > 0) memcpy(flying[colours++], hawk_colour(), 3);
+    qsort(flying, (size_t)colours, sizeof(*flying), by_gif_bucket);
+    gif_reserve_colours(gif, (const uint8_t(*)[3])flying, colours);
+}
+
 static int run_recording(void) {
     static png_image_t frames[ROTATION_FRAMES * MAX_SPRITE_SETS];
     png_image_t canvas = {0, 0, NULL};
@@ -5059,17 +5082,7 @@ static int run_recording(void) {
         return EXIT_FAILURE;
     }
 
-    /* The first frame is the text at rest, which is where the table is chosen: the
-     * colours the letters will fly in are promised to it. */
-    if (letters_mode) {
-        uint8_t flying[GIF_SEEDS * 3];
-        int colours = 0;
-        for (int shade = 0; shade < palette()->shades && colours < GIF_SEEDS - 1;
-             shade++, colours++)
-            memcpy(flying + colours * 3, palette()->tints[shade], 3);
-        if (config.hawks > 0) memcpy(flying + 3 * colours++, hawk_colour(), 3);
-        gif_hint_colours(gif, flying, colours);
-    }
+    if (letters_mode) reserve_the_flight(gif);
 
     bird_t *birds = calloc((size_t)config.birds, sizeof(*birds));
     bird_t *snapshot = malloc(sizeof(*snapshot) * (size_t)config.birds);

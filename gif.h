@@ -28,22 +28,21 @@ gif_status_t gif_open(gif_writer_t **writer, const char *path, int width, int he
                       int delay_hundredths);
 
 /*
- * Colours that are not in the first frame and will be in later ones, which the
- * palette takes before it counts anything: a colour that only appears after the
- * first frame is otherwise drawn in the nearest one that does, and the one thing
- * a clip was made to show comes out grey. Up to GIF_RESERVED_MAX of them, before
- * the first frame; with none, the palette is exactly what the first frame makes.
+ * Colours that are not in the first frame and will be in later ones. The palette
+ * is made from the first frame alone, so a colour that only turns up afterwards is
+ * drawn in the nearest one that has an entry, and the one thing a clip was made to
+ * show comes out grey: a gold light that runs through a flock, or the colours a
+ * text flies in after it has rested as the command's output. A reserved colour
+ * takes an entry before anything is counted, exactly as given, in the order
+ * given, and whatever else falls in its bucket is drawn in it, a bucket being too
+ * small for anyone to tell. Colours that share a bucket share an entry, which is
+ * their mean. Calls add to the list, up to GIF_RESERVED_MAX in all, and only
+ * before the first frame; with none reserved the palette is exactly what the
+ * first frame makes. A call that cannot be kept whole is refused and changes
+ * nothing.
  */
-enum { GIF_RESERVED_MAX = 16 };
+enum { GIF_RESERVED_MAX = 32 };
 gif_status_t gif_reserve_colours(gif_writer_t *writer, const uint8_t (*colours)[3], int count);
-
-/* Colours that will turn up in later frames and are not in the first, which is the
- * only one the table is chosen from: a flock of letters is at rest in the first,
- * in the colours of the text, and flies in the flock's. Each given gets an entry of
- * its own, up to GIF_SEEDS of them in all, as count triples of red, green and blue.
- * Only before the first frame. */
-enum { GIF_SEEDS = 32 };
-gif_status_t gif_hint_colours(gif_writer_t *writer, const uint8_t *rgb, int count);
 
 /* RGBA in, alpha ignored: a GIF frame is opaque. */
 gif_status_t gif_add_frame(gif_writer_t *writer, const png_image_t *frame);

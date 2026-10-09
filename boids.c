@@ -203,6 +203,8 @@ static const double HAWK_APART = 1.2;
 /* And what a wall is worth: more than the chase, or it follows a bird into the
  * edge and bounces off it. */
 static const double HAWK_WALL = 2.5;
+/* How firmly a hawk is turned from the text of a sign (see hawk_sign_vector). */
+static const double HAWK_SIGN = 0.75;
 /* Flocking is local — a bird sees sixty pixels at most — so nothing in the three
  * rules keeps a flock together as a body across a whole screen. The leash is the
  * missing long range term: nothing at all within a flock's own width of its
@@ -2557,6 +2559,20 @@ static double hawk_wall_band(void) {
  * and reflected: a hundred and eighty degrees in one frame, three times a second,
  * which is exactly what "buggy" looks like. Now it banks away like the flock does,
  * and the reflection below is a safety net that almost never fires. */
+/* A hawk is turned from the text of a sign as the flock is, and less firmly than
+ * it is drawn to its prey, so it hunts round the sign with the river and crosses
+ * it when a chase takes it there. With the river and no turn, two hawks kept 11 to
+ * 13% of a sign's writers scattered on 800 birds at 96 by 26 cells, against 10 to
+ * 11% before the river, and on one machine 15%; turned at three quarters of the
+ * pull of the prey, 6 to 8%, and one hawk 3 to 5%. At one and a half a hawk all
+ * but never crossed, and a sign it never touches is a hawk that is not there. */
+static vector_t hawk_sign_vector(const hawk_t *hawk) {
+    vector_t push = {0, 0};
+    if (!formation.writing || !formation.keep_out) return push;
+    sign_box_push(&formation.box, sign_band(), hawk->x, hawk->y, &push.x, &push.y);
+    return push;
+}
+
 static vector_t hawk_wall_vector(const hawk_t *hawk) {
     vector_t wall = {0, 0};
     double band = hawk_wall_band();
@@ -2669,8 +2685,9 @@ static void hunt(const bird_t *birds) {
         double pace = HAWK_SPEED;
         vector_t apart = hawk_spacing(i);
         vector_t wall = hawk_wall_vector(hawk);
-        double want_x = apart.x * HAWK_APART + wall.x * HAWK_WALL;
-        double want_y = apart.y * HAWK_APART + wall.y * HAWK_WALL;
+        vector_t text = hawk_sign_vector(hawk);
+        double want_x = apart.x * HAWK_APART + wall.x * HAWK_WALL + text.x * HAWK_SIGN;
+        double want_y = apart.y * HAWK_APART + wall.y * HAWK_WALL + text.y * HAWK_SIGN;
         if (hawk->prey >= 0) {
             const bird_t *prey = &birds[hawk->prey];
             double gap = distance_to_bird(birds, hawk, hawk->prey);

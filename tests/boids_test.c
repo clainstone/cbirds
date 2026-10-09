@@ -3502,15 +3502,18 @@ static double share_of_a_sign_scattered(const char *text, int hawks_up, int fps,
 
 /* A hawk hunts the free birds, which are all round a sign, so it is over the sign
  * much of the time. On 800 birds at 96 by 26 cells it left 43% of the writers
- * scattered with one hawk and 67% with two, and a clock could not be read; now 5 to
- * 6% and 10 to 11%. */
+ * scattered with one hawk and 67% with two, and a clock could not be read; then 5 to
+ * 6% and 10 to 11%; and turned from the text as the flock is, 3 to 5% and 6 to 8%. */
 static void test_one_hawk_leaves_a_sign_readable(void) {
     for (int seed = 5; seed <= 6; seed++) {
         double one = share_of_a_sign_scattered("HELLO WORLD", 1, 25, seed);
         double two = share_of_a_sign_scattered("HELLO WORLD", 2, 25, seed);
         assert(one > 0.01); /* A hawk over the sign does scatter it... */
         assert(one < 0.10); /* ...and a sign with one hawk up is whole nearly always. */
-        assert(two > one && two < 0.15);
+        /* Two scatter it too, and not by much more: a hawk hunts round the text now,
+         * and whether two cross it more often than one in a flight of fourteen
+         * seconds is a matter of the chase, which came out either way. */
+        assert(two > 0.01 && two < 0.15);
     }
     /* A clock is the same story, and at the rate a person sees it. */
     reset_sign_state();

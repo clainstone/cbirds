@@ -33,9 +33,9 @@ enum {
     LINK_MESSAGE_SIZE = 24 + 48 * LINK_BATCH,
     LINK_PATH_SIZE = 128,
     LINK_NAME_SIZE = 32,
-    /* More than anybody has terminals; a directory with more is read as far as
-     * this and no further. */
-    LINK_WINDOWS_MAX = 256
+    /* Entries that were sent to and refused for good, and are let be until the
+     * directory changes. Past this the oldest is forgotten, and tried again. */
+    LINK_REFUSED_MAX = 16
 };
 
 typedef enum { LINK_BIRD = 1, LINK_HAWK = 2 } link_kind_t;
@@ -88,6 +88,12 @@ typedef struct {
     int birds_ok, hawks_ok;   /* What this window tells its neighbours. */
     double now, scanned;
     int scan_wanted;
+    /* Names of entries that cannot be sent to, and how the directory stood when the
+     * last of them was refused: while it stands so, they are not neighbours. */
+    char refused[LINK_REFUSED_MAX][LINK_NAME_SIZE];
+    int refused_count;
+    long long refused_seconds;
+    long refused_nanoseconds;
     link_traveller_t waiting[LINK_BATCH]; /* The rest of a batch being handed out. */
     int waiting_count, waiting_at;
 } link_t;

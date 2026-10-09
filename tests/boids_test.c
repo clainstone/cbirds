@@ -3687,6 +3687,130 @@ static void test_a_text_too_big_for_the_terminal_is_said_after_the_terminal_is_g
     reset_sign_state();
 }
 
+/* Runs `work` in a child that has a terminal of its own, 80 by 24, for its input,
+ * its output and its errors, as a person at the program has, and reads what it
+ * wrote to the end. Returns the length, and how the child ended in `status`. */
+static size_t run_on_a_terminal(int (*work)(void *), void *context, char *output, size_t capacity,
+                                int *status) {
+    int master = posix_openpt(O_RDWR | O_NOCTTY);
+    assert(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0);
+    const char *name = ptsname(master);
+    assert(name != NULL);
+    int terminal = open(name, O_RDWR | O_NOCTTY);
+    assert(terminal >= 0);
+    struct winsize size = {.ws_row = 24, .ws_col = 80, .ws_xpixel = 640, .ws_ypixel = 384};
+    assert(ioctl(terminal, TIOCSWINSZ, &size) == 0);
+    fflush(NULL);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        alarm(60);
+        if (dup2(terminal, STDIN_FILENO) < 0 || dup2(terminal, STDOUT_FILENO) < 0 ||
+            dup2(terminal, STDERR_FILENO) < 0)
+            _exit(99);
+        terminal_is_raw = terminal_restored = alt_screen_is_on = sprites_uploaded = 0;
+        exit(work(context)); /* Not _exit: the program puts the terminal back as it exits. */
+    }
+    close(terminal);
+    size_t length = 0;
+    *status = 0;
+    for (;;) {
+        if (readable_within(master, 100) > 0) {
+            ssize_t got = read(master, output + length, capacity - 1 - length);
+            if (got <= 0) break;
+            length += (size_t)got;
+        }
+        if (waitpid(child, status, WNOHANG) == child) {
+            child = -1;
+            break;
+        }
+    }
+    if (child > 0) assert(waitpid(child, status, 0) == child);
+    while (readable_within(master, 100) > 0) {
+        ssize_t got = read(master, output + length, capacity - 1 - length);
+        if (got <= 0) break;
+        length += (size_t)got;
+    }
+    output[length] = '\0';
+    close(master);
+    return length;
+}
+
+/* Where the screen was last given back, or NULL if it never was. */
+static const char *where_the_screen_was_given_back(const char *output) {
+    const char *given_back = NULL;
+    for (const char *at = strstr(output, ALT_SCREEN_OFF); at != NULL;
+         at = strstr(at + 1, ALT_SCREEN_OFF))
+        given_back = at;
+    return given_back;
+}
+
+static int run_the_program(void *context) {
+    char **argv = context;
+    int argc = 0;
+    while (argv[argc] != NULL) argc++;
+    return cbirds_application_main(argc, argv);
+}
+
+/* A snapshot is taken at the end of a live run, and what is said about it, that it
+ * was written or that it could not be, is said where it can be read: when the
+ * alternate screen has been given back, and not on it, where it is gone with it. */
+static void test_a_snapshot_is_reported_after_the_terminal_is_given_back(void) {
+    static char output[1 << 20];
+    char good[600], bad[700];
+    scratch_file(good, sizeof(good), "taken.png");
+    snprintf(bad, sizeof(bad), "%s/missing/taken.png", scratch);
+    for (int written = 0; written < 2; written++) {
+        reset_sign_state();
+        char *argv[] = {"cbirds", "--unlock-fps", "--frames",           "30", "-n", "200", "--seed",
+                        "3",      "--snapshot",   written ? good : bad, NULL};
+        int status;
+        run_on_a_terminal(run_the_program, argv, output, sizeof(output), &status);
+        assert(WIFEXITED(status) && WEXITSTATUS(status) == (written ? EXIT_SUCCESS : EXIT_FAILURE));
+        char message[800];
+        snprintf(message, sizeof(message),
+                 written ? "cbirds: wrote %s" : "cbirds: could not write %s", written ? good : bad);
+        const char *told = strstr(output, message);
+        const char *taken = strstr(output, ALT_SCREEN_ON);
+        const char *given_back = where_the_screen_was_given_back(output);
+        assert(taken != NULL && given_back != NULL && told != NULL);
+        assert(told > given_back && given_back > taken);
+        assert(strstr(told + 1, message) == NULL);
+        if (written) {
+            FILE *file = fopen(good, "rb");
+            assert(file != NULL);
+            unsigned char signature[4];
+            assert(fread(signature, 1, 4, file) == 4 && memcmp(signature, "\x89PNG", 4) == 0);
+            fclose(file);
+            remove(good);
+        }
+    }
+}
+
+static int fail_after_the_screen_is_taken(void *context) {
+    (void)context;
+    atexit(restore_terminal); /* As main does, so that leaving without the call would show. */
+    enter_alt_screen();
+    errno = ENOENT;
+    leave_saying("cbirds: it broke: %s\n", strerror(errno));
+    return 0;
+}
+
+/* Every error that ends a live run after the screen is taken goes through one
+ * place, which gives the screen back before it speaks and keeps the errno it was
+ * to report. */
+static void test_an_error_after_the_screen_is_taken_is_said_after_it_is_given_back(void) {
+    static char output[1 << 16];
+    int status;
+    run_on_a_terminal(fail_after_the_screen_is_taken, NULL, output, sizeof(output), &status);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_FAILURE);
+    const char *told = strstr(output, "cbirds: it broke: No such file or directory");
+    const char *taken = strstr(output, ALT_SCREEN_ON);
+    const char *given_back = where_the_screen_was_given_back(output);
+    assert(taken != NULL && given_back != NULL && told != NULL);
+    assert(told > given_back && given_back > taken);
+}
+
 static void test_a_sign_has_a_bird_as_wide_as_its_cells_unless_it_is_told(void) {
     reset_sign_state();
     /* The usual thirty on a roomy screen, and smaller on a small one, where a bird
@@ -8780,6 +8904,8 @@ static void world_open(world_t *world, const char *text, int cols, int rows) {
     config.palette = palette_named("ember");
     config.pace_notch = DEFAULT_PACE_NOTCH;
     apply_notches();
+    reflow_wait = 0;
+    reflow_empty_cols = reflow_empty_rows = 0;
     apply_screen_size(cols, rows, cols * 8, rows * 16);
     text_path = path;
     assert(take_the_text(cols, rows, 0) == 1);
@@ -9165,6 +9291,38 @@ static void test_a_hawk_over_the_text_is_an_arrow_and_scatters_it(void) {
     assert(arrows == 1);
     free(picture);
     world_close(&world);
+}
+
+/* A letter that is in the air is a bird that is flying, and the other way round: the
+ * cycle waits for every letter to land, and a bird that is told nothing never leaves. */
+static void assert_the_letters_in_the_air_are_the_birds_in_the_air(const world_t *world) {
+    for (int i = 0; i < config.birds; i++)
+        assert(letter_is_airborne(&the_letters.letter[i]) == !world->birds[i].perched);
+}
+
+/* How many times the cycle began over `frames` frames of a world with hawks, and
+ * whether a bird and its letter ever disagreed about being in the air. */
+static int cycles_with_hawks(int hawk_count, int seed, int frames) {
+    world_t world;
+    world_open(&world, NEOFETCH_LIKE, 60, 12);
+    config.hawks = hawk_count;
+    seed_random((unsigned)seed);
+    place_hawks();
+    for (int frame = 0; frame < frames; frame++) {
+        world_step(&world);
+        assert_the_letters_in_the_air_are_the_birds_in_the_air(&world);
+    }
+    int cycles = the_letters.cycles;
+    world_close(&world);
+    return cycles;
+}
+
+static void test_a_hawk_over_the_text_does_not_stop_the_cycle(void) {
+    /* A hawk that touches letters in the very step the rest ends used to leave them
+     * in the air for the cycle and on their cells for the flock, and the text then
+     * never rested or flew again. Two minutes is four cycles of a text left alone. */
+    for (int hawks = 1; hawks <= 3; hawks++)
+        for (int seed = 1; seed <= 4; seed++) assert(cycles_with_hawks(hawks, seed, 60 * 120) >= 3);
 }
 
 static void test_the_panel_lies_over_the_text_and_the_letters_under_it_still_land(void) {
@@ -9589,11 +9747,73 @@ static void test_a_window_that_changes_size_lays_the_text_out_again(void) {
     assert(memcmp(picture, after, (size_t)count_before * sizeof(cell_t)) == 0);
     free(picture);
     free(after);
+    world_close(&world);
+}
 
-    /* A window with no room for any of it keeps what it has. */
-    apply_screen_size(80, 8, 0, 0);
-    forget_the_text();
-    assert(reflow_the_letters(&world.birds, &world.snapshot) == 0);
+/* The text is on the first row of twenty and the lines after it are empty, so a
+ * screen of ten has scrolled it away and a larger one has no letter to show. */
+static const char TEXT_AT_THE_TOP[] = "hello world\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n";
+
+static void test_a_window_with_none_of_the_text_left_keeps_the_letters_and_their_size(void) {
+    world_t world;
+    world_open(&world, TEXT_AT_THE_TOP, 40, 20);
+    int before = config.birds;
+    assert(before == 10 && the_letters.cols == 40 && the_letters.rows == 20);
+
+    /* A bigger screen, with nothing of the text on it once it is laid out there. The
+     * letters are still the ones laid out on forty by twenty, in arrays of that size,
+     * and the size they say is the size they are: a sanitizer sees the arrays. */
+    apply_screen_size(100, 10, 0, 0);
+    assert(text_renderer_fits_the_screen());
+    for (int frame = 0; frame < 120; frame++)
+        assert(reflow_the_letters(&world.birds, &world.snapshot) == 0);
+    assert(the_letters.cols == 40 && the_letters.rows == 20 && config.birds == before);
+    assert(the_letters.grid != NULL && the_letters.at != NULL && the_letters.claim != NULL);
+    /* It was looked at once and found empty, and is not looked at again. */
+    assert(reflow_wait == 0);
+
+    /* The text is still painted, in the corner of a screen that has more room. */
+    int cells;
+    cell_t *picture = world_picture(&world, &cells);
+    assert(cells == 100 * 10);
+    assert(picture[0].glyph == 'h' && picture[4].glyph == 'o' && picture[6].glyph == 'w');
+    free(picture);
+
+    /* And it flies and comes home on the screen it does not fit. */
+    assert(spatial_grid_prepare(&world.grid, screen.width, screen.height, config.birds) ==
+           SPATIAL_GRID_OK);
+    feed_input("\r");
+    assert(world_run_until(&world, LETTERS_IN_FLIGHT, 60 * 6) > 0);
+    for (int frame = 0; frame < 120; frame++) {
+        world_step(&world);
+        picture = world_picture(&world, &cells);
+        free(picture);
+    }
+    feed_input("\r");
+    assert(world_run_until(&world, LETTERS_AT_REST, 60 * 40) > 0 && world_all_home(&world));
+
+    /* A smaller screen is no different: what there is stays. */
+    apply_screen_size(20, 5, 0, 0);
+    assert(text_renderer_fits_the_screen());
+    for (int frame = 0; frame < 120; frame++)
+        assert(reflow_the_letters(&world.birds, &world.snapshot) == 0);
+    assert(the_letters.cols == 40 && the_letters.rows == 20);
+    picture = world_picture(&world, &cells);
+    assert(cells == 20 * 5 && picture[0].glyph == 'h');
+    free(picture);
+
+    /* A size where it does show is laid out, whatever the sizes before were. */
+    apply_screen_size(60, 20, 0, 0);
+    assert(text_renderer_fits_the_screen());
+    int laid_out = 0;
+    for (int frame = 0; frame < 60 && !laid_out; frame++)
+        laid_out = reflow_the_letters(&world.birds, &world.snapshot);
+    assert(laid_out && the_letters.cols == 60 && the_letters.rows == 20 && config.birds == before);
+    /* The size that had nothing is still known to have nothing. */
+    apply_screen_size(100, 10, 0, 0);
+    for (int frame = 0; frame < 120; frame++)
+        assert(reflow_the_letters(&world.birds, &world.snapshot) == 0);
+    assert(the_letters.cols == 60 && the_letters.rows == 20);
     world_close(&world);
 }
 
@@ -9734,6 +9954,222 @@ static void test_keys_and_colour_questions_use_the_descriptor_that_was_chosen(vo
     input_fd = saved;
     close(keys[0]);
     close(keys[1]);
+}
+
+/* A terminal that answers in pieces, with a wait before each: a child that writes
+ * them to the descriptor the questions are read from while the test is asking. */
+static pid_t answer_in_pieces(int fd, const char *const pieces[], const int waits[], int count) {
+    fflush(NULL);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        for (int i = 0; i < count; i++) {
+            usleep((useconds_t)waits[i] * 1000);
+            if (write(fd, pieces[i], strlen(pieces[i])) < 0) _exit(1);
+        }
+        _exit(0);
+    }
+    return child;
+}
+
+static void wait_for_the_answerer(pid_t child) {
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
+static void test_a_colour_reply_is_whole_at_its_terminator_and_not_at_a_letter_in_it(void) {
+    int keys[2];
+    assert(pipe(keys) == 0);
+    int saved = input_fd;
+    input_fd = keys[0];
+    input_state = INPUT_NORMAL;
+    uint8_t rgb[3];
+
+    /* The red of a terminal whose first colour is cc0000, in one piece: the 'c' in
+     * the digits used to end the read after "rgb:c". */
+    const char *whole = "\033]4;1;rgb:cccc/0000/0000\033\\";
+    assert(write(keys[1], whole, strlen(whole)) == (ssize_t)strlen(whole));
+    assert(ask_colour("\033]4;1;?\033\\", rgb) && rgb[0] == 0xcc && rgb[1] == 0 && rgb[2] == 0);
+
+    /* In pieces, with the cut where the digits are, where the ST is, and a bell for
+     * the end of it. */
+    static const char *const CUT_IN_THE_DIGITS[] = {"\033]4;1;rgb:cc", "cc/0000/0000\033\\"};
+    static const char *const CUT_IN_THE_ST[] = {"\033]4;1;rgb:cccc/0000/0000\033", "\\"};
+    static const char *const WITH_A_BELL[] = {"\033]4;1;rgb:cc", "cc/0000/0000\007"};
+    static const char *const *const SPLIT[] = {CUT_IN_THE_DIGITS, CUT_IN_THE_ST, WITH_A_BELL};
+    static const int WAITS[] = {5, 30};
+    for (size_t i = 0; i < sizeof(SPLIT) / sizeof(*SPLIT); i++) {
+        rgb[0] = rgb[1] = rgb[2] = 7;
+        pid_t terminal = answer_in_pieces(keys[1], SPLIT[i], WAITS, 2);
+        assert(ask_colour("\033]4;1;?\033\\", rgb));
+        wait_for_the_answerer(terminal);
+        assert(rgb[0] == 0xcc && rgb[1] == 0 && rgb[2] == 0);
+    }
+
+    /* The letter that ends a device attributes reply is the end of a CSI reply, and
+     * the bytes after it are not part of it. */
+    char reply[64];
+    const char *attributes = "\033[?64;1;2cXY";
+    assert(write(keys[1], attributes, strlen(attributes)) == (ssize_t)strlen(attributes));
+    assert(terminal_query("\033[c", 3, reply, sizeof(reply), 200) == strlen("\033[?64;1;2c"));
+    assert(strcmp(reply, "\033[?64;1;2c") == 0);
+    input_fd = saved;
+    close(keys[0]);
+    close(keys[1]);
+}
+
+static void test_a_late_reply_to_an_earlier_question_is_not_taken_for_this_one(void) {
+    int keys[2];
+    assert(pipe(keys) == 0);
+    int saved = input_fd;
+    input_fd = keys[0];
+    input_state = INPUT_NORMAL;
+    uint8_t rgb[3];
+    /* The background's answer, late, and then the third colour's own. */
+    const char *late = "\033]11;rgb:bbbb/bbbb/bbbb\033\\";
+    const char *own = "\033]4;3;rgb:1111/2222/3333\033\\";
+    assert(write(keys[1], late, strlen(late)) == (ssize_t)strlen(late));
+    assert(write(keys[1], own, strlen(own)) == (ssize_t)strlen(own));
+    assert(ask_colour("\033]4;3;?\033\\", rgb));
+    assert(rgb[0] == 0x11 && rgb[1] == 0x22 && rgb[2] == 0x33);
+    /* Only the late one in the pipe: nothing answers, and it is not the answer. */
+    assert(write(keys[1], late, strlen(late)) == (ssize_t)strlen(late));
+    assert(!ask_colour("\033]4;3;?\033\\", rgb));
+    input_fd = saved;
+    close(keys[0]);
+    close(keys[1]);
+    assert(input_state == INPUT_NORMAL);
+}
+
+/* The slider that b moves, as a key reader finds it. */
+static int boundary_after_reading(const char *bytes) {
+    config.boundary_notch = 4;
+    apply_notches();
+    feed_input(bytes);
+    return config.boundary_notch;
+}
+
+static void test_a_reply_that_comes_late_is_not_read_as_keys(void) {
+    reset_test_config();
+    input_state = INPUT_NORMAL;
+    /* An OSC reply with b in every channel, which moved the boundary slider to its
+     * end when it was read as keys, and the same ended by a bell. */
+    assert(boundary_after_reading("\033]11;rgb:bbbb/bbbb/bbbb\033\\") == 4);
+    assert(boundary_after_reading("\033]11;rgb:bbbb/bbbb/bbbb\007") == 4);
+    assert(boundary_after_reading("\033]4;3;rgb:eeee/aaaa/0000\033\\") == 4);
+    /* A DCS reply, which only ST ends: the bell in it is part of it. */
+    assert(boundary_after_reading("\033P>|bbb\007bb\033\\") == 4);
+    assert(input_state == INPUT_NORMAL);
+    /* And the key after it is a key. */
+    assert(boundary_after_reading("\033]11;rgb:bbbb/bbbb/bbbb\033\\b") == 3);
+    assert(boundary_after_reading("b\033]11;rgb:aaaa/aaaa/aaaa\033\\b") == 2);
+
+    /* In pieces, the cut anywhere: after the introducer, in the body, between the
+     * escape and the backslash. */
+    static const char REPLY[] = "\033]11;rgb:bbbb/bbbb/bbbb\033\\";
+    for (size_t cut = 1; cut < sizeof(REPLY) - 1; cut++) {
+        char head[40], tail[40];
+        memcpy(head, REPLY, cut);
+        head[cut] = '\0';
+        strcpy(tail, REPLY + cut);
+        config.boundary_notch = 4;
+        apply_notches();
+        feed_input(head);
+        feed_input(tail);
+        assert(config.boundary_notch == 4 && input_state == INPUT_NORMAL);
+    }
+}
+
+static void test_a_string_the_key_reader_cannot_end_is_given_up(void) {
+    reset_test_config();
+    input_state = INPUT_NORMAL;
+    /* Alt with ] begins one too, and what is typed after it is typed. Nothing more
+     * of it comes for a moment: it is over. */
+    feed_input("\033]");
+    assert(input_state == INPUT_STRING);
+    input_string_at.tv_sec -= 5;
+    assert(boundary_after_reading("b") == 3 && input_state == INPUT_NORMAL);
+    /* A string that goes on for longer than any reply is not one. The reader takes a
+     * hundred bytes at a time. */
+    char chunk[91];
+    memset(chunk, 'x', sizeof(chunk) - 1);
+    chunk[sizeof(chunk) - 1] = '\0';
+    feed_input("\033]");
+    for (int i = 0; i < 2; i++) {
+        feed_input(chunk);
+        assert(input_state == INPUT_STRING);
+    }
+    feed_input(chunk);
+    assert(input_state == INPUT_NORMAL);
+    assert(boundary_after_reading("b") == 3);
+    /* An escape in a string ends it and begins what it begins: here a mouse report
+     * is read, and a key after it. */
+    mouse.present = 0;
+    apply_screen_size(80, 24, 80 * 8, 24 * 16);
+    assert(boundary_after_reading("\033]11;rgb:bb\033[<35;10;5Mb") == 3);
+    assert(mouse.present && input_state == INPUT_NORMAL);
+    mouse.present = 0;
+}
+
+static void test_the_rest_of_a_reply_that_was_cut_off_by_the_deadline_is_thrown_away(void) {
+    reset_test_config();
+    int keys[2];
+    assert(pipe(keys) == 0);
+    int saved = input_fd;
+    input_fd = keys[0];
+    input_state = INPUT_NORMAL;
+    uint8_t rgb[3];
+    /* The terminal is slow: the head of its answer is in time and the tail is not.
+     * It is no answer, and the tail, when it comes, is not keys either. */
+    const char *head = "\033]11;rgb:bb";
+    assert(write(keys[1], head, strlen(head)) == (ssize_t)strlen(head));
+    assert(!ask_colour("\033]11;?\033\\", rgb));
+    assert(input_state == INPUT_STRING);
+    input_fd = saved;
+    assert(boundary_after_reading("bb/bbbb/bbbb\033\\") == 4 && input_state == INPUT_NORMAL);
+    close(keys[0]);
+    close(keys[1]);
+}
+
+/* A report is a cell of the screen. Billions of columns is not a place, and the
+ * letters turn the position into a cell with an int. */
+static void test_a_pointer_reported_beyond_the_screen_is_at_its_edge(void) {
+    reset_test_config();
+    apply_screen_size(80, 24, 80 * 8, 24 * 16);
+    mouse.present = 0;
+    read_mouse_report("<35;2147483647;5");
+    assert(mouse.present && mouse.x == 79.5 * screen.cell_width &&
+           mouse.y == 4.5 * screen.cell_height);
+    read_mouse_report("<35;5;2147483647");
+    assert(mouse.x == 4.5 * screen.cell_width && mouse.y == 23.5 * screen.cell_height);
+    read_mouse_report("<35;81;25");
+    assert(mouse.x == 79.5 * screen.cell_width && mouse.y == 23.5 * screen.cell_height);
+    /* On the screen it is where it says, and nothing at all is not a place. */
+    read_mouse_report("<35;80;24");
+    assert(mouse.x == 79.5 * screen.cell_width && mouse.y == 23.5 * screen.cell_height);
+    read_mouse_report("<35;3;2");
+    assert(mouse.x == 2.5 * screen.cell_width && mouse.y == 1.5 * screen.cell_height);
+    read_mouse_report("<35;0;2147483647");
+    assert(mouse.x == 2.5 * screen.cell_width && mouse.y == 1.5 * screen.cell_height);
+    mouse.present = 0;
+}
+
+/* The same through the keys, over text, for a run under the float-cast sanitizer to
+ * see: the pointer far past the last letter touches none and breaks nothing. */
+static void test_a_pointer_at_the_limits_does_not_disturb_the_text(void) {
+    world_t world;
+    world_open(&world, NEOFETCH_LIKE, 60, 12);
+    static const char *const REPORTS[] = {"\033[<35;5;2147483647M", "\033[<35;2147483647;5M",
+                                          "\033[<35;2147483647;2147483647M"};
+    for (size_t i = 0; i < sizeof(REPORTS) / sizeof(*REPORTS); i++) {
+        mouse.present = 0;
+        assert(feed_input(REPORTS[i]) == 1);
+        assert(mouse.present && mouse.x < screen.width && mouse.y < screen.height);
+        for (int frame = 0; frame < 30; frame++) world_step(&world);
+    }
+    mouse.present = 0;
+    world_close(&world);
 }
 
 /* ---- Text beside the other modes ----------------------------------------------- */
@@ -12269,6 +12705,8 @@ int main(void) {
     test_a_small_screen_leaves_the_flock_sky_and_a_roomy_one_is_as_it_was();
     test_a_sign_that_cannot_be_laid_out_says_so_when_the_run_is_over();
     test_a_text_too_big_for_the_terminal_is_said_after_the_terminal_is_given_back();
+    test_a_snapshot_is_reported_after_the_terminal_is_given_back();
+    test_an_error_after_the_screen_is_taken_is_said_after_it_is_given_back();
     test_a_sign_has_a_bird_as_wide_as_its_cells_unless_it_is_told();
     test_a_sign_records_in_a_gif_and_a_cast();
     test_a_sign_survives_the_flock_growing_under_it();
@@ -12385,6 +12823,7 @@ int main(void) {
     test_a_letter_lands_exactly_and_does_not_circle_its_cell();
     test_the_pointer_scatters_what_it_touches_and_they_find_their_way_back();
     test_a_hawk_over_the_text_is_an_arrow_and_scatters_it();
+    test_a_hawk_over_the_text_does_not_stop_the_cycle();
     test_the_panel_lies_over_the_text_and_the_letters_under_it_still_land();
     test_pausing_stops_the_cycle_and_the_text_is_not_drawn_twice();
     test_the_keys_that_change_the_population_do_nothing_to_text();
@@ -12395,10 +12834,18 @@ int main(void) {
     test_a_text_recording_is_the_text_flying();
     test_a_text_recording_as_a_gif_is_painted_with_the_font();
     test_a_window_that_changes_size_lays_the_text_out_again();
+    test_a_window_with_none_of_the_text_left_keeps_the_letters_and_their_size();
     test_text_that_does_not_fit_the_screen_it_is_laid_out_on_scrolls();
     test_a_benchmark_of_text_flies_it_from_the_first_frame();
     test_standard_input_that_is_not_a_terminal_leaves_the_keys_to_the_tty();
     test_keys_and_colour_questions_use_the_descriptor_that_was_chosen();
+    test_a_colour_reply_is_whole_at_its_terminator_and_not_at_a_letter_in_it();
+    test_a_late_reply_to_an_earlier_question_is_not_taken_for_this_one();
+    test_a_reply_that_comes_late_is_not_read_as_keys();
+    test_a_string_the_key_reader_cannot_end_is_given_up();
+    test_the_rest_of_a_reply_that_was_cut_off_by_the_deadline_is_thrown_away();
+    test_a_pointer_reported_beyond_the_screen_is_at_its_edge();
+    test_a_pointer_at_the_limits_does_not_disturb_the_text();
     test_a_text_tells_no_alarm_and_never_reads_the_wave_state();
     test_a_text_with_hawks_records_the_flight_and_not_the_light();
     test_an_unasked_for_recording_length_is_settled_before_anything_reads_it();

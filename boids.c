@@ -10,6 +10,7 @@
 #include <locale.h>
 #include <math.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -551,6 +552,10 @@ static letters_t the_letters;
 static uint8_t *the_text;
 static size_t the_text_length;
 static double reflow_wait;
+/* A size the text was laid out on and nothing of it showed. The letters stay as they
+ * were, so the screen is still not their size, and without this it would be laid out
+ * again every moment to find the same nothing. */
+static int reflow_empty_cols, reflow_empty_rows;
 /* Where the keys come from, and the terminal's modes are set and queried: the
  * standard input, unless that is a pipe with text in it, in which case the
  * controlling terminal. */
@@ -703,6 +708,21 @@ static void restore_terminal(void) {
     write_all(ALT_SCREEN_OFF, sizeof(ALT_SCREEN_OFF) - 1);
 }
 
+/* The run ends on an error found after the terminal was taken, and the person is
+ * told why on the terminal they had: the screen is given back first. On the
+ * alternate screen, with output processing off, a message is thrown away with the
+ * screen or staircases across it, and nobody reads why the program stopped. The
+ * arguments are worked out before the terminal is touched, so an errno they report
+ * is the one that was set. */
+static void leave_saying(const char *format, ...) {
+    restore_terminal();
+    va_list arguments;
+    va_start(arguments, format);
+    vfprintf(stderr, format, arguments);
+    va_end(arguments);
+    exit(EXIT_FAILURE);
+}
+
 static void signal_handler(int signal_number) {
     /* The socket first, which is an unlink and a close and so cannot wait for
      * anything, where putting the terminal back can: tcsetattr drains the output,
@@ -732,18 +752,105 @@ static void install_signal_handlers(void) {
     sigaction(SIGPIPE, &action, NULL);
 }
 
-/* Sends a request and collects whatever comes back until a terminator or the
- * deadline, whichever is first. The colour queries ask the terminal a question
- * it may simply not answer, and may not hang the startup path waiting for a
- * reply that is never coming. Raw mode has to be on already, or the reply would
- * be echoed and held until a newline. */
+/*
+ * The terminal's replies, and the key reader that must not take them for keys.
+ *
+ * A question to the terminal is answered with an escape sequence, and what makes
+ * the answer whole depends on the kind of sequence it is: an OSC string ends at a
+ * bell or at ST (ESC \), a DCS at ST, a CSI at its final byte. It does not end at
+ * a letter inside it: the colour cc in rgb:cc/00/00 is a 'c', and a reply that was
+ * cut off there lost its colour. The same goes for the key reader, which has to
+ * know where a string ends to leave it alone, since a reply that came late is
+ * read there, and the letters in it are commands.
+ */
+typedef enum { REPLY_NONE, REPLY_PARTIAL, REPLY_COMPLETE } reply_progress_t;
+
+/* The first reply in `bytes`: where its escape is, where it ends, and which kind of
+ * sequence it is (the byte after the escape). Anything before the escape is a key
+ * that was typed while the question was out. */
+static reply_progress_t read_a_reply(const char *bytes, size_t length, size_t *first, size_t *last,
+                                     char *kind) {
+    size_t at = 0;
+    while (at < length && bytes[at] != '\033') at++;
+    if (at >= length) return REPLY_NONE;
+    *first = at;
+    if (at + 1 >= length) return REPLY_PARTIAL;
+    *kind = bytes[at + 1];
+    if (*kind == '[') {
+        for (size_t i = at + 2; i < length; i++)
+            if ((unsigned char)bytes[i] >= 0x40 && (unsigned char)bytes[i] <= 0x7e) {
+                *last = i + 1;
+                return REPLY_COMPLETE;
+            }
+        return REPLY_PARTIAL;
+    }
+    if (*kind == ']' || *kind == 'P') {
+        for (size_t i = at + 2; i < length; i++) {
+            if (bytes[i] == '\a' && *kind == ']') {
+                *last = i + 1;
+                return REPLY_COMPLETE;
+            }
+            if (bytes[i] != '\033') continue;
+            if (i + 1 >= length) return REPLY_PARTIAL;
+            if (bytes[i + 1] == '\\') {
+                *last = i + 2;
+                return REPLY_COMPLETE;
+            }
+        }
+        return REPLY_PARTIAL;
+    }
+    *last = at + 2; /* An escape and a byte: a key with alt, and no reply. */
+    return REPLY_COMPLETE;
+}
+
+/* Where the key reader is in what it is reading, kept between reads because a
+ * sequence may be split across them. A string, an OSC or a DCS, is read to its end
+ * and thrown away. It is given up if it runs on past any reply this program asks
+ * for, or if nothing more of it comes for a moment: alt with ] or P begins one too,
+ * and the keys typed after that are not part of it. */
+enum { INPUT_NORMAL, INPUT_ESCAPE, INPUT_SEQUENCE, INPUT_STRING, INPUT_STRING_ESCAPE };
+static int input_state = INPUT_NORMAL;
+static char input_string_kind;
+static size_t input_string_length;
+static struct timespec input_string_at;
+static const size_t INPUT_STRING_LONGEST = 256;
+static const double INPUT_STRING_PATIENCE = 0.25;
+
+static void begin_a_string(char kind) {
+    input_state = INPUT_STRING;
+    input_string_kind = kind;
+    input_string_length = 0;
+    clock_gettime(CLOCK_MONOTONIC, &input_string_at);
+}
+
+/* Sends a request and collects the reply to it, or whatever comes back until the
+ * deadline. The colour queries ask the terminal a question it may simply not
+ * answer, and may not hang the startup path waiting for a reply that is never
+ * coming. Raw mode has to be on already, or the reply would be echoed and held
+ * until a newline.
+ *
+ * The reply is the one that answers the question: for a request that names what it
+ * asks (OSC 11, OSC 4 entry 3) a complete reply to another question is a late
+ * answer to an earlier one, and is dropped rather than taken for this. A reply
+ * that has begun and is not all there when the time is up is not an answer, and
+ * the key reader is told to throw away the rest of it when it comes. Returns the
+ * length of the reply, which is all that is in the buffer, or 0. */
 static size_t terminal_query(const char *request, size_t request_length, char *reply,
                              size_t reply_size, int milliseconds) {
     struct timespec start, now;
     size_t length = 0;
+    char wanted[32];
+    size_t wanted_length = 0;
 
     if (reply_size == 0) return 0;
     reply[0] = '\0';
+    if (request_length > 2 && request[0] == '\033' && request[1] == ']') {
+        const char *mark = memchr(request, '?', request_length);
+        if (mark != NULL && (size_t)(mark - request) < sizeof(wanted)) {
+            wanted_length = (size_t)(mark - request);
+            memcpy(wanted, request, wanted_length);
+        }
+    }
     /* The question goes out the way the answer comes back: through the controlling
      * terminal when that is where the keys are read, since the standard output may
      * be anywhere. */
@@ -785,13 +892,29 @@ static size_t terminal_query(const char *request, size_t request_length, char *r
         if (got <= 0) break;
         length += (size_t)got;
         reply[length] = '\0';
-        /* Every reply this program asks for ends one of these three ways. */
-        if (memchr(reply, '\a', length) != NULL || strstr(reply, "\033\\") != NULL ||
-            memchr(reply, 'c', length) != NULL)
-            break;
+        size_t first, last;
+        char kind = 0;
+        while (read_a_reply(reply, length, &first, &last, &kind) == REPLY_COMPLETE) {
+            if (wanted_length == 0 || (last - first >= wanted_length &&
+                                       memcmp(reply + first, wanted, wanted_length) == 0)) {
+                memmove(reply, reply + first, last - first);
+                length = last - first;
+                reply[length] = '\0';
+                return length;
+            }
+            memmove(reply, reply + last, length - last);
+            length -= last;
+            reply[length] = '\0';
+        }
         if (length + 1 >= reply_size) break;
     }
-    return length;
+    size_t first, last;
+    char kind = 0;
+    if (read_a_reply(reply, length, &first, &last, &kind) == REPLY_PARTIAL && first + 1 < length &&
+        (kind == ']' || kind == 'P'))
+        begin_a_string(kind);
+    reply[0] = '\0';
+    return 0;
 }
 
 /* What a live run draws with: braille unless something else was asked for. */
@@ -4440,10 +4563,8 @@ static fireflies_law_t firefly_law(void) {
  * glow has reached, or none. */
 static void light_the_night(bird_t *birds) {
     if (fireflies_grow(&night, config.birds, FIREFLY_PERIOD, FIREFLY_SPREAD, random_unit) !=
-        FIREFLIES_OK) {
-        perror("Out of memory");
-        exit(EXIT_FAILURE);
-    }
+        FIREFLIES_OK)
+        leave_saying("Out of memory: %s\n", strerror(errno));
     double startled = 1 - exp(-FIREFLY_STARTLE * frame_seconds);
     double reach = FIREFLY_LANTERN * firefly_spacing();
     for (int i = 0; i < config.birds; i++) {
@@ -5564,6 +5685,11 @@ static void read_mouse_report(const char *sequence) {
         *at++ != ';' || !read_decimal(&at, &row))
         return;
     if (column < 1 || row < 1) return;
+    /* The pointer is in a cell of the screen. A terminal that reports it further off,
+     * dragged out of the window, or a report that was made up, is at the nearest
+     * edge: a billion columns is a position nothing here can turn into a cell. */
+    if (screen.cols > 0 && column > screen.cols) column = screen.cols;
+    if (screen.rows > 0 && row > screen.rows) row = screen.rows;
     double x = (column - 0.5) * screen.cell_width, y = (row - 0.5) * screen.cell_height;
     double now = clock_state.seconds;
     if (!mouse.present) {
@@ -5656,8 +5782,6 @@ static void konami_note(char key) {
 }
 
 static int handle_input(void) {
-    enum { INPUT_NORMAL, INPUT_ESCAPE, INPUT_SEQUENCE };
-    static int input_state = INPUT_NORMAL;
     static char sequence[32];
     static size_t sequence_length;
     char input[INPUT_BUFFER_SIZE];
@@ -5669,13 +5793,41 @@ static int handle_input(void) {
      * and thrown away. */
     if (screensaver_mode && length > 0)
         return clock_state.seconds < SCREENSAVER_GRACE && launch_lag <= SCREENSAVER_GRACE;
+    if (length > 0 && (input_state == INPUT_STRING || input_state == INPUT_STRING_ESCAPE)) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double quiet = (double)(now.tv_sec - input_string_at.tv_sec) +
+                       (double)(now.tv_nsec - input_string_at.tv_nsec) / 1e9;
+        if (quiet > INPUT_STRING_PATIENCE) input_state = INPUT_NORMAL;
+        input_string_at = now;
+    }
     for (ssize_t i = 0; i < length; i++) {
         unsigned char key = (unsigned char)input[i];
         int *notch = NULL, step = 0;
+        if (input_state == INPUT_STRING) {
+            /* A reply that came late, or in pieces: none of it is a key. */
+            if (key == '\a' && input_string_kind == ']')
+                input_state = INPUT_NORMAL;
+            else if (key == '\033')
+                input_state = INPUT_STRING_ESCAPE;
+            else if (++input_string_length > INPUT_STRING_LONGEST)
+                input_state = INPUT_NORMAL;
+            continue;
+        }
+        if (input_state == INPUT_STRING_ESCAPE) {
+            if (key == '\\') {
+                input_state = INPUT_NORMAL;
+                continue;
+            }
+            /* An escape inside a string ends it and begins something else. */
+            input_state = INPUT_ESCAPE;
+        }
         if (input_state == INPUT_ESCAPE) {
             if (key == '[' || key == 'O') {
                 input_state = INPUT_SEQUENCE;
                 sequence_length = 0;
+            } else if (key == ']' || key == 'P') {
+                begin_a_string((char)key);
             } else if (key != '\033') {
                 input_state = INPUT_NORMAL;
             }
@@ -6912,10 +7064,16 @@ static const double REFLOW_SETTLE_SECONDS = 0.3;
  * again on this one, as it would have been had the command run here, and the cycle
  * begins again from the text at rest: a letter in the air has nowhere to land on a
  * grid that is gone. Waits until the size has held still for a moment, so that
- * dragging a corner is not a layout a frame. Returns whether it laid out afresh. */
+ * dragging a corner is not a layout a frame. Returns whether it laid out afresh.
+ *
+ * When it cannot, because nothing of the text is left on the new screen (it has
+ * scrolled off) or there is no memory, the letters stay as they were, with the size
+ * they were laid out for: their arrays are that big and no bigger, and a size that
+ * said otherwise would have the painting run past them. */
 static int reflow_the_letters(bird_t **birds, bird_t **snapshot) {
     if (!letters_mode || the_text == NULL) return 0;
-    if (screen.cols == the_letters.cols && screen.rows == the_letters.rows) {
+    if ((screen.cols == the_letters.cols && screen.rows == the_letters.rows) ||
+        (screen.cols == reflow_empty_cols && screen.rows == reflow_empty_rows)) {
         reflow_wait = 0;
         return 0;
     }
@@ -6934,13 +7092,14 @@ static int reflow_the_letters(bird_t **birds, bird_t **snapshot) {
     bird_t *grown = count > 0 ? malloc(sizeof(**birds) * (size_t)count) : NULL;
     bird_t *grown_snapshot = count > 0 ? malloc(sizeof(**snapshot) * (size_t)count) : NULL;
     if (count <= 0 || grown == NULL || grown_snapshot == NULL) {
-        /* Nothing of it fits on the new screen, or no memory: what there is stays, and
-         * the size it was laid out for is the size to compare with from now on. */
         free(grown);
         free(grown_snapshot);
         letters_destroy(&fresh);
-        the_letters.cols = screen.cols;
-        the_letters.rows = screen.rows;
+        /* Nothing to show is the same on every try at this size; no memory may not be. */
+        if (count == 0) {
+            reflow_empty_cols = screen.cols;
+            reflow_empty_rows = screen.rows;
+        }
         return 0;
     }
     free(*birds);
@@ -7516,48 +7675,35 @@ int main(int argc, char **argv) {
         config.palette = FALLBACK_INK;
 
     spatial_grid_status_t grid_status = spatial_grid_init(&grid, SPATIAL_CELL_SIZE);
-    if (grid_status != SPATIAL_GRID_OK) {
-        fprintf(stderr, "Cannot initialize spatial grid: %s\n",
-                spatial_grid_status_string(grid_status));
-        exit(EXIT_FAILURE);
-    }
+    if (grid_status != SPATIAL_GRID_OK)
+        leave_saying("Cannot initialize spatial grid: %s\n",
+                     spatial_grid_status_string(grid_status));
     /* A named seed makes a run repeatable, which is what lets a look be shared
      * and a bug report be reproduced. */
     seed_random(requested_seed >= 0 ? (unsigned)requested_seed : (unsigned)time(NULL));
     update_screen_dimensions();
     settle_the_bird_size(); /* From the screen, if it is a sign that is being sized. */
     grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, config.birds);
-    if (grid_status != SPATIAL_GRID_OK) {
-        fprintf(stderr, "Cannot prepare spatial grid: %s\n",
-                spatial_grid_status_string(grid_status));
-        exit(EXIT_FAILURE);
-    }
+    if (grid_status != SPATIAL_GRID_OK)
+        leave_saying("Cannot prepare spatial grid: %s\n", spatial_grid_status_string(grid_status));
     /* The sprites, once, as pixels: the text renderers read them back as cells
      * every frame, and Kitty is sent them encoded and then places them by id. */
     if (drawing_with_text()) {
-        if (!prepare_text_renderer()) {
-            fprintf(stderr, "%s: cannot build the sprites to draw with\n", program_name);
-            exit(EXIT_FAILURE);
-        }
+        if (!prepare_text_renderer())
+            leave_saying("%s: cannot build the sprites to draw with\n", program_name);
     } else if (rasterise_sprites(text_sprites) != PNG_OK) {
-        fprintf(stderr, "%s: cannot build the sprites to draw with\n", program_name);
-        exit(EXIT_FAILURE);
+        leave_saying("%s: cannot build the sprites to draw with\n", program_name);
     }
     set_frame_seconds(1.0 / FRAME_RATE);
     hawk_sets_built = 1;
 
     bird_t *birds = calloc((size_t)bird_room(config.birds), sizeof(*birds));
     bird_t *snapshot = malloc(sizeof(*snapshot) * (size_t)bird_room(config.birds));
-    if (!birds || !snapshot) {
-        perror("Out of memory");
-        exit(EXIT_FAILURE);
-    }
+    if (!birds || !snapshot) leave_saying("Out of memory: %s\n", strerror(errno));
     kitty_graphics_status_t graphics_status = kitty_graphics_init(&graphics, STDOUT_FILENO);
-    if (graphics_status != KITTY_GRAPHICS_OK) {
-        fprintf(stderr, "Cannot initialize Kitty graphics: %s\n",
-                kitty_graphics_status_string(graphics_status));
-        exit(EXIT_FAILURE);
-    }
+    if (graphics_status != KITTY_GRAPHICS_OK)
+        leave_saying("Cannot initialize Kitty graphics: %s\n",
+                     kitty_graphics_status_string(graphics_status));
 
     enter_alt_screen();
     write_all("\x1b[J", sizeof("\x1b[J") - 1);
@@ -7569,11 +7715,9 @@ int main(int argc, char **argv) {
         sprites_uploaded = 1; /* Even a failed upload may have left some behind. */
         graphics_status = upload_sprite_sets(&graphics, text_sprites);
         free_sprites(text_sprites);
-        if (graphics_status != KITTY_GRAPHICS_OK) {
-            fprintf(stderr, "Cannot upload Kitty graphics: %s\n",
-                    kitty_graphics_status_string(graphics_status));
-            exit(EXIT_FAILURE);
-        }
+        if (graphics_status != KITTY_GRAPHICS_OK)
+            leave_saying("Cannot upload Kitty graphics: %s\n",
+                         kitty_graphics_status_string(graphics_status));
     }
 
     struct timespec started;
@@ -7613,18 +7757,14 @@ int main(int argc, char **argv) {
         update_screen_dimensions();
         if (reflow_the_letters(&birds, &snapshot)) live_birds = config.birds;
         sprite_fit_t fit = fit_the_sprites_to_the_window(&graphics);
-        if (fit == SPRITES_FAILED) {
-            fprintf(stderr, "%s: cannot build the sprites to draw with\n", program_name);
-            exit(EXIT_FAILURE);
-        }
+        if (fit == SPRITES_FAILED)
+            leave_saying("%s: cannot build the sprites to draw with\n", program_name);
         /* The pause was building, not flying: the next frame is one frame long. */
         if (fit == SPRITES_REBUILT) clock_gettime(CLOCK_MONOTONIC, &previous_frame);
         grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, grid_items());
-        if (grid_status != SPATIAL_GRID_OK) {
-            fprintf(stderr, "Cannot resize spatial grid: %s\n",
-                    spatial_grid_status_string(grid_status));
-            exit(EXIT_FAILURE);
-        }
+        if (grid_status != SPATIAL_GRID_OK)
+            leave_saying("Cannot resize spatial grid: %s\n",
+                         spatial_grid_status_string(grid_status));
         if (population_changed) {
             /* Grown or shrunk by a keypress, and the grid needs room for them. */
             population_changed = 0;
@@ -7633,11 +7773,9 @@ int main(int argc, char **argv) {
             else
                 config.birds = live_birds; /* Keep what we have rather than lose it. */
             grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, grid_items());
-            if (grid_status != SPATIAL_GRID_OK) {
-                fprintf(stderr, "Cannot resize spatial grid: %s\n",
-                        spatial_grid_status_string(grid_status));
-                exit(EXIT_FAILURE);
-            }
+            if (grid_status != SPATIAL_GRID_OK)
+                leave_saying("Cannot resize spatial grid: %s\n",
+                             spatial_grid_status_string(grid_status));
         }
         if (the_row.opened) {
             /* The birds that have come in, after the keys have had their say about
@@ -7645,52 +7783,41 @@ int main(int argc, char **argv) {
             sky_keep_up();
             sky_take_in(birds, &live_birds);
             grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, grid_items());
-            if (grid_status != SPATIAL_GRID_OK) {
-                fprintf(stderr, "Cannot resize spatial grid: %s\n",
-                        spatial_grid_status_string(grid_status));
-                exit(EXIT_FAILURE);
-            }
+            if (grid_status != SPATIAL_GRID_OK)
+                leave_saying("Cannot resize spatial grid: %s\n",
+                             spatial_grid_status_string(grid_status));
         }
         /* After the flock has the size it is to have, and after the screen is
          * measured: a sign is laid out for both, and reads every bird of it. */
         if (leaving <= 0) sign_advance(birds);
         memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
         grid_status = spatial_grid_build(&grid, config.birds, read_bird_position, snapshot);
-        if (grid_status != SPATIAL_GRID_OK) {
-            fprintf(stderr, "Cannot build spatial grid: %s\n",
-                    spatial_grid_status_string(grid_status));
-            exit(EXIT_FAILURE);
-        }
+        if (grid_status != SPATIAL_GRID_OK)
+            leave_saying("Cannot build spatial grid: %s\n",
+                         spatial_grid_status_string(grid_status));
         if (leaving > 0) fly_away(birds);
         graphics_status = leaving > 0 ? queue_render_frame(&graphics, birds)
                                       : render_frame(&graphics, birds, snapshot, &grid);
-        if (graphics_status != KITTY_GRAPHICS_OK) {
-            fprintf(stderr, "Cannot render Kitty graphics: %s\n",
-                    kitty_graphics_status_string(graphics_status));
-            exit(EXIT_FAILURE);
-        }
+        if (graphics_status != KITTY_GRAPHICS_OK)
+            leave_saying("Cannot render Kitty graphics: %s\n",
+                         kitty_graphics_status_string(graphics_status));
         if (leaving <= 0) sky_hand_over(birds, &live_birds);
         size_t frame_bytes = graphics.length;
         while (running && graphics.length > 0) {
             graphics_status = kitty_graphics_flush_nonblocking(&graphics);
             if (graphics_status == KITTY_GRAPHICS_AGAIN) {
-                if (wait_for_terminal_io() < 0) {
-                    perror("Cannot wait for terminal output");
-                    exit(EXIT_FAILURE);
-                }
+                if (wait_for_terminal_io() < 0)
+                    leave_saying("Cannot wait for terminal output: %s\n", strerror(errno));
                 running = handle_input();
                 continue;
             }
             if (graphics_status != KITTY_GRAPHICS_OK) {
                 /* Whatever the renderer: the text ones go through this buffer
                  * too, and a reader that went away is the usual reason. */
-                if (graphics_status == KITTY_GRAPHICS_ERR_IO)
-                    fprintf(stderr, "%s: cannot write to the terminal: %s\n", program_name,
-                            strerror(errno));
-                else
-                    fprintf(stderr, "%s: cannot write to the terminal: %s\n", program_name,
-                            kitty_graphics_status_string(graphics_status));
-                exit(EXIT_FAILURE);
+                leave_saying("%s: cannot write to the terminal: %s\n", program_name,
+                             graphics_status == KITTY_GRAPHICS_ERR_IO
+                                 ? strerror(errno)
+                                 : kitty_graphics_status_string(graphics_status));
             }
         }
         if (!running) break;
@@ -7716,11 +7843,10 @@ int main(int argc, char **argv) {
             nanosleep(&delay, NULL);
         }
     }
-    /* The terminal is back before anything is said to the person at it. */
-    if (the_sign.failures > 0) {
-        restore_terminal();
-        sign_report_failure();
-    }
+    /* The terminal is back before anything is said to the person at it: a message
+     * written on the alternate screen goes with it. */
+    if (the_sign.failures > 0 || snapshot_path != NULL) restore_terminal();
+    sign_report_failure();
     /* A snapshot asked for and not written is a failed run, so a script that
      * takes one can tell. */
     int outcome = EXIT_SUCCESS;

@@ -313,7 +313,11 @@ static void begin_wave(letters_t *letters) {
     letters->phase = LETTERS_TAKING_OFF;
     letters->wave_began = letters->clock;
     letters->cycles++;
-    letters->launched_count = 0;
+    /* The list of who left is not cleared here but at the start of each advance: a
+     * pointer or a hawk can have launched letters in this very step, just before the
+     * rest ran out, and the flock hears of them from that list. Wiped, they were in
+     * the air for the cycle and on their cells for the flock, which never moved them
+     * and never saw them land, so the text never came to rest and never flew again. */
     letters->origin = letters->last_left = -1;
     /* Whatever was scattered joins the cycle: a letter on its way back from the
      * pointer turns round, and is part of the flock for the flight. */
@@ -411,19 +415,26 @@ static int inside_ellipse(double dx, double dy, double radius_x, double radius_y
     return (dx * dx) / (radius_x * radius_x) + (dy * dy) / (radius_y * radius_y) <= 1.0;
 }
 
+/* The cell a position is in, held between two: a pointer a billion cells away, or
+ * one that is not a number, is past the edge, and an int cannot say how far. */
+static int cell_between(double position, int low, int high) {
+    if (!(position >= low)) return low;
+    if (position >= high) return high;
+    return (int)floor(position);
+}
+
 /* The pointer or a hawk, at rest: whatever it touches goes up on its own, and
  * whatever it has left alone for long enough comes down. */
 static void disturb(letters_t *letters, const letters_disturbance_t *disturbances, int count) {
     for (int d = 0; d < count; d++) {
         const letters_disturbance_t *at = &disturbances[d];
-        int first_col = (int)floor((at->x - at->touch_x) / letters->cell_width);
-        int last_col = (int)floor((at->x + at->touch_x) / letters->cell_width);
-        int first_row = (int)floor((at->y - at->touch_y) / letters->cell_height);
-        int last_row = (int)floor((at->y + at->touch_y) / letters->cell_height);
-        if (first_col < 0) first_col = 0;
-        if (first_row < 0) first_row = 0;
-        if (last_col >= letters->cols) last_col = letters->cols - 1;
-        if (last_row >= letters->rows) last_row = letters->rows - 1;
+        int first_col = cell_between((at->x - at->touch_x) / letters->cell_width, 0, letters->cols);
+        int last_col =
+            cell_between((at->x + at->touch_x) / letters->cell_width, -1, letters->cols - 1);
+        int first_row =
+            cell_between((at->y - at->touch_y) / letters->cell_height, 0, letters->rows);
+        int last_row =
+            cell_between((at->y + at->touch_y) / letters->cell_height, -1, letters->rows - 1);
         for (int row = first_row; row <= last_row; row++)
             for (int col = first_col; col <= last_col; col++) {
                 int index = letters->at[(size_t)row * (size_t)letters->cols + (size_t)col];

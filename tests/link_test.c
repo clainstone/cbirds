@@ -884,6 +884,111 @@ static void test_files_that_are_not_windows_are_left_alone(void) {
     assert(count_entries(sky) == (int)(sizeof(names) / sizeof(*names)));
 }
 
+/* An entry in the sky that looks like a window and is not one: its name is
+ * exactly what a window's is, and its pid is this process's own, which is alive,
+ * so that nothing in the name gives it away. */
+static void fake_path(char *path, size_t size, uint64_t joined) {
+    snprintf(path, size, "%s/%016llx-%lu", sky, (unsigned long long)joined,
+             (unsigned long)getpid());
+}
+
+static ino_t inode_of(const char *path) {
+    struct stat info;
+    assert(lstat(path, &info) == 0);
+    return info.st_ino;
+}
+
+/* A window finds itself by its own name and not by a place in a list that is cut
+ * off: with hundreds of entries about it, its socket is the same file at every
+ * look, and not made again, which would throw away what was queued in it. */
+static void test_a_window_keeps_its_own_socket_in_a_sky_of_hundreds(void) {
+    link_t a, b;
+    link_t *both[] = {&a, &b};
+    enum { FAKES = 700 };
+
+    assert(link_open(&a, sky, 0) == LINK_OK);
+    for (int i = 0; i < FAKES; i++) {
+        char path[400];
+        fake_path(path, sizeof(path), a.me.joined + (uint64_t)(i - FAKES / 2) * 1000 + 500);
+        assert(symlink("/nonexistent/nowhere", path) == 0);
+    }
+    assert(link_open(&b, sky, 0) == LINK_OK);
+    ino_t a_was = inode_of(a.path), b_was = inode_of(b.path);
+    /* Where in the listing they come is up to the file system, so each is named
+     * before the hundreds and after them. */
+    for (int round = 0; round < 12; round++) {
+        settle(both, 2);
+        assert(inode_of(a.path) == a_was && inode_of(b.path) == b_was);
+    }
+    /* None of the entries is a window: the two are each other's neighbours. */
+    assert(strcmp(a.next[LINK_RIGHT].name, b.name) == 0);
+    assert(strcmp(b.next[LINK_LEFT].name, a.name) == 0);
+    assert(link_edge_open(&a, LINK_RIGHT, LINK_BIRD));
+    link_close(&a);
+    link_close(&b);
+    assert(count_entries(sky) == FAKES);
+}
+
+/* An entry that nothing can be sent to is not tried again at every look: a link to
+ * a file that is not there, a directory, a plain file, and a socket of the wrong
+ * kind, which only a refusal shows. The last is left alone until the directory has
+ * changed, and then it is tried, and found to be a window after all. */
+static void test_an_entry_that_can_never_be_sent_to_is_let_be(void) {
+    link_t a;
+    char path[400];
+
+    assert(link_open(&a, sky, 0) == LINK_OK);
+    fake_path(path, sizeof(path), a.me.joined + 1000);
+    assert(symlink("/nonexistent/nowhere", path) == 0);
+    fake_path(path, sizeof(path), a.me.joined + 2000);
+    assert(mkdir(path, 0700) == 0);
+    fake_path(path, sizeof(path), a.me.joined + 3000);
+    int plain = open(path, O_CREAT | O_WRONLY, 0600);
+    assert(plain >= 0);
+    close(plain);
+    char stream_path[400];
+    fake_path(stream_path, sizeof(stream_path), a.me.joined + 4000);
+    struct sockaddr_un address;
+    memset(&address, 0, sizeof(address));
+    address.sun_family = AF_UNIX;
+    strcpy(address.sun_path, stream_path);
+    int stream = socket(AF_UNIX, SOCK_STREAM, 0);
+    assert(stream >= 0 && bind(stream, (struct sockaddr *)&address, sizeof(address)) == 0);
+    assert(listen(stream, 1) == 0);
+
+    /* Three seconds of frames. Looking again at once, because a neighbour has been
+     * lost, is for a neighbour that was there; these are never one. */
+    int scans = 0;
+    for (int frame = 0; frame < 180; frame++) {
+        double before = a.scanned;
+        the_time += 1.0 / 60;
+        link_update(&a, the_time);
+        if (a.scanned != before) scans++;
+        assert(!link_has_neighbour(&a, LINK_RIGHT));
+    }
+    assert(scans <= 8);
+    assert(!a.scan_wanted);
+
+    /* The directory changes: the socket of the wrong kind is replaced by a window's
+     * kind, under the same name. The file system's clock is coarse, so it waits. */
+    close(stream);
+    unlink(stream_path); /* Some systems have swept it already. */
+    usleep(60000);
+    int dgram = socket(AF_UNIX, SOCK_DGRAM, 0);
+    assert(dgram >= 0 && bind(dgram, (struct sockaddr *)&address, sizeof(address)) == 0);
+    for (int frame = 0; frame < 180 && !link_has_neighbour(&a, LINK_RIGHT); frame++) {
+        the_time += 1.0 / 60;
+        link_update(&a, the_time);
+    }
+    assert(link_has_neighbour(&a, LINK_RIGHT));
+    uint8_t heard[LINK_MESSAGE_SIZE + 1];
+    assert(recv(dgram, heard, sizeof(heard), MSG_DONTWAIT) == LINK_MESSAGE_SIZE);
+    close(dgram);
+    link_close(&a);
+    fake_path(path, sizeof(path), a.me.joined + 2000);
+    assert(rmdir(path) == 0); /* The sky is cleared of what can be unlinked. */
+}
+
 int main(void) {
     make_scratch();
     test_the_wire_format_round_trips();
@@ -910,6 +1015,8 @@ int main(void) {
         test_the_socket_is_removed_on_leaving,
         test_a_socket_that_was_taken_away_is_made_again,
         test_files_that_are_not_windows_are_left_alone,
+        test_a_window_keeps_its_own_socket_in_a_sky_of_hundreds,
+        test_an_entry_that_can_never_be_sent_to_is_let_be,
     };
     for (size_t i = 0; i < sizeof(with_a_sky) / sizeof(*with_a_sky); i++) {
         clear_the_sky();

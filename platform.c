@@ -458,6 +458,20 @@ void platform_window_size(int *columns, int *rows, int *pixel_width, int *pixel_
     *rows = info.srWindow.Bottom - info.srWindow.Top + 1;
 }
 
+/* ---- being told to stop ---- */
+
+/* Put the terminal back and leave with the status a shell reports for a signal.
+ * Used by the console's control events, which arrive on a thread of their own,
+ * and by a Ctrl-C that comes in as a character. Anything the main thread tries
+ * to write after the flag is set waits, so no frame lands after the alternate
+ * screen is left. */
+static void leave_at_once(int signal_number) {
+    halting_thread = GetCurrentThreadId();
+    halting = 1;
+    if (restore_hook != NULL) restore_hook();
+    ExitProcess((UINT)(128 + signal_number));
+}
+
 /* ---- input ---- */
 
 /* What the records have been turned into and not yet read. The reader asks for
@@ -496,6 +510,11 @@ static void take_record(const INPUT_RECORD *record, const SMALL_RECT *window) {
             if (!key->bKeyDown) break;
             unsigned repeat = key->wRepeatCount > 0 ? key->wRepeatCount : 1;
             if (repeat > 32) repeat = 32;
+            /* Ctrl-C is a control event while input is processed, and ends the
+             * program from the handler. A console that hands it over as the
+             * character instead (the terminal in front of a pseudo console may
+             * send it that way) gets the same exit from here. */
+            if (key->uChar.UnicodeChar == 3) leave_at_once(INTERRUPT_SIGNAL);
             for (unsigned r = 0; r < repeat; r++) {
                 size_t count = platform_utf8_from_utf16(&high_surrogate,
                                                         (unsigned)key->uChar.UnicodeChar, bytes);
@@ -589,8 +608,6 @@ int platform_wait_terminal_io(void) {
     return 0;
 }
 
-/* ---- being told to stop ---- */
-
 static BOOL WINAPI console_event(DWORD type) {
     int signal_number;
     switch (type) {
@@ -611,12 +628,8 @@ static BOOL WINAPI console_event(DWORD type) {
             return FALSE;
     }
     /* This is a thread of its own, and the main thread may be in the middle of a
-     * frame. Anything it writes from here on waits, the screen is put back, and
-     * the process leaves with the status a shell would report for the signal. */
-    halting_thread = GetCurrentThreadId();
-    halting = 1;
-    if (restore_hook != NULL) restore_hook();
-    ExitProcess((UINT)(128 + signal_number));
+     * frame. */
+    leave_at_once(signal_number);
     return TRUE;
 }
 
@@ -630,6 +643,11 @@ void platform_install_exit_handlers(void (*restore)(void)) {
     restore_hook = restore;
     ensure_restore_lock();
     for (size_t i = 0; i < sizeof(signals) / sizeof(*signals); i++) signal(signals[i], crash_handler);
+    /* A parent can leave Ctrl-C ignored for its children (SetConsoleCtrlHandler
+     * with no routine does it, and a new process group too), and then no handler
+     * is ever called. The POSIX side overrides an inherited ignore for SIGINT the
+     * same way, by installing its handler regardless. */
+    SetConsoleCtrlHandler(NULL, FALSE);
     SetConsoleCtrlHandler(console_event, TRUE);
 }
 

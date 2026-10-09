@@ -255,15 +255,6 @@ static void wait_for_braille(session_t *session, size_t from, DWORD timeout) {
     }
 }
 
-static void wait_for_text(session_t *session, size_t from, const char *text, DWORD timeout) {
-    DWORD waited = 0;
-    while (!output_has(session, from, text, strlen(text))) {
-        Sleep(20);
-        waited += 20;
-        if (waited > timeout) fail(session, text, __LINE__);
-    }
-}
-
 static void wait_for_any(session_t *session, size_t from, const char *const *needles,
                          DWORD timeout) {
     DWORD waited = 0;
@@ -304,11 +295,12 @@ static void finish(session_t *session) {
     release(session);
 }
 
-/* The screen is put back: the alternate screen is left and the cursor shown. */
-static void expect_the_screen_was_put_back(session_t *session) {
-    wait_for_text(session, 0, "\033[?1049l", 5000);
-    EXPECT(session, output_has(session, 0, "\033[?25h", 6));
-}
+/* Not asserted through a pseudo console: the console re-renders the screen it
+ * is given and does not always pass modes such as the alternate screen (1049) or
+ * the cursor (25) on, so what the program writes for them cannot be read back
+ * here. The tests below assert what can be seen from outside: that it draws, how
+ * it ends, and how long it takes. The sequences themselves are the same ones the
+ * POSIX runs write, and are looked at by eye on Windows. */
 
 /* ---- the tests ---- */
 
@@ -316,26 +308,22 @@ static void test_an_80_by_24_run_draws_braille_and_q_ends_it(void) {
     session_t session;
     start(&session, "--seed 1", 80, 24);
     wait_for_braille(&session, 0, SHORT_WAIT);
-    /* It took the alternate screen to draw on. */
-    EXPECT(&session, output_has(&session, 0, "\033[?1049h", 8));
     Sleep(300);
     send_keys(&session, "q");
     EXPECT(&session, wait_for_exit(&session, SHORT_WAIT) == 0);
-    expect_the_screen_was_put_back(&session);
     finish(&session);
     puts("ok: an 80x24 run draws braille and q ends it with status 0");
 }
 
-static void test_ctrl_c_ends_it_with_130_and_puts_the_screen_back(void) {
+static void test_ctrl_c_ends_it_with_130(void) {
     session_t session;
     start(&session, "--seed 2", 80, 24);
     wait_for_braille(&session, 0, SHORT_WAIT);
     /* 128 plus SIGINT, which is the status the POSIX handler leaves with. */
     send_keys(&session, "\003");
     EXPECT(&session, wait_for_exit(&session, SHORT_WAIT) == 130);
-    expect_the_screen_was_put_back(&session);
     finish(&session);
-    puts("ok: Ctrl-C ends it with status 130 and the screen is put back");
+    puts("ok: Ctrl-C ends it with status 130");
 }
 
 static void test_closing_the_console_ends_it(void) {
@@ -357,7 +345,6 @@ static void test_frames_ends_by_itself_with_status_0(void) {
     start(&session, "--frames 40 --seed 4", 80, 24);
     EXPECT(&session, wait_for_exit(&session, SHORT_WAIT) == 0);
     EXPECT(&session, output_has_braille(&session, 0));
-    expect_the_screen_was_put_back(&session);
     finish(&session);
     puts("ok: --frames 40 ends by itself with status 0");
 }
@@ -593,17 +580,25 @@ static void test_headless_modes_print_what_they_should(void) {
     puts("ok: --version prints cbirds and a bare newline, --bench runs");
 }
 
+/* The name goes out before the test runs, so that a log says which one hangs. */
+#define RUN(test)                       \
+    do {                                \
+        printf("running: %s\n", #test); \
+        fflush(stdout);                 \
+        test();                         \
+    } while (0)
+
 int main(void) {
     load_pseudo_console_api();
-    test_recordings_are_exact();
-    test_headless_modes_print_what_they_should();
-    test_an_80_by_24_run_draws_braille_and_q_ends_it();
-    test_frames_ends_by_itself_with_status_0();
-    test_the_frame_rate_holds_in_a_console();
-    test_sextants_and_blocks_are_drawn();
-    test_ctrl_c_ends_it_with_130_and_puts_the_screen_back();
-    test_a_resize_is_followed();
-    test_closing_the_console_ends_it();
+    RUN(test_recordings_are_exact);
+    RUN(test_headless_modes_print_what_they_should);
+    RUN(test_an_80_by_24_run_draws_braille_and_q_ends_it);
+    RUN(test_frames_ends_by_itself_with_status_0);
+    RUN(test_the_frame_rate_holds_in_a_console);
+    RUN(test_sextants_and_blocks_are_drawn);
+    RUN(test_ctrl_c_ends_it_with_130);
+    RUN(test_a_resize_is_followed);
+    RUN(test_closing_the_console_ends_it);
     puts("console_test: all passed");
     return 0;
 }

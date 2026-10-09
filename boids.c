@@ -5561,20 +5561,48 @@ static void settle_the_sign(void) {
     }
 }
 
+/*
+ * What was not asked for.
+ *
+ * Three settings have a default that depends on a switch which may come after them
+ * on the line. A night wants more birds, a dot and a ramp of its own; a picture
+ * wants to know whether there was a ramp asked for at all, since it draws in its
+ * own colours unless there was. So while the line is read a value no option can
+ * give stands for "not asked for" (no birds, no shape, no ramp), the shipped ones
+ * are kept to one side, and once the line has been read the three are settled
+ * together, here, with the mode that is known by then. Nothing between the two
+ * calls may read birds, shape or palette: it would find the stand-ins.
+ */
+static struct {
+    int birds, shape, palette;
+} shipped;
+
+static void leave_the_defaults_open(void) {
+    shipped.birds = config.birds;
+    shipped.shape = config.shape;
+    shipped.palette = config.palette;
+    config.birds = 0;
+    config.shape = config.palette = -1;
+}
+
+/* A night's, or the shipped ones, for whatever was left open. What was asked for
+ * wins, even when it is the very thing the flock ships with: the name of the
+ * default ramp, given, is a ramp given, and a picture then wears it. */
+static void settle_the_defaults(void) {
+    palette_was_asked_for = config.palette >= 0;
+    if (config.birds == 0) config.birds = fireflies_mode ? FIREFLY_COUNT : shipped.birds;
+    if (config.shape < 0) config.shape = fireflies_mode ? shape_named("dot") : shipped.shape;
+    if (config.palette < 0)
+        config.palette = fireflies_mode ? palette_named("firefly") : shipped.palette;
+}
+
 static void read_options(int argc, char **argv) {
     char error[160];
     if (argc > 0 && argv[0] != NULL) program_name = argv[0];
     name_the_palettes();
     name_the_presets();
     name_the_shapes();
-    /* What a night wants for a default is not what a flock wants, and which one it
-     * is depends on a switch that may come after them on the line. So a value no
-     * option can give stands for "not asked for" while the line is read, and is
-     * settled once it has been. */
-    int shipped_birds = config.birds, shipped_shape = config.shape;
-    int shipped_palette = config.palette;
-    config.birds = 0;
-    config.shape = config.palette = -1;
+    leave_the_defaults_open();
     options_status_t status =
         options_parse(OPTIONS, OPTION_COUNT, argc, argv, error, sizeof(error));
 
@@ -5607,12 +5635,8 @@ static void read_options(int argc, char **argv) {
                 program_name);
         exit(EXIT_USAGE);
     }
-    palette_was_asked_for = config.palette >= 0;
     if (fireflies_mode) settle_the_night();
-    if (config.birds == 0) config.birds = fireflies_mode ? FIREFLY_COUNT : shipped_birds;
-    if (config.shape < 0) config.shape = fireflies_mode ? shape_named("dot") : shipped_shape;
-    if (config.palette < 0)
-        config.palette = fireflies_mode ? palette_named("firefly") : shipped_palette;
+    settle_the_defaults();
     /* A preset is expanded first so that a slider given after it still wins: the
      * table cannot express that order, so the parser's left to right reading is
      * honoured by putting the broad stroke before the fine ones. */

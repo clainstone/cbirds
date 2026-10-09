@@ -8296,6 +8296,136 @@ static void test_a_whip_is_read_from_the_descriptor_that_was_chosen(void) {
     reset_test_config();
 }
 
+/* ---- Signs beside the other modes ----------------------------------------------- */
+
+/* What a line of options can leave behind in the program's own variables, put back
+ * as a fresh process has them. */
+static void forget_the_options(void) {
+    reset_sign_state();
+    text_path = NULL;
+    forget_the_text();
+    letters_mode = 0;
+    fireflies_mode = 0;
+    matrix_mode = 0;
+    the_rain_is_falling = 0;
+    requested_preset = -1;
+    config.shape = 0;
+    config.bird_size = 0;
+    config.hawks = 0;
+}
+
+/* A line, split at its spaces, read as the program reads its own. */
+static void read_the_line(const char *line) {
+    static char copy[512];
+    char *words[32] = {"cbirds"};
+    int count = 1;
+    forget_the_options();
+    assert(strlen(line) < sizeof(copy));
+    strcpy(copy, line);
+    for (char *word = strtok(copy, " "); word != NULL && count < 31; word = strtok(NULL, " "))
+        words[count++] = word;
+    words[count] = NULL;
+    read_options(count, words);
+}
+
+/* The three things a night, a picture and the shipped flock disagree about are
+ * left open while the line is read and settled together once it has been, so the
+ * order of the words on the line cannot matter and no stand-in is left behind. */
+static void test_what_was_not_asked_for_is_settled_together(void) {
+    /* The pair, by hand. */
+    forget_the_options();
+    config.birds = 800;
+    config.shape = 0;
+    config.palette = 0;
+    leave_the_defaults_open();
+    assert(config.birds == 0 && config.shape == -1 && config.palette == -1);
+    assert(shipped.birds == 800 && shipped.shape == 0 && shipped.palette == 0);
+    settle_the_defaults();
+    assert(config.birds == 800 && config.shape == 0 && config.palette == 0);
+    assert(!palette_was_asked_for);
+
+    /* A night takes its own for whatever was left open. */
+    config.palette = palette_named("ice");
+    leave_the_defaults_open();
+    fireflies_mode = 1;
+    settle_the_defaults();
+    assert(config.birds == FIREFLY_COUNT && config.shape == shape_named("dot"));
+    assert(config.palette == palette_named("firefly") && !palette_was_asked_for);
+
+    /* And not for what was asked for, which is a ramp given even when it is the
+     * default's own name. */
+    forget_the_options();
+    config.birds = 800;
+    config.palette = 0;
+    leave_the_defaults_open();
+    config.birds = 50;
+    config.palette = 0;
+    fireflies_mode = 1;
+    settle_the_defaults();
+    assert(config.birds == 50 && config.shape == shape_named("dot") && config.palette == 0);
+    assert(palette_was_asked_for);
+
+    /* The same through the whole option reader, whichever way round the line is. */
+    char picture[512];
+    write_a_picture("settled.png", 1, 255);
+    scratch_file(picture, sizeof(picture), "settled.png");
+    char line[600];
+
+    read_the_line("");
+    assert(config.birds == 800 && config.shape == 0 && config.palette == 0);
+    assert(!fireflies_mode && !palette_was_asked_for);
+
+    read_the_line("--fireflies");
+    assert(config.birds == FIREFLY_COUNT && config.shape == shape_named("dot"));
+    assert(config.palette == palette_named("firefly"));
+
+    const char *both_ways[][2] = {
+        {"-n 50 --fireflies", "--fireflies -n 50"},
+        {"--shape bird --fireflies", "--fireflies --shape bird"},
+        {"--color theme --fireflies", "--fireflies --color theme"},
+        {"--color ice --fireflies", "--fireflies --color ice"},
+    };
+    for (size_t pair = 0; pair < sizeof(both_ways) / sizeof(*both_ways); pair++) {
+        int birds[2], shape[2], palette[2], asked[2];
+        for (int way = 0; way < 2; way++) {
+            read_the_line(both_ways[pair][way]);
+            birds[way] = config.birds;
+            shape[way] = config.shape;
+            palette[way] = config.palette;
+            asked[way] = palette_was_asked_for;
+            /* No stand-in survives the reader. */
+            assert(config.birds > 0 && config.shape >= 0 && config.shape < SHAPE_COUNT);
+            assert(config.palette >= 0 && config.palette < PALETTE_COUNT);
+        }
+        assert(birds[0] == birds[1] && shape[0] == shape[1] && palette[0] == palette[1]);
+        assert(asked[0] == asked[1]);
+    }
+    read_the_line("-n 50 --fireflies");
+    assert(config.birds == 50 && config.palette == palette_named("firefly"));
+    read_the_line("--shape bird --fireflies");
+    assert(config.shape == shape_named("bird") && config.birds == FIREFLY_COUNT);
+    read_the_line("--color theme --fireflies");
+    assert(config.palette == 0 && palette_was_asked_for);
+
+    /* A picture is in its own colours unless a ramp was named, first or last. */
+    snprintf(line, sizeof(line), "--picture %s", picture);
+    read_the_line(line);
+    assert(picture_colours_in_use && !palette_was_asked_for && config.palette == 0);
+    snprintf(line, sizeof(line), "--picture %s --color ice", picture);
+    read_the_line(line);
+    assert(!picture_colours_in_use && palette_was_asked_for);
+    assert(config.palette == palette_named("ice"));
+    snprintf(line, sizeof(line), "--color ice --picture %s", picture);
+    read_the_line(line);
+    assert(!picture_colours_in_use && config.palette == palette_named("ice"));
+    snprintf(line, sizeof(line), "--picture %s --color theme", picture);
+    read_the_line(line);
+    assert(!picture_colours_in_use && palette_was_asked_for && config.palette == 0);
+
+    assert(unlink(picture) == 0);
+    forget_the_options();
+}
+
 int main(void) {
     make_scratch();
     trig_lookup_init();
@@ -8459,6 +8589,7 @@ int main(void) {
     test_an_unasked_for_recording_length_is_settled_before_anything_reads_it();
     test_the_text_is_the_flock_and_a_night_is_refused_with_it();
     test_a_whip_is_read_from_the_descriptor_that_was_chosen();
+    test_what_was_not_asked_for_is_settled_together();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);
     return 0;

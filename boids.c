@@ -6522,8 +6522,8 @@ static void refuse_what_does_not_go_together(void) {
                 program_name, bench_frames > 0 ? "--bench" : "--record");
         exit(EXIT_USAGE);
     }
-    /* What a bird is outside bird_t does not travel: the post carries a position, a
-     * heading and a look, and nothing else. The flat flock is all that is. */
+    /* The post carries a position, a heading and a look, and nothing else, so what
+     * a bird is outside bird_t does not travel with it. */
     if (share_the_sky && sky_mode) {
         fprintf(stderr,
                 "%s: --link does not go with --3d: a bird's place in a space does not travel\n",

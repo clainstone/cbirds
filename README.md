@@ -199,7 +199,7 @@ fps.
 
 `--say TEXT` has the flock write TEXT where it would write BOIDS, and keep it
 up. A sign is for reading, so it is held for thirty to forty-five seconds, and
-then the flock lets go for ten to fifteen, flies as a murmuration, and writes
+then the flock lets go for eight to twelve, flies as a murmuration, and writes
 it again. The birds that write do not stand still: each hovers round its place
 in a small loop of its own, so the strokes shimmer and stay sharp. The colour
 runs along the text, from one end of the ramp to the other. The rest of the

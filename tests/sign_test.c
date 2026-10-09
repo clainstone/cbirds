@@ -312,8 +312,8 @@ static void test_a_sign_is_held_long_and_let_go_short(void) {
     }
     /* Thirty to forty-five seconds held, ten to fifteen flown. */
     assert(hold_least >= 30 && hold_most <= 45);
-    assert(flight_least >= 10 && flight_most <= 15);
-    assert(hold_most - hold_least > 10 && flight_most - flight_least > 3);
+    assert(flight_least >= 8 && flight_most <= 12);
+    assert(hold_most - hold_least > 10 && flight_most - flight_least > 2);
     assert(hold_varies);
 }
 

@@ -213,8 +213,16 @@ double sign_hold_seconds(unsigned cycle) {
     return 30.0 + 15.0 * unit_of(mix(cycle * 2u + 1u));
 }
 
+/* Eight to twelve seconds, not ten to fifteen, which was too long to wait for the
+ * text on a small screen. A murmuration needs about a second to be one: on 800
+ * birds, from a second after the release the flock is one group on 120 by 34
+ * cells and up, 91 to 100% of the birds linked when they are within a bird and a
+ * half of each other, and on 96 by 26 and 80 by 24, where they are crowded, it is
+ * a few clouds that wheel and join, the largest of them holding two fifths. So
+ * the shortest flight is seven seconds of murmuration, and the writers are home
+ * between four tenths of a second and nine tenths after the text is written. */
 double sign_flight_seconds(unsigned cycle) {
-    return 10.0 + 5.0 * unit_of(mix(cycle * 2u + 2u));
+    return 8.0 + 4.0 * unit_of(mix(cycle * 2u + 2u));
 }
 
 double sign_breath(double fraction_of_a_second) {

@@ -3774,6 +3774,224 @@ static void test_a_snapshot_is_reported_after_the_terminal_is_given_back(void) {
     reset_sign_state();
 }
 
+/* The keys are read from standard input, and a question to the terminal is
+ * written to standard output: these tests put a pipe on the one and nothing on
+ * the other, so that the terminal running them is not asked anything, and give
+ * both back after. */
+static int saved_keys = -1, saved_output = -1;
+
+static void keys_from(int fd) {
+    fflush(stdout);
+    saved_keys = dup(STDIN_FILENO);
+    saved_output = dup(STDOUT_FILENO);
+    int quiet = open("/dev/null", O_WRONLY);
+    assert(saved_keys >= 0 && saved_output >= 0 && quiet >= 0);
+    assert(dup2(fd, STDIN_FILENO) == STDIN_FILENO && dup2(quiet, STDOUT_FILENO) == STDOUT_FILENO);
+    close(quiet);
+}
+
+static void keys_back(void) {
+    fflush(stdout);
+    assert(dup2(saved_keys, STDIN_FILENO) == STDIN_FILENO);
+    assert(dup2(saved_output, STDOUT_FILENO) == STDOUT_FILENO);
+    close(saved_keys);
+    close(saved_output);
+    saved_keys = saved_output = -1;
+}
+
+/* A terminal that answers in pieces, with a wait before each: a child that writes
+ * them to the descriptor the questions are read from while the test is asking. The
+ * waits are from the moment the child is running, which the test waits for before
+ * it asks: a question is given sixty milliseconds, and on a Mac with the address
+ * sanitizer the fork alone took longer than that. */
+static pid_t answer_in_pieces(int fd, const char *const pieces[], const int waits[], int count) {
+    int started[2];
+    assert(pipe(started) == 0);
+    fflush(NULL);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        close(started[0]);
+        if (write(started[1], "", 1) != 1) _exit(1);
+        close(started[1]);
+        for (int i = 0; i < count; i++) {
+            usleep((useconds_t)waits[i] * 1000);
+            if (write(fd, pieces[i], strlen(pieces[i])) < 0) _exit(1);
+        }
+        _exit(0);
+    }
+    close(started[1]);
+    char running;
+    assert(read(started[0], &running, 1) == 1);
+    close(started[0]);
+    return child;
+}
+
+static void wait_for_the_answerer(pid_t child) {
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
+static void test_a_colour_reply_is_whole_at_its_terminator_and_not_at_a_letter_in_it(void) {
+    int keys[2];
+    assert(pipe(keys) == 0);
+    keys_from(keys[0]);
+    input_state = INPUT_NORMAL;
+    uint8_t rgb[3];
+
+    /* The red of a terminal whose first colour is cc0000, in one piece: the 'c' in
+     * the digits used to end the read after "rgb:c". */
+    const char *whole = "\033]4;1;rgb:cccc/0000/0000\033\\";
+    assert(write(keys[1], whole, strlen(whole)) == (ssize_t)strlen(whole));
+    assert(ask_colour("\033]4;1;?\033\\", rgb) && rgb[0] == 0xcc && rgb[1] == 0 && rgb[2] == 0);
+
+    /* In pieces, with the cut where the digits are, where the ST is, and a bell for
+     * the end of it. */
+    static const char *const CUT_IN_THE_DIGITS[] = {"\033]4;1;rgb:cc", "cc/0000/0000\033\\"};
+    static const char *const CUT_IN_THE_ST[] = {"\033]4;1;rgb:cccc/0000/0000\033", "\\"};
+    static const char *const WITH_A_BELL[] = {"\033]4;1;rgb:cc", "cc/0000/0000\007"};
+    static const char *const *const SPLIT[] = {CUT_IN_THE_DIGITS, CUT_IN_THE_ST, WITH_A_BELL};
+    /* Apart enough that the first piece is read alone, and soon enough after the
+     * question that a machine whose sleeps run long still answers in time. */
+    static const int WAITS[] = {2, 10};
+    for (size_t i = 0; i < sizeof(SPLIT) / sizeof(*SPLIT); i++) {
+        rgb[0] = rgb[1] = rgb[2] = 7;
+        pid_t terminal = answer_in_pieces(keys[1], SPLIT[i], WAITS, 2);
+        /* Asked as ask_colour asks, with more than its sixty milliseconds to wait:
+         * the joining of the pieces is what is tested, and a Mac running the
+         * address sanitizer took longer than that between them. */
+        char reply[128];
+        const char *question = "\033]4;1;?\033\\";
+        assert(terminal_query(question, strlen(question), reply, sizeof(reply), 2000) > 0);
+        assert(parse_osc_colour(reply, rgb));
+        wait_for_the_answerer(terminal);
+        assert(rgb[0] == 0xcc && rgb[1] == 0 && rgb[2] == 0);
+    }
+
+    /* The letter that ends a device attributes reply is the end of a CSI reply, and
+     * the bytes after it are not part of it. */
+    char reply[64];
+    const char *attributes = "\033[?64;1;2cXY";
+    assert(write(keys[1], attributes, strlen(attributes)) == (ssize_t)strlen(attributes));
+    assert(terminal_query("\033[c", 3, reply, sizeof(reply), 200) == strlen("\033[?64;1;2c"));
+    assert(strcmp(reply, "\033[?64;1;2c") == 0);
+    keys_back();
+    close(keys[0]);
+    close(keys[1]);
+}
+
+static void test_a_late_reply_to_an_earlier_question_is_not_taken_for_this_one(void) {
+    int keys[2];
+    assert(pipe(keys) == 0);
+    keys_from(keys[0]);
+    input_state = INPUT_NORMAL;
+    uint8_t rgb[3];
+    /* The background's answer, late, and then the third colour's own. */
+    const char *late = "\033]11;rgb:bbbb/bbbb/bbbb\033\\";
+    const char *own = "\033]4;3;rgb:1111/2222/3333\033\\";
+    assert(write(keys[1], late, strlen(late)) == (ssize_t)strlen(late));
+    assert(write(keys[1], own, strlen(own)) == (ssize_t)strlen(own));
+    assert(ask_colour("\033]4;3;?\033\\", rgb));
+    assert(rgb[0] == 0x11 && rgb[1] == 0x22 && rgb[2] == 0x33);
+    /* Only the late one in the pipe: nothing answers, and it is not the answer. */
+    assert(write(keys[1], late, strlen(late)) == (ssize_t)strlen(late));
+    assert(!ask_colour("\033]4;3;?\033\\", rgb));
+    keys_back();
+    close(keys[0]);
+    close(keys[1]);
+    assert(input_state == INPUT_NORMAL);
+}
+
+/* The slider that b moves, as a key reader finds it. */
+static int boundary_after_reading(const char *bytes) {
+    config.boundary_notch = 4;
+    apply_notches();
+    feed_input(bytes);
+    return config.boundary_notch;
+}
+
+static void test_a_reply_that_comes_late_is_not_read_as_keys(void) {
+    reset_test_config();
+    input_state = INPUT_NORMAL;
+    /* An OSC reply with b in every channel, which moved the boundary slider to its
+     * end when it was read as keys, and the same ended by a bell. */
+    assert(boundary_after_reading("\033]11;rgb:bbbb/bbbb/bbbb\033\\") == 4);
+    assert(boundary_after_reading("\033]11;rgb:bbbb/bbbb/bbbb\007") == 4);
+    assert(boundary_after_reading("\033]4;3;rgb:eeee/aaaa/0000\033\\") == 4);
+    /* A DCS reply, which only ST ends: the bell in it is part of it. */
+    assert(boundary_after_reading("\033P>|bbb\007bb\033\\") == 4);
+    assert(input_state == INPUT_NORMAL);
+    /* And the key after it is a key. */
+    assert(boundary_after_reading("\033]11;rgb:bbbb/bbbb/bbbb\033\\b") == 3);
+    assert(boundary_after_reading("b\033]11;rgb:aaaa/aaaa/aaaa\033\\b") == 2);
+
+    /* In pieces, the cut anywhere: after the introducer, in the body, between the
+     * escape and the backslash. */
+    static const char REPLY[] = "\033]11;rgb:bbbb/bbbb/bbbb\033\\";
+    for (size_t cut = 1; cut < sizeof(REPLY) - 1; cut++) {
+        char head[40], tail[40];
+        memcpy(head, REPLY, cut);
+        head[cut] = '\0';
+        strcpy(tail, REPLY + cut);
+        config.boundary_notch = 4;
+        apply_notches();
+        feed_input(head);
+        feed_input(tail);
+        assert(config.boundary_notch == 4 && input_state == INPUT_NORMAL);
+    }
+}
+
+static void test_a_string_the_key_reader_cannot_end_is_given_up(void) {
+    reset_test_config();
+    input_state = INPUT_NORMAL;
+    /* Alt with ] begins one too, and what is typed after it is typed. Nothing more
+     * of it comes for a moment: it is over. */
+    feed_input("\033]");
+    assert(input_state == INPUT_STRING);
+    input_string_at.tv_sec -= 5;
+    assert(boundary_after_reading("b") == 3 && input_state == INPUT_NORMAL);
+    /* A string that goes on for longer than any reply is not one. The reader takes a
+     * hundred bytes at a time. */
+    char chunk[91];
+    memset(chunk, 'x', sizeof(chunk) - 1);
+    chunk[sizeof(chunk) - 1] = '\0';
+    feed_input("\033]");
+    for (int i = 0; i < 2; i++) {
+        feed_input(chunk);
+        assert(input_state == INPUT_STRING);
+    }
+    feed_input(chunk);
+    assert(input_state == INPUT_NORMAL);
+    assert(boundary_after_reading("b") == 3);
+    /* An escape in a string ends it and begins what it begins: here a mouse report
+     * is read, and a key after it. */
+    mouse.present = 0;
+    apply_screen_size(80, 24, 80 * 8, 24 * 16);
+    assert(boundary_after_reading("\033]11;rgb:bb\033[<35;10;5Mb") == 3);
+    assert(mouse.present && input_state == INPUT_NORMAL);
+    mouse.present = 0;
+}
+
+static void test_the_rest_of_a_reply_that_was_cut_off_by_the_deadline_is_thrown_away(void) {
+    reset_test_config();
+    int keys[2];
+    assert(pipe(keys) == 0);
+    keys_from(keys[0]);
+    input_state = INPUT_NORMAL;
+    uint8_t rgb[3];
+    /* The terminal is slow: the head of its answer is in time and the tail is not.
+     * It is no answer, and the tail, when it comes, is not keys either. */
+    const char *head = "\033]11;rgb:bb";
+    assert(write(keys[1], head, strlen(head)) == (ssize_t)strlen(head));
+    assert(!ask_colour("\033]11;?\033\\", rgb));
+    assert(input_state == INPUT_STRING);
+    keys_back();
+    assert(boundary_after_reading("bb/bbbb/bbbb\033\\") == 4 && input_state == INPUT_NORMAL);
+    close(keys[0]);
+    close(keys[1]);
+}
+
 static void test_a_sign_has_a_bird_as_wide_as_its_cells_unless_it_is_told(void) {
     reset_sign_state();
     /* The usual thirty on a roomy screen, and smaller on a small one, where a bird
@@ -5609,6 +5827,11 @@ int main(void) {
     test_a_sign_that_cannot_be_laid_out_says_so_when_the_run_is_over();
     test_a_text_too_big_for_the_terminal_is_said_after_the_terminal_is_given_back();
     test_a_snapshot_is_reported_after_the_terminal_is_given_back();
+    test_a_colour_reply_is_whole_at_its_terminator_and_not_at_a_letter_in_it();
+    test_a_late_reply_to_an_earlier_question_is_not_taken_for_this_one();
+    test_a_reply_that_comes_late_is_not_read_as_keys();
+    test_a_string_the_key_reader_cannot_end_is_given_up();
+    test_the_rest_of_a_reply_that_was_cut_off_by_the_deadline_is_thrown_away();
     test_a_sign_has_a_bird_as_wide_as_its_cells_unless_it_is_told();
     test_a_sign_records_in_a_gif_and_a_cast();
     test_a_sign_survives_the_flock_growing_under_it();

@@ -527,18 +527,105 @@ static void install_signal_handlers(void) {
     sigaction(SIGPIPE, &action, NULL);
 }
 
-/* Sends a request and collects whatever comes back until a terminator or the
- * deadline, whichever is first. The colour queries ask the terminal a question
- * it may simply not answer, and may not hang the startup path waiting for a
- * reply that is never coming. Raw mode has to be on already, or the reply would
- * be echoed and held until a newline. */
+/*
+ * The terminal's replies, and the key reader that must not take them for keys.
+ *
+ * A question to the terminal is answered with an escape sequence, and what makes
+ * the answer whole depends on the kind of sequence it is: an OSC string ends at a
+ * bell or at ST (ESC \), a DCS at ST, a CSI at its final byte. It does not end at
+ * a letter inside it: the colour cc in rgb:cc/00/00 is a 'c', and a reply that was
+ * cut off there lost its colour. The same goes for the key reader, which has to
+ * know where a string ends to leave it alone, since a reply that came late is
+ * read there, and the letters in it are commands.
+ */
+typedef enum { REPLY_NONE, REPLY_PARTIAL, REPLY_COMPLETE } reply_progress_t;
+
+/* The first reply in `bytes`: where its escape is, where it ends, and which kind of
+ * sequence it is (the byte after the escape). Anything before the escape is a key
+ * that was typed while the question was out. */
+static reply_progress_t read_a_reply(const char *bytes, size_t length, size_t *first, size_t *last,
+                                     char *kind) {
+    size_t at = 0;
+    while (at < length && bytes[at] != '\033') at++;
+    if (at >= length) return REPLY_NONE;
+    *first = at;
+    if (at + 1 >= length) return REPLY_PARTIAL;
+    *kind = bytes[at + 1];
+    if (*kind == '[') {
+        for (size_t i = at + 2; i < length; i++)
+            if ((unsigned char)bytes[i] >= 0x40 && (unsigned char)bytes[i] <= 0x7e) {
+                *last = i + 1;
+                return REPLY_COMPLETE;
+            }
+        return REPLY_PARTIAL;
+    }
+    if (*kind == ']' || *kind == 'P') {
+        for (size_t i = at + 2; i < length; i++) {
+            if (bytes[i] == '\a' && *kind == ']') {
+                *last = i + 1;
+                return REPLY_COMPLETE;
+            }
+            if (bytes[i] != '\033') continue;
+            if (i + 1 >= length) return REPLY_PARTIAL;
+            if (bytes[i + 1] == '\\') {
+                *last = i + 2;
+                return REPLY_COMPLETE;
+            }
+        }
+        return REPLY_PARTIAL;
+    }
+    *last = at + 2; /* An escape and a byte: a key with alt, and no reply. */
+    return REPLY_COMPLETE;
+}
+
+/* Where the key reader is in what it is reading, kept between reads because a
+ * sequence may be split across them. A string, an OSC or a DCS, is read to its end
+ * and thrown away. It is given up if it runs on past any reply this program asks
+ * for, or if nothing more of it comes for a moment: alt with ] or P begins one too,
+ * and the keys typed after that are not part of it. */
+enum { INPUT_NORMAL, INPUT_ESCAPE, INPUT_SEQUENCE, INPUT_STRING, INPUT_STRING_ESCAPE };
+static int input_state = INPUT_NORMAL;
+static char input_string_kind;
+static size_t input_string_length;
+static struct timespec input_string_at;
+static const size_t INPUT_STRING_LONGEST = 256;
+static const double INPUT_STRING_PATIENCE = 0.25;
+
+static void begin_a_string(char kind) {
+    input_state = INPUT_STRING;
+    input_string_kind = kind;
+    input_string_length = 0;
+    clock_gettime(CLOCK_MONOTONIC, &input_string_at);
+}
+
+/* Sends a request and collects the reply to it, or whatever comes back until the
+ * deadline. The colour queries ask the terminal a question it may simply not
+ * answer, and may not hang the startup path waiting for a reply that is never
+ * coming. Raw mode has to be on already, or the reply would be echoed and held
+ * until a newline.
+ *
+ * The reply is the one that answers the question: for a request that names what it
+ * asks (OSC 11, OSC 4 entry 3) a complete reply to another question is a late
+ * answer to an earlier one, and is dropped rather than taken for this. A reply
+ * that has begun and is not all there when the time is up is not an answer, and
+ * the key reader is told to throw away the rest of it when it comes. Returns the
+ * length of the reply, which is all that is in the buffer, or 0. */
 static size_t terminal_query(const char *request, size_t request_length, char *reply,
                              size_t reply_size, int milliseconds) {
     struct timespec start, now;
     size_t length = 0;
+    char wanted[32];
+    size_t wanted_length = 0;
 
     if (reply_size == 0) return 0;
     reply[0] = '\0';
+    if (request_length > 2 && request[0] == '\033' && request[1] == ']') {
+        const char *mark = memchr(request, '?', request_length);
+        if (mark != NULL && (size_t)(mark - request) < sizeof(wanted)) {
+            wanted_length = (size_t)(mark - request);
+            memcpy(wanted, request, wanted_length);
+        }
+    }
     write_all(request, request_length);
     clock_gettime(CLOCK_MONOTONIC, &start);
 
@@ -559,13 +646,29 @@ static size_t terminal_query(const char *request, size_t request_length, char *r
         if (got <= 0) break;
         length += (size_t)got;
         reply[length] = '\0';
-        /* Every reply this program asks for ends one of these three ways. */
-        if (memchr(reply, '\a', length) != NULL || strstr(reply, "\033\\") != NULL ||
-            memchr(reply, 'c', length) != NULL)
-            break;
+        size_t first, last;
+        char kind = 0;
+        while (read_a_reply(reply, length, &first, &last, &kind) == REPLY_COMPLETE) {
+            if (wanted_length == 0 || (last - first >= wanted_length &&
+                                       memcmp(reply + first, wanted, wanted_length) == 0)) {
+                memmove(reply, reply + first, last - first);
+                length = last - first;
+                reply[length] = '\0';
+                return length;
+            }
+            memmove(reply, reply + last, length - last);
+            length -= last;
+            reply[length] = '\0';
+        }
         if (length + 1 >= reply_size) break;
     }
-    return length;
+    size_t first, last;
+    char kind = 0;
+    if (read_a_reply(reply, length, &first, &last, &kind) == REPLY_PARTIAL && first + 1 < length &&
+        (kind == ']' || kind == 'P'))
+        begin_a_string(kind);
+    reply[0] = '\0';
+    return 0;
 }
 
 /* What a live run draws with: braille unless something else was asked for. */
@@ -3811,8 +3914,6 @@ static void konami_note(char key) {
 }
 
 static int handle_input(void) {
-    enum { INPUT_NORMAL, INPUT_ESCAPE, INPUT_SEQUENCE };
-    static int input_state = INPUT_NORMAL;
     static char sequence[32];
     static size_t sequence_length;
     char input[INPUT_BUFFER_SIZE];
@@ -3824,13 +3925,41 @@ static int handle_input(void) {
      * and thrown away. */
     if (screensaver_mode && length > 0)
         return clock_state.seconds < SCREENSAVER_GRACE && launch_lag <= SCREENSAVER_GRACE;
+    if (length > 0 && (input_state == INPUT_STRING || input_state == INPUT_STRING_ESCAPE)) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double quiet = (double)(now.tv_sec - input_string_at.tv_sec) +
+                       (double)(now.tv_nsec - input_string_at.tv_nsec) / 1e9;
+        if (quiet > INPUT_STRING_PATIENCE) input_state = INPUT_NORMAL;
+        input_string_at = now;
+    }
     for (ssize_t i = 0; i < length; i++) {
         unsigned char key = (unsigned char)input[i];
         int *notch = NULL, step = 0;
+        if (input_state == INPUT_STRING) {
+            /* A reply that came late, or in pieces: none of it is a key. */
+            if (key == '\a' && input_string_kind == ']')
+                input_state = INPUT_NORMAL;
+            else if (key == '\033')
+                input_state = INPUT_STRING_ESCAPE;
+            else if (++input_string_length > INPUT_STRING_LONGEST)
+                input_state = INPUT_NORMAL;
+            continue;
+        }
+        if (input_state == INPUT_STRING_ESCAPE) {
+            if (key == '\\') {
+                input_state = INPUT_NORMAL;
+                continue;
+            }
+            /* An escape inside a string ends it and begins something else. */
+            input_state = INPUT_ESCAPE;
+        }
         if (input_state == INPUT_ESCAPE) {
             if (key == '[' || key == 'O') {
                 input_state = INPUT_SEQUENCE;
                 sequence_length = 0;
+            } else if (key == ']' || key == 'P') {
+                begin_a_string((char)key);
             } else if (key != '\033') {
                 input_state = INPUT_NORMAL;
             }

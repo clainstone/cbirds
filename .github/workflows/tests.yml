@@ -2,7 +2,8 @@ name: tests
 
 # Builds cbirds and runs its tests on every push and pull request: on Linux and
 # macOS, on x86_64 and arm64, and once more under the address and
-# undefined-behaviour sanitizers.
+# undefined-behaviour sanitizers, with the check for a float that is turned into
+# an integer too big for it, which clang and gcc leave out of the undefined group.
 on:
   push:
     paths-ignore: ["**.md", "docs/**"]
@@ -55,6 +56,6 @@ jobs:
       - name: Test under ASan and UBSan
         run: >-
           make CC=${{ matrix.cc }}
-          CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all"
-          LDFLAGS="-fsanitize=address,undefined"
+          CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all"
+          LDFLAGS="-fsanitize=address,undefined,float-cast-overflow"
           test

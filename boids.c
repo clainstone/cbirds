@@ -2447,9 +2447,15 @@ static int text_legend_was_drawn;
  * and nearly every terminal that can sets it; one that cannot gets the nearest
  * of the 256 colour cube, which is coarser and still a flock. */
 static int terminal_has_truecolor(void) {
+#ifdef _WIN32
+    /* Nothing sets COLORTERM on Windows, and nothing needs to: the console takes
+     * 24 bit colour from Windows 10 1703 on, and 1809 is the oldest this runs on. */
+    return 1;
+#else
     const char *colorterm = getenv("COLORTERM");
     if (colorterm == NULL) return 0;
     return strcmp(colorterm, "truecolor") == 0 || strcmp(colorterm, "24bit") == 0;
+#endif
 }
 
 static int prepare_text_renderer(void) {

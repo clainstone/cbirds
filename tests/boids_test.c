@@ -1909,7 +1909,7 @@ static void test_a_text_is_laid_out_as_a_sign_in_lines(void) {
         if (formation.y[t] < least_y) least_y = formation.y[t];
         if (formation.y[t] > most_y) most_y = formation.y[t];
     }
-    assert(most_x - least_x <= screen.width * SIGN_WIDTH_SHARE);
+    assert(most_x - least_x <= screen.width * SIGN_WIDTH_MOST);
     assert(((least_x + most_x) / 2) > screen.width / 2.0 - 60 &&
            ((least_x + most_x) / 2) < screen.width / 2.0 + 60);
     assert(((least_y + most_y) / 2) > screen.height / 2.0 - 60 &&
@@ -3454,8 +3454,8 @@ static void test_a_small_screen_leaves_the_flock_sky_and_a_roomy_one_is_as_it_wa
     apply_screen_size(120, 34, 120 * 8, 34 * 16);
     assert(sign_smallness() > 0.3 && sign_smallness() < 0.8);
 
-    /* A roomy screen is laid out as it always was: the roomy shares of the room, the
-     * writers a sixth of a flock short of three fifths, the band four steps of flight. */
+    /* A roomy screen gives the sign the roomy shares of the room, the writers a
+     * sixth of a flock short of three fifths, the band four steps of flight. */
     lay_out_a_sign_on(&world, 200, 50, 25, "HELLO WORLD", 800, 5);
     {
         double pad = config.bird_size * 2.0;
@@ -3470,18 +3470,23 @@ static void test_a_small_screen_leaves_the_flock_sky_and_a_roomy_one_is_as_it_wa
     }
     close_the_world(&world);
 
-    /* A small one gives the sign less of it, in cells that are still letters, and
+    /* A small one gives the sign the small shares, half and half, in cells that are
+     * still letters and smaller than the most a sign may take would make them, and
      * the band is a fifth of the screen at the most, at the pace of a recording and
      * as it was at the pace of a terminal. */
     lay_out_a_sign_on(&world, 96, 26, 25, "HELLO WORLD", 800, 5);
     {
         double pad = config.bird_size * 2.0;
         sign_lines_t lines;
-        double roomy_cell;
-        assert(sign_fit("HELLO WORLD", 0, (768 - 2 * pad) * SIGN_WIDTH_SHARE,
-                        (416 - 2 * pad) * SIGN_HEIGHT_SHARE, SIGN_LARGEST_CELL * config.bird_size,
-                        &lines, &roomy_cell) > 0);
-        assert(formation.cell < roomy_cell && formation.cell >= SIGN_SMALLEST_CELL);
+        double small_cell, most_cell;
+        assert(sign_fit("HELLO WORLD", 0, (768 - 2 * pad) * SIGN_WIDTH_SHARE_SMALL,
+                        (416 - 2 * pad) * SIGN_HEIGHT_SHARE_SMALL,
+                        SIGN_LARGEST_CELL * config.bird_size, &lines, &small_cell) > 0);
+        assert(sign_fit("HELLO WORLD", 0, (768 - 2 * pad) * SIGN_WIDTH_MOST,
+                        (416 - 2 * pad) * SIGN_HEIGHT_MOST, SIGN_LARGEST_CELL * config.bird_size,
+                        &lines, &most_cell) > 0);
+        assert(fabs(formation.cell - small_cell) < 1e-9);
+        assert(formation.cell < most_cell && formation.cell >= SIGN_SMALLEST_CELL);
         assert((formation.box.right - formation.box.left) < 0.5 * 768);
         assert((formation.box.bottom - formation.box.top) < 0.5 * 416);
         assert(sign_band() <= SIGN_KEEP_OUT_MOST * 416 + 1e-9);
@@ -3514,7 +3519,8 @@ static void test_a_small_screen_leaves_the_flock_sky_and_a_roomy_one_is_as_it_wa
     assert(per_cell[0][1] == 2 && per_cell[1][1] == 1);
 
     /* A long text on a small screen is not made smaller than its letters can be: at
-     * 80 by 24 its cell is the floor, or the roomy cell if that is less. */
+     * 80 by 24 its cell is the floor, or what the most a sign may take gives if that
+     * is less. */
     reset_sign_state();
     apply_screen_size(80, 24, 640, 384);
     config.bird_size = 12;
@@ -3524,8 +3530,8 @@ static void test_a_small_screen_leaves_the_flock_sky_and_a_roomy_one_is_as_it_wa
         double room_width = 640 - 2 * 24.0, room_height = 384 - 2 * 24.0;
         assert(sign_fit_in("BACK IN FIVE MINUTES", 0, room_width, room_height, 1e9, &lines, &cell,
                            &width, &height) == 3);
-        assert(sign_fit("BACK IN FIVE MINUTES", 0, room_width * SIGN_WIDTH_SHARE,
-                        room_height * SIGN_HEIGHT_SHARE, 1e9, &roomy, &roomy_cell) == 3);
+        assert(sign_fit("BACK IN FIVE MINUTES", 0, room_width * SIGN_WIDTH_MOST,
+                        room_height * SIGN_HEIGHT_MOST, 1e9, &roomy, &roomy_cell) == 3);
         /* Eight pixels: under that a letter stops being one. */
         assert(roomy_cell > 8);
         assert(cell >= 8 - 1e-9 && cell <= roomy_cell + 1e-9);

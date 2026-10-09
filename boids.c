@@ -4458,8 +4458,13 @@ static void read_options(int argc, char **argv) {
         fprintf(stderr, "Try '%s --help'.\n", program_name);
         exit(EXIT_USAGE);
     }
-    palette_was_asked_for = config.palette >= 0;
-    if (!palette_was_asked_for) config.palette = 0;
+    /* What was asked for wins, even when it is the very thing the flock ships with:
+     * the name of the default ramp, given, is a ramp given, and a picture then
+     * wears it. --matrix names a ramp too, the green one, and a picture beside it is
+     * drawn in that: the rain is green, and a picture in its own colours would be
+     * the one thing in it that is not. */
+    palette_was_asked_for = config.palette >= 0 || matrix_mode;
+    if (config.palette < 0) config.palette = 0;
     /* A preset is expanded first so that a slider given after it still wins: the
      * table cannot express that order, so the parser's left to right reading is
      * honoured by putting the broad stroke before the fine ones. */

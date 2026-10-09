@@ -3110,6 +3110,19 @@ static void test_a_colour_given_is_told_from_the_default(void) {
     read_options(5, theme);
     assert(palette_was_asked_for && !picture_colours_in_use && palette_follows_the_theme());
     reset_sign_state();
+    /* --matrix names the green ramp, so a picture beside it is drawn in that; and
+     * with no picture, it is what it was. */
+    char *rain[] = {"cbirds", "--picture", path, "--matrix", NULL};
+    read_options(4, rain);
+    assert(palette_was_asked_for && !picture_colours_in_use);
+    assert(config.palette == palette_named("matrix") && the_rain_is_falling);
+    reset_sign_state();
+    the_rain_is_falling = 0;
+    char *only_rain[] = {"cbirds", "--matrix", NULL};
+    read_options(2, only_rain);
+    assert(config.palette == palette_named("matrix") && the_rain_is_falling);
+    reset_sign_state();
+    the_rain_is_falling = 0;
     /* With no picture, none of it matters, and the default is what it was. */
     char *nothing[] = {"cbirds", NULL};
     read_options(1, nothing);

@@ -135,6 +135,7 @@ static void reset_test_config(void) {
     end_the_sky();
     sky_mode = 0;
     sky_picture_size = 0;
+    ink_is_known = 0;
     apply_notches();
 }
 
@@ -1807,6 +1808,11 @@ static void test_the_hawk_is_never_the_colour_of_the_flock(void) {
             static const uint8_t ACCENT[3] = {205, 0, 0}, GROUND[3] = {18, 18, 24};
             ramp_between(ACCENT, GROUND);
         }
+        /* Ink is built the same way, for a dark terminal. */
+        if (palette_is_ink()) {
+            static const uint8_t TEXT[3] = {229, 229, 229}, GROUND[3] = {18, 18, 24};
+            build_the_ink(TEXT, GROUND, SKY_DIM);
+        }
         const uint8_t *hawk = hawk_colour();
         double nearest = 1e9;
         for (int shade = 0; shade < palette()->shades; shade++) {
@@ -1882,7 +1888,7 @@ static void test_no_ramp_fades_into_a_black_terminal(void) {
     static const uint8_t BLACK[3] = {0, 0, 0};
     for (config.palette = 0; config.palette < PALETTE_COUNT; config.palette++) {
         /* Learned from the terminal, and kept off its ground by a test of its own. */
-        if (palette_follows_the_theme()) continue;
+        if (palette_follows_the_theme() || palette_is_ink()) continue;
         for (int shade = 0; shade < palette()->shades; shade++)
             assert(contrast_between(palette()->tints[shade], BLACK) >= 2.5);
     }
@@ -3396,7 +3402,7 @@ static void test_three_d_has_defaults_of_its_own(void) {
     read_options(2, plain);
     assert(sky_mode == 1);
     assert(config.birds == SKY_BIRDS && SKY_BIRDS == 2000);
-    assert(config.palette == palette_named("ash"));
+    assert(config.palette == palette_named("ink"));
     assert(config.bird_size == 0); /* Settled when the renderer is known, below. */
     static const int TEXT[] = {RENDER_BRAILLE, RENDER_SEXTANTS, RENDER_BLOCKS};
     static const int SPRITES[] = {RENDER_KITTY, RENDER_UNSET};
@@ -3425,6 +3431,19 @@ static void test_three_d_has_defaults_of_its_own(void) {
     reset_test_config();
     read_options(4, theme);
     assert(config.palette == palette_named("theme"));
+
+    /* Ink is a ramp like the rest, for either sky: asked for by name it is kept, and
+     * the flat flock keeps everything else it has. The help for --3d says which
+     * ramp it flies in, and it is the one it does. */
+    char *ink[] = {"cbirds", "--color", "ink", NULL};
+    reset_test_config();
+    read_options(3, ink);
+    assert(sky_mode == 0 && palette_is_ink() && config.birds == 800);
+    for (int i = 0; i < OPTION_COUNT; i++)
+        if (strcmp(OPTIONS[i].name, "3d") == 0) {
+            assert(strstr(OPTIONS[i].help, "in ink") != NULL);
+            assert(strstr(OPTIONS[i].help, "in ash") == NULL);
+        }
 
     /* Without it nothing is different: 800 birds, the terminal's colours, thirty. */
     char *flat[] = {"cbirds", NULL};
@@ -3475,6 +3494,356 @@ static void test_three_d_says_what_it_replaces(void) {
         if (strcmp(OPTIONS[i].name, "3d") == 0) three = &OPTIONS[i];
     assert(three != NULL && strcmp(three->group, "Look") == 0 && three->essential == 1);
     assert(three->kind == OPTION_FLAG && three->target == &sky_mode);
+    reset_test_config();
+}
+
+/*
+ * Ink: the terminal's own text colour, fading into its own ground.
+ *
+ * Built at run time from what the terminal answers, like theme, so the tests build
+ * it from pairs they made up: the two a terminal is most likely to be, and the
+ * colour schemes that are neither.
+ */
+typedef struct {
+    const char *name;
+    uint8_t foreground[3], background[3];
+} ink_pair_t;
+
+static const ink_pair_t DARK_INK = {"white on black", {229, 229, 229}, {0, 0, 0}};
+static const ink_pair_t LIGHT_INK = {"black on white", {0, 0, 0}, {255, 255, 255}};
+static const ink_pair_t INK_PAIRS[] = {
+    {"white on black", {255, 255, 255}, {0, 0, 0}},
+    {"grey on near black", {229, 229, 229}, {18, 18, 24}},
+    {"black on white", {0, 0, 0}, {255, 255, 255}},
+    {"solarized dark", {131, 148, 150}, {0, 43, 54}},
+    {"solarized light", {101, 123, 131}, {253, 246, 227}},
+    {"dracula", {248, 248, 242}, {40, 42, 54}},
+    {"gruvbox light", {60, 56, 54}, {251, 241, 199}},
+};
+
+static double the_nearest_ink_contrast(const ink_pair_t *pair, int shade) {
+    return contrast_between(ink_tints[shade], pair->background);
+}
+
+static void test_ink_runs_from_the_foreground_towards_the_background(void) {
+    static const double PULLS[] = {SKY_DIM, FAR_DIM};
+    for (size_t p = 0; p < sizeof(PULLS) / sizeof(*PULLS); p++)
+        for (size_t i = 0; i < sizeof(INK_PAIRS) / sizeof(*INK_PAIRS); i++) {
+            const ink_pair_t *pair = &INK_PAIRS[i];
+            ink_is_known = 0;
+            build_the_ink(pair->foreground, pair->background, PULLS[p]);
+            assert(ink_is_known && memcmp(ink_ground, pair->background, 3) == 0);
+            /* It starts on the text colour, as the terminal has it. */
+            assert(memcmp(ink_tints[0], pair->foreground, 3) == 0);
+            for (int shade = 1; shade < 5; shade++) {
+                for (int c = 0; c < 3; c++) {
+                    /* Towards the background and never past it, a step at a time. */
+                    int step = (int)ink_tints[shade][c] - (int)ink_tints[shade - 1][c];
+                    int way = (int)pair->background[c] - (int)pair->foreground[c];
+                    assert(step * way >= 0 && abs(step) <= abs(way));
+                    assert(abs((int)ink_tints[shade][c] - (int)pair->foreground[c]) <= abs(way));
+                }
+                /* A ramp: every shade is nearer the ground than the one before. */
+                assert(the_nearest_ink_contrast(pair, shade) <=
+                       the_nearest_ink_contrast(pair, shade - 1));
+                assert(memcmp(ink_tints[shade], pair->background, 3) != 0);
+            }
+            /* Stopping well short of it: the farthest bird, as it is drawn once the
+             * renderer has dimmed it, still stands off the ground by two to one. */
+            uint8_t drawn[3];
+            pulled_towards(ink_tints[4], pair->background, PULLS[p], drawn);
+            assert(contrast_between(drawn, pair->background) >= INK_FAR_CONTRAST);
+            /* And not by hugging the text colour: where the terminal has the
+             * contrast for it the ramp goes a good way, so the depth shows. */
+            if (the_nearest_ink_contrast(pair, 0) > 10)
+                assert(the_nearest_ink_contrast(pair, 4) < the_nearest_ink_contrast(pair, 0) / 2);
+        }
+
+    /* A grey terminal makes grey ink and a white one makes black, which is the
+     * whole of the idea: the same builder, opposite ramps. */
+    build_the_ink(DARK_INK.foreground, DARK_INK.background, SKY_DIM);
+    for (int shade = 0; shade < 5; shade++) {
+        assert(ink_tints[shade][0] == ink_tints[shade][1] && ink_tints[shade][1] == ink_tints[shade][2]);
+        assert(ink_tints[shade][0] >= 60); /* Never the black it is written on. */
+        if (shade > 0) assert(ink_tints[shade][0] < ink_tints[shade - 1][0]);
+    }
+    build_the_ink(LIGHT_INK.foreground, LIGHT_INK.background, SKY_DIM);
+    for (int shade = 0; shade < 5; shade++) {
+        assert(ink_tints[shade][0] == ink_tints[shade][1] && ink_tints[shade][1] == ink_tints[shade][2]);
+        assert(ink_tints[shade][0] <= 190); /* Never the white it is written on. */
+        if (shade > 0) assert(ink_tints[shade][0] > ink_tints[shade - 1][0]);
+    }
+    assert(ink_tints[0][0] == 0);
+
+    /* A terminal with no contrast to give has none to take away: the ramp is the
+     * one shade, and the builder neither hangs nor goes past it. */
+    static const uint8_t SAME[3] = {90, 90, 90}, CLOSE[3] = {100, 100, 100};
+    build_the_ink(SAME, SAME, SKY_DIM);
+    for (int shade = 0; shade < 5; shade++) assert(memcmp(ink_tints[shade], SAME, 3) == 0);
+    build_the_ink(CLOSE, SAME, FAR_DIM);
+    for (int shade = 0; shade < 5; shade++) assert(memcmp(ink_tints[shade], CLOSE, 3) == 0);
+    ink_is_known = 0;
+}
+
+/* Learned from the terminal like theme, and a ramp for every ramp's check: on a
+ * black terminal no shade fades into it, which is the test every other ramp has. */
+static void test_ink_does_not_fade_into_a_black_terminal(void) {
+    static const uint8_t BLACK[3] = {0, 0, 0};
+    for (int white = 160; white <= 255; white += 5) {
+        uint8_t text[3] = {(uint8_t)white, (uint8_t)white, (uint8_t)white};
+        build_the_ink(text, BLACK, SKY_DIM);
+        for (int shade = 0; shade < 5; shade++) assert(contrast_between(ink_tints[shade], BLACK) >= 2.5);
+        build_the_ink(text, BLACK, FAR_DIM);
+        for (int shade = 0; shade < 5; shade++) assert(contrast_between(ink_tints[shade], BLACK) >= 2.5);
+    }
+    ink_is_known = 0;
+}
+
+/* The sprites are tinted from the ramp and dimmed towards the ground, and on a
+ * white ground that is towards white. */
+static void test_ink_is_drawn_as_it_was_built(void) {
+    static const ink_pair_t *PAIRS[] = {&DARK_INK, &LIGHT_INK};
+    for (size_t i = 0; i < 2; i++) {
+        const ink_pair_t *pair = PAIRS[i];
+        reset_test_config();
+        sky_mode = 1;
+        config.palette = palette_named("ink");
+        assert(palette_is_ink() && !the_ground_is_known());
+        /* Until a terminal has been asked the ground is the picture's own. */
+        assert(picture_ground() == PICTURE_GROUND);
+        build_the_ink(pair->foreground, pair->background, SKY_DIM);
+        assert(the_ground_is_known() && picture_ground() == ink_ground);
+        config.palette = palette_named("ember");
+        assert(picture_ground() == PICTURE_GROUND); /* Only ink asks, so only ink knows. */
+        config.palette = palette_named("ink");
+
+        double previous = 0;
+        for (int bin = 0; bin < SKY_BINS; bin++) {
+            png_image_t bird = {0, 0, NULL};
+            assert(png_image_alloc(&bird, 1, 1) == PNG_OK);
+            bird.pixels[3] = 255;
+            tint_sky(&bird, bin);
+            uint8_t drawn[3] = {bird.pixels[0], bird.pixels[1], bird.pixels[2]};
+            double contrast = contrast_between(drawn, pair->background);
+            /* Nearer is stronger, bin by bin, the whole way. */
+            assert(contrast > previous);
+            previous = contrast;
+            if (bin == 0) assert(contrast >= 2.0 && contrast < 2.3);
+            if (bin == SKY_BINS - 1) assert(memcmp(drawn, pair->foreground, 3) == 0);
+            png_image_free(&bird);
+        }
+        /* The flat sky's far plane, built for how hard it is dimmed. */
+        build_the_ink(pair->foreground, pair->background, FAR_DIM);
+        for (int shade = 0; shade < 5; shade++) {
+            png_image_t bird = {0, 0, NULL};
+            assert(png_image_alloc(&bird, 1, 1) == PNG_OK);
+            bird.pixels[3] = 255;
+            far_tint(&bird, shade);
+            uint8_t drawn[3] = {bird.pixels[0], bird.pixels[1], bird.pixels[2]};
+            assert(contrast_between(drawn, pair->background) >= 2.0 - 1e-9);
+            png_image_free(&bird);
+        }
+        ink_is_known = 0;
+        reset_test_config();
+    }
+}
+
+/* A frame of the flock composed onto a ground the colour of a white terminal: the
+ * picture the snapshot and the GIF writer make, and the check that three
+ * dimensions look right on paper. Every bird's strongest pixel stands off the
+ * ground, the nearest is black, and the hawk is not the colour of the paper. */
+static void test_a_flock_of_ink_is_seen_on_a_white_ground(void) {
+    static png_image_t frames[ROTATION_FRAMES * MAX_SPRITE_SETS];
+    png_image_t canvas = {0, 0, NULL};
+    enum { ROWS = SKY_BINS, PER = 6 };
+    bird_t birds[ROWS * PER];
+
+    reset_test_config();
+    sky_mode = 1;
+    config.palette = palette_named("ink");
+    config.birds = ROWS * PER;
+    config.bird_size = 12;
+    apply_screen_size(96, 32, 768, 512);
+    build_the_ink(LIGHT_INK.foreground, LIGHT_INK.background, SKY_DIM);
+    assert(rasterise_sprites(frames) == PNG_OK);
+    assert(png_image_alloc(&canvas, screen.width, screen.height) == PNG_OK);
+    memset(birds, 0, sizeof(birds));
+    for (int bin = 0; bin < ROWS; bin++)
+        for (int i = 0; i < PER; i++) {
+            bird_t *bird = &birds[bin * PER + i];
+            bird->layer = bin;
+            bird->shape = i % SKY_SHAPES;
+            bird->frame = i * 9;
+            bird->x = 40 + i * 100;
+            bird->y = 30 + bin * 90;
+        }
+    compose_onto(&canvas, frames, birds, 1);
+    /* The ground is white, and not the dark one of the picture. */
+    assert(memcmp(canvas.pixels, LIGHT_INK.background, 3) == 0 && canvas.pixels[3] == 255);
+    for (int bin = 0; bin < ROWS; bin++) {
+        double strongest = 0;
+        for (int i = 0; i < PER; i++) {
+            const bird_t *bird = &birds[bin * PER + i];
+            double best = 0;
+            for (int y = 0; y < sky_bin_size(bin); y++)
+                for (int x = 0; x < sky_bin_size(bin); x++) {
+                    const uint8_t *pixel =
+                        canvas.pixels + (((size_t)(bird->y + y)) * (size_t)canvas.width + (size_t)(bird->x + x)) * 4;
+                    double contrast = contrast_between(pixel, LIGHT_INK.background);
+                    if (contrast > best) best = contrast;
+                }
+            /* A bird that is seen at all, whatever its shape, even the thinnest. */
+            assert(best >= 1.8);
+            if (best > strongest) strongest = best;
+        }
+        assert(strongest >= 2.0);
+        if (bin == ROWS - 1) assert(strongest >= 15); /* The nearest is black on white. */
+    }
+    /* A hawk against paper: scarlet, which is seen there, and not the near white
+     * or the cyan, which are far from the ink and as near as can be to the sheet. */
+    const uint8_t *hawk = hawk_colour();
+    assert(contrast_between(hawk, LIGHT_INK.background) >= HAWK_GROUND_CONTRAST);
+    assert(memcmp(hawk, HAWK_COLOURS[0], 3) == 0);
+    /* On a dark ground the choice is the one it always was: nothing is ruled out. */
+    build_the_ink(DARK_INK.foreground, DARK_INK.background, SKY_DIM);
+    assert(contrast_between(hawk_colour(), DARK_INK.background) >= HAWK_GROUND_CONTRAST);
+    config.palette = palette_named("ash");
+    const uint8_t *with_ash = hawk_colour();
+    config.palette = palette_named("ink");
+    assert(memcmp(hawk_colour(), with_ash, 3) == 0);
+
+    png_image_free(&canvas);
+    free_sprites(frames);
+    ink_is_known = 0;
+    reset_test_config();
+}
+
+/* The terminal is asked for its background and then its foreground, with the
+ * machinery the theme uses, and a terminal that does not answer, or answers half,
+ * is not guessed at. The terminal is a pty with the test on the other end of it. */
+typedef enum { ANSWER_BOTH, ANSWER_NOTHING, ANSWER_THE_BACKGROUND } answer_t;
+
+static int learn_the_ink_from(answer_t answer, const char *background, const char *foreground,
+                              const uint8_t expected_background[3],
+                              const uint8_t expected_foreground[3], char *asked, size_t asked_size) {
+    int master = posix_openpt(O_RDWR | O_NOCTTY);
+    assert(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0);
+    const char *name = ptsname(master);
+    assert(name != NULL);
+    int terminal = open(name, O_RDWR | O_NOCTTY);
+    assert(terminal >= 0);
+    struct termios raw;
+    assert(tcgetattr(terminal, &raw) == 0);
+    cfmakeraw(&raw);
+    assert(tcsetattr(terminal, TCSANOW, &raw) == 0);
+    fflush(NULL);
+
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        alarm(20);
+        close(master);
+        if (dup2(terminal, STDIN_FILENO) < 0 || dup2(terminal, STDOUT_FILENO) < 0) _exit(99);
+        ink_is_known = 0;
+        int learned = learn_the_ink(SKY_DIM);
+        if (!learned) _exit(ink_is_known ? 98 : 1);
+        if (!ink_is_known || memcmp(ink_ground, expected_background, 3) != 0 ||
+            memcmp(ink_tints[0], expected_foreground, 3) != 0)
+            _exit(97);
+        _exit(0);
+    }
+    close(terminal);
+    asked[0] = '\0';
+    /* The terminal's side: read what is asked, answer what the case answers, until
+     * the other end is gone. A read that fails is that, and the child's end of the
+     * pty closing is how the test knows it has finished. */
+    for (;;) {
+        struct pollfd wait = {.fd = master, .events = POLLIN};
+        if (poll(&wait, 1, 5000) <= 0) break;
+        char request[64];
+        ssize_t got = read(master, request, sizeof(request) - 1);
+        if (got <= 0) break;
+        request[got] = '\0';
+        if (strlen(asked) + (size_t)got < asked_size) strcat(asked, request);
+        const char *reply = NULL;
+        if (strstr(request, "]11;?") != NULL && answer != ANSWER_NOTHING) reply = background;
+        if (strstr(request, "]10;?") != NULL && answer == ANSWER_BOTH) reply = foreground;
+        if (reply != NULL) assert(write(master, reply, strlen(reply)) == (ssize_t)strlen(reply));
+    }
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    close(master);
+    assert(WIFEXITED(status));
+    return WEXITSTATUS(status);
+}
+
+static void test_ink_is_asked_of_the_terminal(void) {
+    char asked[256];
+    static const uint8_t WHITE[3] = {255, 255, 255}, BLACK[3] = {0, 0, 0}, GREY[3] = {0xe5, 0xe5, 0xe5};
+
+    /* A dark terminal: four hex digits a channel, as xterm answers. */
+    assert(learn_the_ink_from(ANSWER_BOTH, "\033]11;rgb:0000/0000/0000\033\\",
+                              "\033]10;rgb:e5e5/e5e5/e5e5\033\\", BLACK, GREY, asked,
+                              sizeof(asked)) == 0);
+    /* The background first, then the text. */
+    assert(strstr(asked, "]11;?") != NULL && strstr(asked, "]10;?") != NULL);
+    assert(strstr(asked, "]11;?") < strstr(asked, "]10;?"));
+
+    /* A light one, answering with two digits a channel and a bell, which some do. */
+    assert(learn_the_ink_from(ANSWER_BOTH, "\033]11;rgb:ff/ff/ff\007", "\033]10;rgb:00/00/00\007",
+                              WHITE, BLACK, asked, sizeof(asked)) == 0);
+
+    /* A terminal that says nothing is asked once and not guessed at: there is no
+     * foreground to ask for when there is no ground to put it on. */
+    assert(learn_the_ink_from(ANSWER_NOTHING, "", "", WHITE, BLACK, asked, sizeof(asked)) == 1);
+    assert(strstr(asked, "]11;?") != NULL && strstr(asked, "]10;?") == NULL);
+
+    /* One that knows its ground and not its text is not guessed at either: a ramp
+     * from a foreground that was made up is invisible on the terminals that need
+     * it most. */
+    assert(learn_the_ink_from(ANSWER_THE_BACKGROUND, "\033]11;rgb:ffff/ffff/ffff\033\\", "", WHITE,
+                              BLACK, asked, sizeof(asked)) == 1);
+    assert(strstr(asked, "]10;?") != NULL);
+}
+
+/* No terminal, no ink: a recording and a benchmark have nothing to ask, so the ramp
+ * the flock wore before there was ink is what they draw, and they stay as they
+ * were. */
+static void test_ink_without_a_terminal_is_ash(void) {
+    char path[600];
+    reset_test_config();
+    config.palette = palette_named("ink");
+    ink_is_known = 0;
+    settle_the_palette_without_a_terminal();
+    assert(config.palette == palette_named("ash") && !palette_is_ink() && !the_ground_is_known());
+
+    /* A ramp is only ink where it was asked for. */
+    config.palette = palette_named("ember");
+    settle_the_palette_without_a_terminal();
+    assert(config.palette == palette_named("ember"));
+
+    scratch_file(path, sizeof(path), "ink.gif");
+    config.palette = palette_named("ink");
+    sky_mode = 1;
+    config.birds = 60;
+    record_path = path;
+    record_fps = 25;
+    record_seconds = 1;
+    record_columns = 48;
+    record_rows = 16;
+    fflush(stdout);
+    int saved = dup(STDOUT_FILENO);
+    FILE *quiet = freopen("/dev/null", "w", stdout);
+    assert(quiet != NULL);
+    int status = run_recording();
+    fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+    clearerr(stdout);
+    assert(status == EXIT_SUCCESS);
+    assert(config.palette == palette_named("ash") && !the_ground_is_known());
+    remove(path);
+    record_path = NULL;
     reset_test_config();
 }
 
@@ -4149,6 +4518,12 @@ int main(void) {
     test_the_flat_flock_is_what_it_was();
     test_three_d_has_defaults_of_its_own();
     test_three_d_says_what_it_replaces();
+    test_ink_runs_from_the_foreground_towards_the_background();
+    test_ink_does_not_fade_into_a_black_terminal();
+    test_ink_is_drawn_as_it_was_built();
+    test_a_flock_of_ink_is_seen_on_a_white_ground();
+    test_ink_is_asked_of_the_terminal();
+    test_ink_without_a_terminal_is_ash();
     test_a_space_has_a_picture_for_every_size_and_shape();
     test_a_birds_shape_follows_what_the_camera_sees();
     test_a_space_is_drawn_by_the_renderers_of_the_flat_flock();

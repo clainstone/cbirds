@@ -207,10 +207,15 @@ strays, and the air above the roost moves slowly, which folds the flock into
 sheets and ribbons.
 
 Without `-n`, `-s` or `-c` there are 2000 birds, of 8 pixels, or 5 in text, in
-`ash`. In the panel `boundary` is the roost and `perception` is how many
-neighbours a bird heeds, from one to thirteen. The pointer is a stick poked
-into the sky: birds near the line from the camera through it get out of the
-way. `--hawks` hunts the flock through the air.
+`ink`: the ramp from your terminal's text colour to its background, asked for
+at startup, so the flock is grey on a dark terminal and near black on a light
+one. A terminal that does not answer, and every recording, gets `ash`.
+`--color ink` asks for it in the flat sky as well.
+
+In the panel `boundary` is the roost and `perception` is how many neighbours a
+bird heeds, from one to thirteen. The pointer is a stick poked into the sky:
+birds near the line from the camera through it get out of the way. `--hawks`
+hunts the flock through the air.
 
 `--3d` replaces `--depth`, draws no tails, and is one flock: `--flocks` and
 `--matrix` are refused.
@@ -253,12 +258,12 @@ Sliders   0 to 12, as the panel shows them
       --avoidance NOTCH         how much flocks keep out of each other's way (default 4)
 
 Look
-  -c, --color RAMP              theme, ember, ice, acid, matrix, aurora, prism, potion, dusk, ash
+  -c, --color RAMP              theme, ember, ice, acid, matrix, aurora, prism, potion, dusk, ash, ink
       --shape NAME              bird, arrow, plane, dot
       --sprite FILE             a PNG you supply, kept in its own colours
   -e, --trails                  faint tails behind the flock
       --depth                   a second sky further off: smaller, slower, dimmer birds
-      --3d                      a murmuration in three dimensions, seen from a slow orbit (2000 birds, in ash)
+      --3d                      a murmuration in three dimensions, seen from a slow orbit (2000 birds, in ink)
   -l, --panel                   the sliders in the corner from the start; h toggles them
       --render HOW              braille by default; sextants, blocks, or kitty in Kitty and Ghostty
 

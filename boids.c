@@ -805,6 +805,74 @@ static int learn_the_theme(void) {
 }
 
 /*
+ * Ink: the terminal's own text colour, fading into its own ground.
+ *
+ * A murmuration is a dark shape on a pale sky or a pale one on a dark sky, and
+ * the terminal already says which it is: the foreground is what its text is
+ * written in, the background what it is written on. Five shades from one
+ * towards the other make the flock the terminal's own ink, grey on a black
+ * terminal and near black on a white one, where a fixed ramp is right on only
+ * one of them. It is built at startup, like theme, from OSC 10 and 11, and
+ * kept apart from theme's because the two are different questions: theme wants
+ * the terminal's most colourful colour and ink its plainest.
+ */
+static uint8_t ink_tints[5][3];
+static uint8_t ink_ground[3];
+static int ink_is_known;
+
+/* A tint pulled a share of the way to the ground it is seen against: all that
+ * distance does to a colour, and the one place the arithmetic is written. */
+static void pulled_towards(const uint8_t tint[3], const uint8_t ground[3], double share,
+                           uint8_t out[3]) {
+    for (int c = 0; c < 3; c++) out[c] = (uint8_t)(tint[c] + (ground[c] - tint[c]) * share + 0.5);
+}
+
+/* How far towards the ground the farthest shade goes when the terminal has the
+ * contrast to spare, and the contrast the farthest bird is kept at when it does
+ * not. Ash, which was tuned by eye on a dark ground and ends 0.69 of the way
+ * from white to it, is where the reach comes from; the contrast is the two to
+ * one that the far birds in three dimensions were found to need, because at 1.4
+ * a bird on a terminal is not there at all. */
+static const double INK_REACH = 0.7;
+static const double INK_FAR_CONTRAST = 2.0;
+
+/* `pull` is how far the renderer will dim the farthest bird again on its way to
+ * the ground, and the ramp is cut short until that bird, as it is drawn, still
+ * keeps its contrast: the dimming is why a fixed fraction would not do, and why
+ * a pair with little contrast to begin with gets a short ramp rather than one
+ * that runs into the ground. The loop settles to the nearest hundredth, and
+ * measures the bird as the bytes it is drawn in, so rounding cannot take the
+ * floor away. A terminal whose text has no contrast to spare gets its text colour
+ * five times over, which is a flock with no depth and not one in the background. */
+static void build_the_ink(const uint8_t foreground[3], const uint8_t background[3], double pull) {
+    double reach = INK_REACH;
+    for (;;) {
+        for (int shade = 0; shade < 5; shade++)
+            for (int c = 0; c < 3; c++)
+                ink_tints[shade][c] = (uint8_t)(foreground[c] +
+                                                (background[c] - foreground[c]) * reach * shade / 4 +
+                                                0.5);
+        uint8_t drawn[3];
+        pulled_towards(ink_tints[4], background, pull, drawn);
+        if (reach <= 0 || contrast_between(drawn, background) >= INK_FAR_CONTRAST) break;
+        reach = reach > 0.01 ? reach - 0.01 : 0;
+    }
+    memcpy(ink_ground, background, sizeof(ink_ground));
+    ink_is_known = 1;
+}
+
+/* Both colours or neither: a ramp from a foreground that was guessed would be
+ * invisible on exactly the terminals that need it. The background is asked first
+ * and a silent terminal costs one wait, not two. */
+static int learn_the_ink(double pull) {
+    uint8_t foreground[3], background[3];
+    if (!ask_colour("\033]11;?\033\\", background)) return 0;
+    if (!ask_colour("\033]10;?\033\\", foreground)) return 0;
+    build_the_ink(foreground, background, pull);
+    return 1;
+}
+
+/*
  * A palette is a list of tints applied to the one embedded sprite. The first
  * entry of every palette is the sprite untouched, so a bird with no shade of
  * its own looks exactly as it always did.
@@ -865,6 +933,8 @@ static const palette_t PALETTES[] = {
      PNG_TINT_REPLACE},
     {"dusk", "the sky at dusk, peach through to indigo", 5, DUSK_TINTS, PNG_TINT_REPLACE},
     {"ash", "ash, white through to slate grey", 5, ASH_TINTS, PNG_TINT_REPLACE},
+    {"ink", "the terminal's text colour, fading into its background", 5,
+     (const uint8_t (*)[3])ink_tints, PNG_TINT_REPLACE},
 };
 enum { PALETTE_COUNT = sizeof(PALETTES) / sizeof(*PALETTES) };
 
@@ -887,7 +957,19 @@ static int palette_follows_the_theme(void) {
     return strcmp(PALETTES[config.palette].name, "theme") == 0;
 }
 
+static int palette_is_ink(void) {
+    return strcmp(PALETTES[config.palette].name, "ink") == 0;
+}
+
+/* Whether the colour of the terminal's ground is known: only ink asks for it. */
+static int the_ground_is_known(void) {
+    return palette_is_ink() && ink_is_known;
+}
+
 #define FALLBACK_PALETTE palette_named("ember")
+/* Where ink goes when there is no terminal to ask, or it does not answer: the
+ * ramp that was the three dimensional default before ink, for a dark ground. */
+#define FALLBACK_INK palette_named("ash")
 
 static void name_the_palettes(void) {
     for (int i = 0; i < PALETTE_COUNT; i++) PALETTE_NAMES[i] = PALETTES[i].name;
@@ -919,6 +1001,7 @@ static const uint8_t HAWK_COLOURS[][3] = {
     {96, 226, 255},  /* And an electric cyan, for the ramps that are already fire. */
 };
 enum { HAWK_COLOUR_COUNT = sizeof(HAWK_COLOURS) / sizeof(*HAWK_COLOURS) };
+static const double HAWK_GROUND_CONTRAST = 3.0;
 
 /* How far apart two colours look, which is not how far apart their brightnesses
  * are: scarlet and pale ice blue are a stone's throw apart by luminance and could
@@ -938,6 +1021,12 @@ static const uint8_t *hawk_colour(void) {
     int best = 0;
     double best_gap = -1;
     for (int candidate = 0; candidate < HAWK_COLOUR_COUNT; candidate++) {
+        /* A hawk has to be seen against the ground as well as the flock. Only a
+         * ground that was asked for is known, and a white one rules out the near
+         * white and the cyan, which are far from black ink and not from paper. */
+        if (the_ground_is_known() &&
+            contrast_between(HAWK_COLOURS[candidate], ink_ground) < HAWK_GROUND_CONTRAST)
+            continue;
         double gap = 1e9;
         for (int shade = 0; shade < chosen->shades; shade++) {
             const uint8_t *tint = chosen->tints != NULL ? chosen->tints[shade] : SPRITE_OWN_COLOUR;
@@ -2773,6 +2862,14 @@ static int prepare_text_renderer(void) {
  * live screen is never painted, so this is the one place a background exists. */
 static const uint8_t PICTURE_GROUND[3] = {18, 18, 24};
 
+/* The ground a picture is painted on, and the sky a far bird fades into. A dark
+ * one, unless ink has asked the terminal and been told otherwise: a bird as dark
+ * as ink pulled towards a dark ground gets darker, and on a white terminal that
+ * is the wrong way. */
+static const uint8_t *picture_ground(void) {
+    return the_ground_is_known() ? ink_ground : PICTURE_GROUND;
+}
+
 /* Sized to the screen, and resized with it. */
 static int text_renderer_fits_the_screen(void) {
     if (text_canvas.width != screen.width || text_canvas.height != screen.height) {
@@ -3027,7 +3124,7 @@ static const option_t OPTIONS[] = {
      "Sliders   0 to 12, as the panel shows them", 0},
 
     {'c', "color", "palette", OPTION_ENUM, &config.palette, 0, 0, PALETTE_NAMES, "RAMP",
-     "theme, ember, ice, acid, matrix, aurora, prism, potion, dusk, ash", "Look", 1},
+     "theme, ember, ice, acid, matrix, aurora, prism, potion, dusk, ash, ink", "Look", 1},
     {0, "shape", NULL, OPTION_ENUM, &config.shape, 0, 0, SHAPE_NAMES, "NAME",
      "bird, arrow, plane, dot", "Look", 1},
     {0, "sprite", NULL, OPTION_STRING, &sprite_path, 0, 0, NULL, "FILE",
@@ -3037,7 +3134,7 @@ static const option_t OPTIONS[] = {
     {0, "depth", NULL, OPTION_FLAG, &deep_look, 0, 0, NULL, NULL,
      "a second sky further off: smaller, slower, dimmer birds", "Look", 1},
     {0, "3d", NULL, OPTION_FLAG, &sky_mode, 0, 0, NULL, NULL,
-     "a murmuration in three dimensions, seen from a slow orbit (2000 birds, in ash)", "Look", 1},
+     "a murmuration in three dimensions, seen from a slow orbit (2000 birds, in ink)", "Look", 1},
     {'l', "panel", NULL, OPTION_FLAG, &legend_enabled, 0, 0, NULL, NULL,
      "the sliders in the corner from the start; h toggles them", "Look", 1},
     {0, "render", NULL, OPTION_ENUM, &render_mode, 0, 0, RENDER_NAMES, "HOW",
@@ -3458,9 +3555,7 @@ static void far_tint(png_image_t *image, int shade) {
     }
     if (shade >= chosen->shades) shade = chosen->shades - 1;
     uint8_t rgb[3];
-    for (int c = 0; c < 3; c++)
-        rgb[c] = (uint8_t)(chosen->tints[shade][c] +
-                           (PICTURE_GROUND[c] - chosen->tints[shade][c]) * FAR_DIM + 0.5);
+    pulled_towards(chosen->tints[shade], picture_ground(), FAR_DIM, rgb);
     png_tint(image, rgb[0], rgb[1], rgb[2], chosen->mode);
 }
 
@@ -3485,9 +3580,7 @@ static void tint_sky(png_image_t *image, int bin) {
     }
     int shade = (int)(far * (chosen->shades - 1) + 0.5);
     uint8_t rgb[3];
-    for (int c = 0; c < 3; c++)
-        rgb[c] = (uint8_t)(chosen->tints[shade][c] +
-                           (PICTURE_GROUND[c] - chosen->tints[shade][c]) * dim + 0.5);
+    pulled_towards(chosen->tints[shade], picture_ground(), dim, rgb);
     png_tint(image, rgb[0], rgb[1], rgb[2], chosen->mode);
 }
 
@@ -3665,10 +3758,11 @@ static void free_sprites(png_image_t *frames) {
 /* The ground, opaque, so a picture looks like the terminal it was taken in
  * rather than like a cut out. */
 static void fill_ground(png_image_t *canvas) {
+    const uint8_t *ground = picture_ground();
     for (size_t i = 0; i < (size_t)canvas->width * (size_t)canvas->height; i++) {
-        canvas->pixels[i * 4 + 0] = 18;
-        canvas->pixels[i * 4 + 1] = 18;
-        canvas->pixels[i * 4 + 2] = 24;
+        canvas->pixels[i * 4 + 0] = ground[0];
+        canvas->pixels[i * 4 + 1] = ground[1];
+        canvas->pixels[i * 4 + 2] = ground[2];
         canvas->pixels[i * 4 + 3] = 255;
     }
 }
@@ -3728,7 +3822,7 @@ static int write_snapshot(const char *path, const bird_t *birds) {
     uint8_t *encoded = NULL;
     size_t encoded_length = 0;
     int written = 0;
-    static const uint8_t ground[3] = {18, 18, 24};
+    const uint8_t *ground = picture_ground();
 
     png_status_t status = PNG_OK;
     if (drawing_with_text()) {
@@ -3821,7 +3915,7 @@ static void read_options(int argc, char **argv) {
         exit(EXIT_USAGE);
     }
     if (config.birds == 0) config.birds = sky_mode ? SKY_BIRDS : flat_birds;
-    if (config.palette < 0) config.palette = sky_mode ? palette_named("ash") : flat_palette;
+    if (config.palette < 0) config.palette = sky_mode ? palette_named("ink") : flat_palette;
     if (sky_mode) check_the_sky_options();
     /* A preset is expanded first so that a slider given after it still wins: the
      * table cannot express that order, so the parser's left to right reading is
@@ -3952,6 +4046,7 @@ static int record_delay_for(int fps) {
  * modes that never open a terminal fall back to the shipped ramp. */
 static void settle_the_palette_without_a_terminal(void) {
     if (palette_follows_the_theme()) config.palette = FALLBACK_PALETTE;
+    if (palette_is_ink()) config.palette = FALLBACK_INK;
 }
 
 /* JSON needs its control characters spelled out, and an escape sequence is
@@ -4189,7 +4284,7 @@ static int run_recording(void) {
             png_image_free(&painted);
             if (cells_emit(&text_cells) != CELLS_OK ||
                 cells_paint(&text_cells, text_style(), &painted, screen.cell_width,
-                            screen.cell_height, PICTURE_GROUND) != CELLS_OK) {
+                            screen.cell_height, picture_ground()) != CELLS_OK) {
                 gif_status = GIF_ERR_MEMORY;
                 break;
             }
@@ -4311,6 +4406,8 @@ int main(int argc, char **argv) {
     render_mode = live_render_mode();
     settle_the_bird_size();
     if (palette_follows_the_theme() && !learn_the_theme()) config.palette = FALLBACK_PALETTE;
+    if (palette_is_ink() && !learn_the_ink(sky_mode ? SKY_DIM : FAR_DIM))
+        config.palette = FALLBACK_INK;
 
     spatial_grid_status_t grid_status = spatial_grid_init(&grid, SPATIAL_CELL_SIZE);
     if (grid_status != SPATIAL_GRID_OK) {

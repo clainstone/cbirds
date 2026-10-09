@@ -9914,6 +9914,46 @@ static void test_the_rest_of_a_reply_that_was_cut_off_by_the_deadline_is_thrown_
     close(keys[1]);
 }
 
+/* A report is a cell of the screen. Billions of columns is not a place, and the
+ * letters turn the position into a cell with an int. */
+static void test_a_pointer_reported_beyond_the_screen_is_at_its_edge(void) {
+    reset_test_config();
+    apply_screen_size(80, 24, 80 * 8, 24 * 16);
+    mouse.present = 0;
+    read_mouse_report("<35;2147483647;5");
+    assert(mouse.present && mouse.x == 79.5 * screen.cell_width &&
+           mouse.y == 4.5 * screen.cell_height);
+    read_mouse_report("<35;5;2147483647");
+    assert(mouse.x == 4.5 * screen.cell_width && mouse.y == 23.5 * screen.cell_height);
+    read_mouse_report("<35;81;25");
+    assert(mouse.x == 79.5 * screen.cell_width && mouse.y == 23.5 * screen.cell_height);
+    /* On the screen it is where it says, and nothing at all is not a place. */
+    read_mouse_report("<35;80;24");
+    assert(mouse.x == 79.5 * screen.cell_width && mouse.y == 23.5 * screen.cell_height);
+    read_mouse_report("<35;3;2");
+    assert(mouse.x == 2.5 * screen.cell_width && mouse.y == 1.5 * screen.cell_height);
+    read_mouse_report("<35;0;2147483647");
+    assert(mouse.x == 2.5 * screen.cell_width && mouse.y == 1.5 * screen.cell_height);
+    mouse.present = 0;
+}
+
+/* The same through the keys, over text, for a run under the float-cast sanitizer to
+ * see: the pointer far past the last letter touches none and breaks nothing. */
+static void test_a_pointer_at_the_limits_does_not_disturb_the_text(void) {
+    world_t world;
+    world_open(&world, NEOFETCH_LIKE, 60, 12);
+    static const char *const REPORTS[] = {"\033[<35;5;2147483647M", "\033[<35;2147483647;5M",
+                                          "\033[<35;2147483647;2147483647M"};
+    for (size_t i = 0; i < sizeof(REPORTS) / sizeof(*REPORTS); i++) {
+        mouse.present = 0;
+        assert(feed_input(REPORTS[i]) == 1);
+        assert(mouse.present && mouse.x < screen.width && mouse.y < screen.height);
+        for (int frame = 0; frame < 30; frame++) world_step(&world);
+    }
+    mouse.present = 0;
+    world_close(&world);
+}
+
 /* ---- Text beside the other modes ----------------------------------------------- */
 
 /* A screen of letters, more than a flock can be: the wave state is the size of a
@@ -12548,6 +12588,8 @@ int main(void) {
     test_a_reply_that_comes_late_is_not_read_as_keys();
     test_a_string_the_key_reader_cannot_end_is_given_up();
     test_the_rest_of_a_reply_that_was_cut_off_by_the_deadline_is_thrown_away();
+    test_a_pointer_reported_beyond_the_screen_is_at_its_edge();
+    test_a_pointer_at_the_limits_does_not_disturb_the_text();
     test_a_text_tells_no_alarm_and_never_reads_the_wave_state();
     test_a_text_with_hawks_records_the_flight_and_not_the_light();
     test_an_unasked_for_recording_length_is_settled_before_anything_reads_it();

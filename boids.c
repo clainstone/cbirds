@@ -5658,6 +5658,11 @@ static void read_mouse_report(const char *sequence) {
         *at++ != ';' || !read_decimal(&at, &row))
         return;
     if (column < 1 || row < 1) return;
+    /* The pointer is in a cell of the screen. A terminal that reports it further off,
+     * dragged out of the window, or a report that was made up, is at the nearest
+     * edge: a billion columns is a position nothing here can turn into a cell. */
+    if (screen.cols > 0 && column > screen.cols) column = screen.cols;
+    if (screen.rows > 0 && row > screen.rows) row = screen.rows;
     double x = (column - 0.5) * screen.cell_width, y = (row - 0.5) * screen.cell_height;
     double now = clock_state.seconds;
     if (!mouse.present) {

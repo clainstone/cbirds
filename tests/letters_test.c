@@ -667,6 +667,32 @@ static void test_letters_launched_in_the_step_the_rest_ends_are_told_to_the_floc
     vt_destroy(&vt);
 }
 
+static void test_a_pointer_far_beyond_the_text_or_not_a_number_touches_nothing(void) {
+    static const double FAR[] = {1e9, 3e9, -3e9, 1e18, 1e300, -1e300, HUGE_VAL, -HUGE_VAL, NAN};
+    for (size_t x = 0; x < sizeof(FAR) / sizeof(*FAR); x++)
+        for (size_t y = 0; y < sizeof(FAR) / sizeof(*FAR); y++) {
+            letters_t letters;
+            vt_t vt;
+            build(&letters, &vt, "abcdefghij\nklmnopqrst", 10, 2);
+            letters_disturbance_t pointer = {FAR[x], FAR[y], 40, 40, 80, 80};
+            letters_advance(&letters, STEP, &pointer, 1);
+            /* A pointer a screen or more away is not over the text. */
+            assert(letters.launched_count == 0 && letters.perched == letters.count);
+            letters_destroy(&letters);
+            vt_destroy(&vt);
+        }
+    /* Beyond one edge and level with the text along the other: the letters in line
+     * with it are touched, as they are for a pointer a cell away. */
+    letters_t letters;
+    vt_t vt;
+    build(&letters, &vt, "abcdefghij\nklmnopqrst", 10, 2);
+    letters_disturbance_t pointer = {5 * CW, CH, 3e9, 3e9, 80, 80};
+    letters_advance(&letters, STEP, &pointer, 1);
+    assert(letters.launched_count == letters.count);
+    letters_destroy(&letters);
+    vt_destroy(&vt);
+}
+
 static void test_a_clock_that_is_not_a_time_does_not_stop_the_cycle(void) {
     letters_t letters;
     vt_t vt;
@@ -1177,6 +1203,7 @@ int main(void) {
     test_the_wave_starts_where_the_pointer_last_touched();
     test_the_letters_in_the_air_join_the_cycle_when_the_wave_comes();
     test_a_hawk_over_the_text_scatters_it_too();
+    test_a_pointer_far_beyond_the_text_or_not_a_number_touches_nothing();
     test_letters_launched_in_the_step_the_rest_ends_are_told_to_the_flock();
     test_a_long_pause_in_the_clock_does_not_skip_the_wave();
     test_a_clock_that_is_not_a_time_does_not_stop_the_cycle();

@@ -1273,11 +1273,14 @@ static void palette_tint(png_image_t *image, int shade) {
 static const uint8_t *highlight_colour(void) {
     const palette_t *chosen = palette();
     const uint8_t *hawk = hawk_colour();
+    /* The terminal's own ground, when theme or ink has asked it: ink on a white
+     * terminal is a flock of near black, and its light has to be dark to be seen. */
+    const uint8_t *ground = the_ground_is_known() ? ink_ground : theme_ground;
     int best = 0;
     double best_gap = -1;
     for (int candidate = 0; candidate < HIGHLIGHT_COLOUR_COUNT; candidate++) {
         const uint8_t *colour = HIGHLIGHT_COLOURS[candidate];
-        int shows = contrast_between(colour, theme_ground) >= HIGHLIGHT_CONTRAST;
+        int shows = contrast_between(colour, ground) >= HIGHLIGHT_CONTRAST;
         double gap = colour_distance(colour, hawk);
         /* Somebody's own artwork has no ramp to stand clear of, only the hawk. */
         for (int shade = 0; sprite_path == NULL && shade < chosen->shades; shade++) {

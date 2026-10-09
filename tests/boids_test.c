@@ -5746,6 +5746,35 @@ static void test_a_flock_of_ink_is_seen_on_a_white_ground(void) {
     reset_test_config();
 }
 
+/* Ink is a ramp for the flat sky too, and the flat sky has waves: the light of a
+ * wave is chosen to be seen on the terminal's ground, and with ink that is known,
+ * so that on paper the light is dark and on a dark terminal it is what it always
+ * was. Without ink asked for, the ground is the one theme learns, and nothing
+ * moves. */
+static void test_the_light_of_a_wave_is_seen_on_the_ground_ink_knows(void) {
+    uint8_t unasked[3];
+
+    reset_test_config();
+    config.palette = palette_named("ink");
+    /* Not asked of the terminal: the choice it always was. */
+    ink_is_known = 0;
+    memcpy(unasked, highlight_colour(), 3);
+
+    /* White on black: seen on it. */
+    build_the_ink(DARK_INK.foreground, DARK_INK.background, FAR_DIM);
+    assert(contrast_between(highlight_colour(), DARK_INK.background) >= HIGHLIGHT_CONTRAST);
+    /* Black on white: a light that was white would be a lit bird that is not there,
+     * and the light is the dark one the list keeps for a ground that is light. */
+    build_the_ink(LIGHT_INK.foreground, LIGHT_INK.background, FAR_DIM);
+    assert(contrast_between(highlight_colour(), LIGHT_INK.background) >= HIGHLIGHT_CONTRAST);
+    assert(memcmp(highlight_colour(), HIGHLIGHT_COLOURS[HIGHLIGHT_COLOUR_COUNT - 1], 3) == 0);
+
+    /* And the same ramp, no longer known, is judged as ever. */
+    ink_is_known = 0;
+    assert(memcmp(highlight_colour(), unasked, 3) == 0);
+    reset_test_config();
+}
+
 /* The terminal is asked for its background and then its foreground, with the
  * machinery the theme uses, and a terminal that does not answer, or answers half,
  * is not guessed at. The terminal is a pty with the test on the other end of it. */
@@ -10554,6 +10583,7 @@ int main(void) {
     test_ink_does_not_fade_into_a_black_terminal();
     test_ink_is_drawn_as_it_was_built();
     test_a_flock_of_ink_is_seen_on_a_white_ground();
+    test_the_light_of_a_wave_is_seen_on_the_ground_ink_knows();
     test_ink_is_asked_of_the_terminal();
     test_ink_without_a_terminal_is_ash();
     test_the_birds_are_rebuilt_when_the_window_settles();

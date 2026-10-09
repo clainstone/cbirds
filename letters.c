@@ -313,7 +313,11 @@ static void begin_wave(letters_t *letters) {
     letters->phase = LETTERS_TAKING_OFF;
     letters->wave_began = letters->clock;
     letters->cycles++;
-    letters->launched_count = 0;
+    /* The list of who left is not cleared here but at the start of each advance: a
+     * pointer or a hawk can have launched letters in this very step, just before the
+     * rest ran out, and the flock hears of them from that list. Wiped, they were in
+     * the air for the cycle and on their cells for the flock, which never moved them
+     * and never saw them land, so the text never came to rest and never flew again. */
     letters->origin = letters->last_left = -1;
     /* Whatever was scattered joins the cycle: a letter on its way back from the
      * pointer turns round, and is part of the flock for the flight. */

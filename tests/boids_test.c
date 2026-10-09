@@ -8949,6 +8949,39 @@ static void test_a_hawk_over_the_text_is_an_arrow_and_scatters_it(void) {
     world_close(&world);
 }
 
+/* A letter that is in the air is a bird that is flying, and the other way round: the
+ * cycle waits for every letter to land, and a bird that is told nothing never leaves. */
+static void assert_the_letters_in_the_air_are_the_birds_in_the_air(const world_t *world) {
+    for (int i = 0; i < config.birds; i++)
+        assert(letter_is_airborne(&the_letters.letter[i]) == !world->birds[i].perched);
+}
+
+/* How many times the cycle began over `frames` frames of a world with hawks, and
+ * whether a bird and its letter ever disagreed about being in the air. */
+static int cycles_with_hawks(int hawk_count, int seed, int frames) {
+    world_t world;
+    world_open(&world, NEOFETCH_LIKE, 60, 12);
+    config.hawks = hawk_count;
+    seed_random((unsigned)seed);
+    place_hawks();
+    for (int frame = 0; frame < frames; frame++) {
+        world_step(&world);
+        assert_the_letters_in_the_air_are_the_birds_in_the_air(&world);
+    }
+    int cycles = the_letters.cycles;
+    world_close(&world);
+    return cycles;
+}
+
+static void test_a_hawk_over_the_text_does_not_stop_the_cycle(void) {
+    /* A hawk that touches letters in the very step the rest ends used to leave them
+     * in the air for the cycle and on their cells for the flock, and the text then
+     * never rested or flew again. Two minutes is four cycles of a text left alone. */
+    for (int hawks = 1; hawks <= 3; hawks++)
+        for (int seed = 1; seed <= 4; seed++)
+            assert(cycles_with_hawks(hawks, seed, 60 * 120) >= 3);
+}
+
 static void test_the_panel_lies_over_the_text_and_the_letters_under_it_still_land(void) {
     world_t world;
     world_open(&world, NEOFETCH_LIKE, 80, 24);
@@ -12191,6 +12224,7 @@ int main(void) {
     test_a_letter_lands_exactly_and_does_not_circle_its_cell();
     test_the_pointer_scatters_what_it_touches_and_they_find_their_way_back();
     test_a_hawk_over_the_text_is_an_arrow_and_scatters_it();
+    test_a_hawk_over_the_text_does_not_stop_the_cycle();
     test_the_panel_lies_over_the_text_and_the_letters_under_it_still_land();
     test_pausing_stops_the_cycle_and_the_text_is_not_drawn_twice();
     test_the_keys_that_change_the_population_do_nothing_to_text();

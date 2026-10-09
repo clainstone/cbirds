@@ -614,6 +614,59 @@ static void test_a_hawk_over_the_text_scatters_it_too(void) {
     vt_destroy(&vt);
 }
 
+/* The flock as the program is: it moves a letter only if it was told, in the list of
+ * who left, that it had; and a letter that has come home is landed. */
+static void fly_what_was_told(letters_t *letters, int *told) {
+    for (int k = 0; k < letters->launched_count; k++) told[letters->launched[k]] = 1;
+    for (int i = 0; i < letters->count; i++)
+        if (letters->letter[i].state == LETTER_HOMING && told[i]) {
+            letters_land(letters, i);
+            told[i] = 0;
+        }
+}
+
+static void test_letters_launched_in_the_step_the_rest_ends_are_told_to_the_flock(void) {
+    letters_t letters;
+    vt_t vt;
+    build(&letters, &vt,
+          "hello world, this is some text\r\nsecond line of text here\r\nthird line", 40, 5);
+    int count = letters.count;
+    /* A pointer over the first letters, in the very step the rest runs out. */
+    letters.rest_left = 0.01;
+    letters_disturbance_t pointer = {4 + CW * 3, CH / 2, 40, 40, 80, 80};
+    letters_advance(&letters, STEP, &pointer, 1);
+    assert(letters.phase == LETTERS_TAKING_OFF || letters.phase == LETTERS_IN_FLIGHT);
+    int airborne = 0, once = 1;
+    for (int i = 0; i < count; i++) {
+        if (!letter_is_airborne(&letters.letter[i])) continue;
+        airborne++;
+        int listed = 0;
+        for (int k = 0; k < letters.launched_count; k++) listed += letters.launched[k] == i;
+        if (listed != 1) once = 0;
+    }
+    /* The ones the pointer touched and the first of the wave: every one in the air is
+     * on the list, once, and nothing is on it that is not in the air. */
+    assert(airborne > 1 && once && letters.launched_count == airborne);
+    assert(letters.perched == count - airborne);
+
+    /* And the cycle goes on: a flock that moves only who it was told of lands them
+     * all, the text rests, and the wave comes again. */
+    static int told[8192];
+    memset(told, 0, sizeof(told));
+    fly_what_was_told(&letters, told);
+    int rested = 0;
+    for (int step = 0; step < 60 * 120; step++) {
+        letters_advance(&letters, STEP, NULL, 0);
+        fly_what_was_told(&letters, told);
+        for (int i = 0; i < count; i++)
+            assert(!letter_is_airborne(&letters.letter[i]) || told[i]);
+        if (letters.phase == LETTERS_AT_REST) rested = 1;
+    }
+    assert(rested && letters.cycles >= 3);
+    letters_destroy(&letters);
+    vt_destroy(&vt);
+}
+
 static void test_a_clock_that_is_not_a_time_does_not_stop_the_cycle(void) {
     letters_t letters;
     vt_t vt;
@@ -1124,6 +1177,7 @@ int main(void) {
     test_the_wave_starts_where_the_pointer_last_touched();
     test_the_letters_in_the_air_join_the_cycle_when_the_wave_comes();
     test_a_hawk_over_the_text_scatters_it_too();
+    test_letters_launched_in_the_step_the_rest_ends_are_told_to_the_flock();
     test_a_long_pause_in_the_clock_does_not_skip_the_wave();
     test_a_clock_that_is_not_a_time_does_not_stop_the_cycle();
     test_a_letter_in_the_air_is_drawn_where_it_is_and_its_home_is_left_empty();

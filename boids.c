@@ -4543,6 +4543,13 @@ static void read_options(int argc, char **argv) {
         fprintf(stderr, "Try '%s --help'.\n", program_name);
         exit(EXIT_USAGE);
     }
+    /* The text is the flock, and so is the night: the one or the other, and said
+     * before anything is read or opened. Text on a pipe is said when it is found. */
+    if (fireflies_mode && text_path != NULL) {
+        fprintf(stderr, "%s: --fireflies does not go with --text: the text is the flock\n",
+                program_name);
+        exit(EXIT_USAGE);
+    }
     if (fireflies_mode) settle_the_night();
     if (config.birds == 0) config.birds = fireflies_mode ? FIREFLY_COUNT : shipped_birds;
     if (config.shape < 0) config.shape = fireflies_mode ? shape_named("dot") : shipped_shape;
@@ -4712,6 +4719,12 @@ static int take_the_text(int cols, int rows, int pipes) {
         return 0;
     }
 
+    if (fireflies_mode) {
+        fprintf(stderr,
+                "%s: --fireflies does not go with text on standard input: the text is the flock\n",
+                program_name);
+        exit(EXIT_USAGE);
+    }
     letters_mode = 1;
     config.birds = count;
     /* A cell is eight pixels across, a quarter of the sprite the pace was tuned for:

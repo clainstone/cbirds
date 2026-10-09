@@ -6122,6 +6122,82 @@ static void test_a_text_with_hawks_records_the_flight_and_not_the_light(void) {
     reset_test_config();
 }
 
+/* A text and a night are two flocks, and the text is the flock: said in one line,
+ * before anything is read, with the exit status of every other usage error. Text on
+ * a pipe is said when it is found there, and a pipe with nothing in it is no text. */
+static int status_of_a_run_that_may_exit(void (*run)(void *), void *context, char *said,
+                                         size_t size) {
+    int errors[2];
+    assert(pipe(errors) == 0);
+    fflush(NULL);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        alarm(20);
+        close(errors[0]);
+        if (dup2(errors[1], STDERR_FILENO) < 0) _exit(99);
+        run(context);
+        _exit(0);
+    }
+    close(errors[1]);
+    ssize_t got = read(errors[0], said, size - 1);
+    said[got > 0 ? got : 0] = '\0';
+    close(errors[0]);
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status));
+    return WEXITSTATUS(status);
+}
+
+static void parse_a_night_with_text(void *context) {
+    char *argv[] = {"cbirds", "--fireflies", "--text", (char *)context, NULL};
+    read_options(4, argv);
+}
+
+static void parse_text_with_a_night(void *context) {
+    char *argv[] = {"cbirds", "--text", (char *)context, "--fireflies", NULL};
+    read_options(4, argv);
+}
+
+static void take_the_text_piped_in_on_a_night(void *context) {
+    int fd = open((const char *)context, O_RDONLY);
+    if (fd < 0 || dup2(fd, STDIN_FILENO) < 0) _exit(98);
+    fireflies_mode = 1;
+    int taken = take_the_text(60, 12, 1);
+    _exit(taken ? 0 : 3); /* A night goes on when there was nothing to see. */
+}
+
+static void test_the_text_is_the_flock_and_a_night_is_refused_with_it(void) {
+    char file[600], empty[600], said[512];
+    scratch_file(file, sizeof(file), "refuse.txt");
+    scratch_file(empty, sizeof(empty), "refuse_empty.txt");
+    world_write(file, "hello, world\n");
+    world_write(empty, "");
+
+    /* Either way round on the line, a usage error and one line of it. */
+    assert(status_of_a_run_that_may_exit(parse_a_night_with_text, file, said, sizeof(said)) ==
+           EXIT_USAGE);
+    assert(strstr(said, "--fireflies does not go with --text") != NULL);
+    assert(strchr(said, '\n') == said + strlen(said) - 1);
+    assert(status_of_a_run_that_may_exit(parse_text_with_a_night, file, said, sizeof(said)) ==
+           EXIT_USAGE);
+    assert(strstr(said, "--fireflies does not go with --text") != NULL);
+
+    /* On a pipe it is the text that is found, not the pipe. */
+    assert(status_of_a_run_that_may_exit(take_the_text_piped_in_on_a_night, file, said,
+                                         sizeof(said)) == EXIT_USAGE);
+    assert(strstr(said, "does not go with text on standard input") != NULL);
+    assert(strchr(said, '\n') == said + strlen(said) - 1);
+    /* An empty one is nothing to see, and the night goes on. */
+    assert(status_of_a_run_that_may_exit(take_the_text_piped_in_on_a_night, empty, said,
+                                         sizeof(said)) == 3);
+    assert(said[0] == '\0');
+
+    remove(file);
+    remove(empty);
+    reset_test_config();
+}
+
 int main(void) {
     make_scratch();
     trig_lookup_init();
@@ -6248,6 +6324,7 @@ int main(void) {
     test_keys_and_colour_questions_use_the_descriptor_that_was_chosen();
     test_a_text_tells_no_alarm_and_never_reads_the_wave_state();
     test_a_text_with_hawks_records_the_flight_and_not_the_light();
+    test_the_text_is_the_flock_and_a_night_is_refused_with_it();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);
     return 0;

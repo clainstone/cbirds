@@ -229,8 +229,9 @@ No wave of light runs through a text, whether a hawk dives or the pointer is
 whipped; the letters have the wave that sends them up. `--birds`, `--flocks`,
 `--depth`, `--matrix`, `--shape`, `--sprite`, `--size` and tails do not apply:
 the text decides how many letters there are, and a letter has no sprite.
-`--render kitty` draws text too. The panel is laid over the text, and the
-letters under it still land there.
+`--fireflies` does not go with text, since the text is the flock, and cbirds
+says so and stops. `--render kitty` draws text too. The panel is laid over the
+text, and the letters under it still land there.
 
 When standard input is not a terminal, the keys are read from the terminal
 itself. A pipe is read to its end, or until it has been quiet for a second and a
@@ -397,7 +398,8 @@ The panel keeps working. `alignment` becomes `coupling`, how far a flash moves a
 clock, and `perception` becomes `sight`, how far a flash is seen; `--alignment`
 and `--perception` set them. A `sync` row reads out how much of the swarm is in
 step, from 0 to 1. Hawks, flocks, presets and tails have nothing to do on a
-night, and the program says so. A flash is the
+night, and the program says so; text is refused, since a night has its own
+flock. A flash is the
 pale yellow of the `firefly` ramp, dying through yellow green to dark green over
 half a second, and between flashes each firefly is a faint dot; `--birds`,
 `--size`, `--shape` and `--color` still work.

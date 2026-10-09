@@ -370,9 +370,10 @@ hunts the flock through the air.
 `--matrix` are refused. A night, a text and a sign are made on the flat sky,
 with a screen to lay them out on, and a space has none: `--3d` with
 `--fireflies`, `--text` or text piped in, and `--say`, `--clock`, `--clock-at`
-or `--picture`, is refused with exit status 2. `--screensaver` goes with it, and
-so do `--hawks`, the pointer and the keys. There are no escape waves in a space,
-as the algorithm below says.
+or `--picture`, is refused with exit status 2, and so is `--link`, since a bird's
+place in a space does not travel to another window. `--screensaver` goes with it,
+and so do `--hawks`, the pointer and the keys. There are no escape waves in a
+space, as the algorithm below says.
 
 ## Terminals
 
@@ -420,8 +421,19 @@ The windows talk through Unix sockets in a directory that is yours alone:
 cbirds refuses to use one that belongs to somebody else or that others can write
 in, and says which. The sockets are removed when a window quits or is
 interrupted, and the one a killed window leaves behind is swept away by the
-others. `--link` needs a live terminal, so it cannot be combined with `--record`
-or `--bench`.
+others.
+
+Hawks cross, and a wave of light does not: it stays in the window where it
+began, and a bird that comes in is calm. A sign goes with it, `--say`, `--clock`
+or `--picture`. The birds that write hold their places and never cross, and the
+rest of the flock crosses as it does without one. `--screensaver` goes with it
+too: any key quits that window, and it leaves the sky.
+
+Some things are made in a window and do not travel. `--link` with `--fireflies`
+(a firefly keeps a clock), `--3d` (a bird keeps its place in a space) and
+`--text` or text piped in (a letter has a home in its own window) is refused
+with exit status 2, and so is `--link` with `--record` or `--bench`: it joins
+the windows that are open now, so it needs a live terminal.
 
 ## Options
 
@@ -541,6 +553,8 @@ which is what lets the wave pass through the flock and not come back through it.
 The waves are the flat flock's rules: in a space (`--3d`) a hawk dives through
 the murmuration and the birds flee it, but there is no wave of light, and a
 whipped pointer starts none.
+In a shared sky (`--link`) a hawk crosses from one window to the next and a wave
+does not: it runs through the window it began in.
 
 ## Fireflies
 

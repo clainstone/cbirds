@@ -8778,6 +8778,97 @@ static void test_a_screensaver_is_a_lock_screen_for_every_mode(void) {
     reset_sign_state();
 }
 
+/* Every track gave a bird a field of its own: the letters one that is home and not
+ * flying, the waves one that is lit, the signs one that is scattered. A flock that
+ * grows or shrinks keeps each bird exactly as it was, those fields included, and
+ * every bird it adds starts from nothing, in every one of them. */
+static void test_resizing_the_flock_keeps_every_bird_and_starts_every_new_one_clean(void) {
+    reset_sign_state();
+    apply_screen_size(120, 34, 120 * 8, 34 * 16);
+    config.bird_size = DEFAULT_BIRD_SIZE;
+    seed_random(11);
+    enum { FROM = 100, MORE = 160, LESS = 60 };
+    bird_t *birds = malloc(sizeof(*birds) * FROM), *snapshot = malloc(sizeof(*snapshot) * FROM);
+    assert(birds != NULL && snapshot != NULL);
+    bird_t kept[MORE];
+    for (int i = 0; i < FROM; i++) {
+        /* Every byte of it set: nothing is left to look like a zero by luck. */
+        memset(&birds[i], 0x5a + i % 7, sizeof(birds[i]));
+        birds[i].perched = 1;
+        birds[i].alarmed = 1;
+        birds[i].scattered = 0.75;
+        kept[i] = birds[i];
+        waves[i] = (wave_t){0.5, 0.25, 0.125, 0.0625, 3.0};
+    }
+    wave_t wave_kept[MORE];
+    memcpy(wave_kept, waves, sizeof(*waves) * FROM);
+    /* What a bigger flock left behind in the places the new birds will have. */
+    for (int i = FROM; i < MORE; i++) waves[i] = (wave_t){1, 1, 1, 1, 1};
+
+    /* Grown. The old birds are untouched, bit for bit, and so is the wave state they
+     * carry; the new ones have nothing lit, nothing scattered, nothing perched and no
+     * tail, nothing told, and a place in the sky. */
+    assert(resize_the_flock(&birds, &snapshot, FROM, MORE) == 1);
+    for (int i = 0; i < FROM; i++) {
+        assert(memcmp(&birds[i], &kept[i], sizeof(birds[i])) == 0);
+        assert(memcmp(&waves[i], &wave_kept[i], sizeof(waves[i])) == 0);
+    }
+    config.birds = MORE;
+    for (int i = FROM; i < MORE; i++) {
+        assert(birds[i].perched == 0 && birds[i].alarmed == 0 && birds[i].scattered == 0);
+        assert(birds[i].gliding == 0 && birds[i].trail_at == 0 && birds[i].trail_held == 0);
+        assert(birds[i].layer == 0 && birds[i].flock == 0);
+        assert(birds[i].direction > 0 && birds[i].direction < 2 * M_PI); /* Placed. */
+        assert(wave_busy(&waves[i]) == 0);
+        assert(birds[i].x >= 0 && birds[i].x <= screen.width);
+        assert(birds[i].y >= 0 && birds[i].y <= screen.height);
+        for (int t = 0; t < TRAIL_LENGTH; t++)
+            assert(birds[i].trail_x[t] == 0 && birds[i].trail_y[t] == 0);
+    }
+
+    /* Shrunk. The ones that stay are untouched. */
+    assert(resize_the_flock(&birds, &snapshot, MORE, LESS) == 1);
+    for (int i = 0; i < LESS; i++)
+        assert(memcmp(&birds[i], i < FROM ? &kept[i] : &birds[i], sizeof(birds[i])) == 0);
+
+    free(birds);
+    free(snapshot);
+
+    /* A sign that was up when the flock changed is laid out again for what there is,
+     * before any bird of it is read: every writer is a bird that is there, aimed at
+     * a place that is there, and the birds that came or went change nothing else. */
+    sky_t world;
+    lay_out_a_sign_on(&world, 120, 34, 25, "HELLO", 600, 5);
+    for (int change = 0; change < 6; change++) {
+        int from = config.birds;
+        int to = change % 2 == 0 ? from - from / 5 - 1 : from + from / 4 + 1;
+        bird_t *grown = malloc(sizeof(*grown) * (size_t)to);
+        bird_t *grown_snapshot = malloc(sizeof(*grown_snapshot) * (size_t)to);
+        assert(grown != NULL && grown_snapshot != NULL);
+        memcpy(grown, world.birds, sizeof(*grown) * (size_t)(from < to ? from : to));
+        for (int i = from; i < to; i++) place_one_bird(&grown[i], i);
+        free(world.birds);
+        free(world.snapshot);
+        world.birds = grown;
+        world.snapshot = grown_snapshot;
+        config.birds = to;
+        assert(spatial_grid_prepare(&world.grid, screen.width, screen.height, to) ==
+               SPATIAL_GRID_OK);
+        step_the_world(&world, (change + 1) * 0.04);
+        assert(the_sign.up && sign_layout_is_current());
+        int writers = 0;
+        for (int i = 0; i < config.birds; i++) {
+            if (formation.slot[i] < 0) continue;
+            assert(formation.slot[i] < formation.count);
+            writers++;
+        }
+        assert(writers == the_sign.per_cell * formation.count);
+    }
+    close_the_world(&world);
+    reset_the_waves();
+    reset_sign_state();
+}
+
 int main(void) {
     make_scratch();
     trig_lookup_init();
@@ -8948,6 +9039,7 @@ int main(void) {
     test_hawks_over_a_sign_light_the_free_birds_and_not_the_writers();
     test_a_screensaver_reads_the_descriptor_that_was_chosen();
     test_a_screensaver_is_a_lock_screen_for_every_mode();
+    test_resizing_the_flock_keeps_every_bird_and_starts_every_new_one_clean();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);
     return 0;

@@ -8636,6 +8636,148 @@ static void test_hawks_over_a_sign_light_the_free_birds_and_not_the_writers(void
     reset_sign_state();
 }
 
+/* A lock screen reads its keys from where the keys come from: the descriptor that
+ * was chosen, which is the terminal itself when standard input is a pipe, and not
+ * standard input. Here standard input is at its end and the keys are on the other. */
+static void test_a_screensaver_reads_the_descriptor_that_was_chosen(void) {
+    int keys[2], silent[2];
+    assert(pipe(keys) == 0 && pipe(silent) == 0);
+    /* As the terminal is in raw mode: a read with nothing there comes back. */
+    assert(fcntl(keys[0], F_SETFL, O_NONBLOCK) == 0);
+    close(silent[1]); /* Standard input is at its end: nobody is there. */
+    int saved_stdin = dup(STDIN_FILENO);
+    assert(saved_stdin >= 0 && dup2(silent[0], STDIN_FILENO) == STDIN_FILENO);
+    close(silent[0]);
+    int saved = input_fd;
+    input_fd = keys[0];
+
+    reset_sign_state();
+    apply_screen_size(80, 24, 640, 384);
+    screensaver_mode = 1;
+    clock_state.seconds = SCREENSAVER_GRACE + 1;
+    assert(handle_input() == 1); /* Nothing on either: carry on. */
+    assert(write(keys[1], "x", 1) == 1);
+    assert(handle_input() == 0); /* A key where the keys come from. */
+    /* The first half second is whatever started it, there as well. */
+    clock_state.seconds = SCREENSAVER_GRACE - 0.1;
+    assert(write(keys[1], "\033[<35;10;5M", 10) == 10);
+    assert(handle_input() == 1);
+
+    input_fd = saved;
+    assert(dup2(saved_stdin, STDIN_FILENO) == STDIN_FILENO);
+    close(saved_stdin);
+    close(keys[0]);
+    close(keys[1]);
+    reset_sign_state();
+}
+
+/* The whole program, on a terminal of its own, as a flock, a night, a clock, a
+ * sign, a text from a file and a text on a pipe, each of them a lock screen: it
+ * runs until a key is typed after the grace, and then goes at once with the
+ * status of a run that went well, having given the terminal back. */
+static void test_a_screensaver_is_a_lock_screen_for_every_mode(void) {
+    char text[600];
+    scratch_file(text, sizeof(text), "saver.txt");
+    world_write(text, "hello, world\nsecond line\n");
+    const char *runs[][4] = {
+        {NULL, NULL, NULL, NULL},
+        {"--fireflies", NULL, NULL, NULL},
+        {"--clock", NULL, NULL, NULL},
+        {"--say", "hi", NULL, NULL},
+        {"--text", text, NULL, NULL},
+        {"--hawks", "2", NULL, NULL},
+        {NULL, NULL, NULL, NULL} /* The text of this one is on a pipe. */,
+    };
+    int count = (int)(sizeof(runs) / sizeof(*runs));
+    for (int which = 0; which < count; which++) {
+        int piped = which == count - 1;
+        int master = posix_openpt(O_RDWR | O_NOCTTY);
+        assert(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0);
+        const char *name = ptsname(master);
+        assert(name != NULL);
+        int text_pipe[2];
+        assert(pipe(text_pipe) == 0);
+        const char *words = "hello, world\nsecond line\n";
+        assert(write(text_pipe[1], words, strlen(words)) == (ssize_t)strlen(words));
+        close(text_pipe[1]);
+        fflush(NULL);
+        pid_t child = fork();
+        assert(child >= 0);
+        if (child == 0) {
+            alarm(60);
+            close(master);
+            /* The terminal is the controlling one, so that /dev/tty is it. */
+            if (setsid() < 0) _exit(90);
+            int terminal = open(name, O_RDWR);
+            if (terminal < 0 || ioctl(terminal, TIOCSCTTY, 0) < 0) _exit(91);
+            int quiet = open("/dev/null", O_WRONLY);
+            if (quiet < 0 || dup2(piped ? text_pipe[0] : terminal, STDIN_FILENO) < 0 ||
+                dup2(terminal, STDOUT_FILENO) < 0 || dup2(quiet, STDERR_FILENO) < 0)
+                _exit(99);
+            terminal_is_raw = terminal_restored = alt_screen_is_on = sprites_uploaded = 0;
+            input_fd = STDIN_FILENO;
+            char *argv[12] = {"cbirds", "--screensaver", "--color", "ember", "--seed", "3"};
+            int argc = 6;
+            for (int word = 0; word < 4 && runs[which][word] != NULL; word++)
+                argv[argc++] = (char *)runs[which][word];
+            argv[argc] = NULL;
+            /* Not _exit: the terminal is given back by the exit handler. */
+            exit(cbirds_application_main(argc, argv));
+        }
+        close(text_pipe[0]);
+        /* Once the program has taken the screen, and the grace is over, a key. */
+        int status = 0, typed = 0;
+        size_t seen = 0;
+        char drain[4096], screen_taken[] = ALT_SCREEN_ON, tail[256] = "";
+        struct timespec taken_at = {0, 0}, now;
+        for (;;) {
+            if (readable_within(master, 50) > 0) {
+                ssize_t got = read(master, drain, sizeof(drain));
+                if (got <= 0) break;
+                for (ssize_t i = 0; i < got; i++) {
+                    if (!typed) {
+                        seen = drain[i] == screen_taken[seen] ? seen + 1
+                                                              : (drain[i] == '\033' ? 1 : 0);
+                        if (seen == sizeof(screen_taken) - 1) {
+                            clock_gettime(CLOCK_MONOTONIC, &taken_at);
+                            typed = -1;
+                        }
+                    }
+                    memmove(tail, tail + 1, sizeof(tail) - 2);
+                    tail[sizeof(tail) - 2] = drain[i];
+                }
+            }
+            if (typed == -1) {
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                if (elapsed_seconds(&taken_at, &now) > SCREENSAVER_GRACE + 0.5) {
+                    assert(write(master, "x", 1) == 1);
+                    typed = 1;
+                }
+            }
+            if (waitpid(child, &status, WNOHANG) == child) {
+                child = -1;
+                break;
+            }
+        }
+        /* What it had still to say when it went. */
+        while (readable_within(master, 100) > 0) {
+            ssize_t got = read(master, drain, sizeof(drain));
+            if (got <= 0) break;
+            for (ssize_t i = 0; i < got; i++) {
+                memmove(tail, tail + 1, sizeof(tail) - 2);
+                tail[sizeof(tail) - 2] = drain[i];
+            }
+        }
+        assert(typed == 1);
+        if (child > 0) assert(waitpid(child, &status, 0) == child);
+        assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS);
+        assert(strstr(tail, ALT_SCREEN_OFF) != NULL); /* The terminal is given back. */
+        close(master);
+    }
+    assert(unlink(text) == 0);
+    reset_sign_state();
+}
+
 int main(void) {
     make_scratch();
     trig_lookup_init();
@@ -8804,6 +8946,8 @@ int main(void) {
     test_a_writer_is_never_alarmed_and_a_scattered_one_is();
     test_a_bird_sent_to_write_forgets_the_alarm_it_was_given();
     test_hawks_over_a_sign_light_the_free_birds_and_not_the_writers();
+    test_a_screensaver_reads_the_descriptor_that_was_chosen();
+    test_a_screensaver_is_a_lock_screen_for_every_mode();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);
     return 0;

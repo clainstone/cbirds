@@ -3498,6 +3498,88 @@ static void test_a_text_too_big_for_the_terminal_is_said_after_the_terminal_is_g
     reset_sign_state();
 }
 
+/* A snapshot is taken at the end of a live run, and what is said about it, that it
+ * was written or that it could not be, is said where it can be read: when the
+ * alternate screen has been given back, and not on it, where it is gone with it. */
+static void test_a_snapshot_is_reported_after_the_terminal_is_given_back(void) {
+    static char output[1 << 20];
+    char good[600], bad[700];
+    scratch_file(good, sizeof(good), "taken.png");
+    snprintf(bad, sizeof(bad), "%s/missing/taken.png", scratch);
+    for (int written = 0; written < 2; written++) {
+        reset_sign_state();
+        int master = posix_openpt(O_RDWR | O_NOCTTY);
+        assert(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0);
+        const char *name = ptsname(master);
+        assert(name != NULL);
+        int terminal = open(name, O_RDWR | O_NOCTTY);
+        assert(terminal >= 0);
+        struct winsize size = {.ws_row = 24, .ws_col = 80, .ws_xpixel = 640, .ws_ypixel = 384};
+        assert(ioctl(terminal, TIOCSWINSZ, &size) == 0);
+        fflush(NULL);
+        pid_t child = fork();
+        assert(child >= 0);
+        if (child == 0) {
+            alarm(60);
+            if (dup2(terminal, STDIN_FILENO) < 0 || dup2(terminal, STDOUT_FILENO) < 0 ||
+                dup2(terminal, STDERR_FILENO) < 0)
+                _exit(99);
+            terminal_is_raw = terminal_restored = alt_screen_is_on = sprites_uploaded = 0;
+            char *argv[] = {"cbirds", "--unlock-fps", "--frames",   "30",
+                            "-n",     "200",          "--seed",     "3",
+                            "--snapshot", written ? good : bad, NULL};
+            exit(cbirds_application_main(10, argv)); /* exit: the terminal is put back. */
+        }
+        close(terminal);
+        size_t length = 0;
+        int status = 0;
+        for (;;) {
+            struct pollfd wait = {.fd = master, .events = POLLIN};
+            if (poll(&wait, 1, 100) > 0) {
+                ssize_t got = read(master, output + length, sizeof(output) - 1 - length);
+                if (got <= 0) break;
+                length += (size_t)got;
+            }
+            if (waitpid(child, &status, WNOHANG) == child) {
+                child = -1;
+                break;
+            }
+        }
+        if (child > 0) assert(waitpid(child, &status, 0) == child);
+        for (struct pollfd wait = {.fd = master, .events = POLLIN}; poll(&wait, 1, 100) > 0;) {
+            ssize_t got = read(master, output + length, sizeof(output) - 1 - length);
+            if (got <= 0) break;
+            length += (size_t)got;
+        }
+        output[length] = '\0';
+        close(master);
+        assert(WIFEXITED(status) &&
+               WEXITSTATUS(status) == (written ? EXIT_SUCCESS : EXIT_FAILURE));
+        char message[800];
+        snprintf(message, sizeof(message),
+                 written ? "cbirds: wrote %s" : "cbirds: could not write %s",
+                 written ? good : bad);
+        const char *told = strstr(output, message);
+        const char *taken = strstr(output, ALT_SCREEN_ON);
+        const char *given_back = NULL;
+        for (const char *at = strstr(output, ALT_SCREEN_OFF); at != NULL;
+             at = strstr(at + 1, ALT_SCREEN_OFF))
+            given_back = at;
+        assert(taken != NULL && given_back != NULL && told != NULL);
+        assert(told > given_back && given_back > taken);
+        assert(strstr(told + 1, message) == NULL);
+        if (written) {
+            FILE *file = fopen(good, "rb");
+            assert(file != NULL);
+            unsigned char signature[4];
+            assert(fread(signature, 1, 4, file) == 4 && memcmp(signature, "\x89PNG", 4) == 0);
+            fclose(file);
+            remove(good);
+        }
+    }
+    reset_sign_state();
+}
+
 static void test_a_sign_has_a_bird_as_wide_as_its_cells_unless_it_is_told(void) {
     reset_sign_state();
     /* The usual thirty on a roomy screen, and smaller on a small one, where a bird
@@ -5329,6 +5411,7 @@ int main(void) {
     test_a_small_screen_leaves_the_flock_sky_and_a_roomy_one_is_as_it_was();
     test_a_sign_that_cannot_be_laid_out_says_so_when_the_run_is_over();
     test_a_text_too_big_for_the_terminal_is_said_after_the_terminal_is_given_back();
+    test_a_snapshot_is_reported_after_the_terminal_is_given_back();
     test_a_sign_has_a_bird_as_wide_as_its_cells_unless_it_is_told();
     test_a_sign_records_in_a_gif_and_a_cast();
     test_a_sign_survives_the_flock_growing_under_it();

@@ -5124,11 +5124,11 @@ int main(int argc, char **argv) {
             nanosleep(&delay, NULL);
         }
     }
-    /* The terminal is back before anything is said to the person at it. */
-    if (the_sign.failures > 0) {
-        restore_terminal();
-        sign_report_failure();
-    }
+    /* The terminal is back before anything is said to the person at it: why a sign
+     * could not be laid out, and what came of a snapshot. On the alternate screen,
+     * with output processing off, it would be thrown away with the screen. */
+    if (the_sign.failures > 0 || snapshot_path != NULL) restore_terminal();
+    sign_report_failure();
     /* A snapshot asked for and not written is a failed run, so a script that
      * takes one can tell. */
     int outcome = EXIT_SUCCESS;

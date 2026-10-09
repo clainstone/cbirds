@@ -10746,6 +10746,29 @@ static void test_an_edge_with_a_neighbour_is_a_door_and_pushes_nothing(void) {
     reset_test_config();
 }
 
+/* A bird that a hawk or the pointer has scattered from its place in a sign is the
+ * sign's still: at a door it is turned back as at a wall, where a free bird flies
+ * on through. */
+static void test_a_scattered_writer_is_turned_back_at_a_door_and_a_free_bird_is_not(void) {
+    reset_test_config();
+    set_test_screen(800, 480);
+    bird_t near_right = {.x = 790, .y = 240},
+           scattered_right = {.x = 790, .y = 240, .scattered = 0.5};
+    bird_t scattered_left = {.x = 5, .y = 240, .scattered = 0.01};
+
+    /* Walls: the same for both, as ever. */
+    assert(boundary_vector(&near_right).x < 0 && boundary_vector(&scattered_right).x < 0);
+    assert(boundary_vector(&scattered_left).x > 0);
+
+    open_edges.right = open_edges.left = 1;
+    assert(boundary_vector(&near_right).x == 0);     /* Free: no band, it goes through. */
+    assert(boundary_vector(&scattered_right).x < 0); /* Scattered: the wall it was. */
+    assert(boundary_vector(&scattered_left).x > 0);
+    scattered_right.scattered = 0; /* Home again, and free to be a bird of the flock. */
+    assert(boundary_vector(&scattered_right).x == 0);
+    reset_test_config();
+}
+
 static void test_a_hawk_is_not_turned_back_at_a_door(void) {
     reset_test_config();
     set_test_screen(800, 480);
@@ -11724,6 +11747,13 @@ static void fly_a_sign_through_a_busy_door(int with_a_hawk, int a_clock) {
         assert(config.birds >= 0 && config.birds <= MAX_BIRDS && live == config.birds);
         for (int i = 0; i < config.birds; i++)
             assert(isfinite(birds[i].x) && isfinite(birds[i].y) && isfinite(birds[i].direction));
+        /* A writer that a hawk has scattered is blown at the door and does not go out
+         * of it: it is turned back as at a wall, and is home in a moment, where one
+         * that went through would be a hole in the letters for a long time. */
+        for (int i = 0; i < config.birds; i++)
+            if (formation.writing && formation.slot[i] >= 0)
+                assert(birds[i].x + config.bird_size / 2.0 < screen.width + screen.turn_x &&
+                       birds[i].x + config.bird_size / 2.0 > -screen.turn_x);
         if (held && frame > 60 * 8) {
             for (int i = 0; i < config.birds; i++) {
                 int target = formation.slot[i];
@@ -12110,6 +12140,7 @@ int main(void) {
     test_a_whipped_pointer_scatters_a_sign_and_lights_the_letters_it_scattered();
     test_a_sign_recording_with_hawks_has_the_light_in_its_palette();
     test_an_edge_with_a_neighbour_is_a_door_and_pushes_nothing();
+    test_a_scattered_writer_is_turned_back_at_a_door_and_a_free_bird_is_not();
     test_a_hawk_is_not_turned_back_at_a_door();
     test_a_door_is_not_also_a_way_round_in_the_rain();
     test_taking_a_bird_out_keeps_everything_that_points_at_birds_valid();

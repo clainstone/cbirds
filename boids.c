@@ -3600,10 +3600,15 @@ static vector_t boundary_vector(const bird_t *bird) {
     if (legend_repels(bird, &boundary)) return boundary;
     if (the_rain_is_falling) return boundary; /* A door, so no wall. */
     /* An edge with a neighbour behind it pushes nothing: there is no wall there to
-     * turn away from, and a band would keep the flock from the door. */
-    if (bird->x < screen.turn_x && !open_edges.left)
+     * turn away from, and a band would keep the flock from the door. Except for a
+     * bird of a sign that has been scattered, which is the sign's and does not
+     * cross: for it the edge is the wall it is alone, or the hawk that blew it out
+     * would take it past the door and leave a hole in the letters for as long as it
+     * takes to come home. Only a bird of a sign has been scattered. */
+    int stays = bird->scattered > 0;
+    if (bird->x < screen.turn_x && (!open_edges.left || stays))
         boundary.x = edge_push(screen.turn_x - bird->x, screen.turn_x);
-    else if (bird->x > screen.width - screen.turn_x && !open_edges.right)
+    else if (bird->x > screen.width - screen.turn_x && (!open_edges.right || stays))
         boundary.x = -edge_push(bird->x - (screen.width - screen.turn_x), screen.turn_x);
     if (bird->y < screen.turn_y)
         boundary.y = edge_push(screen.turn_y - bird->y, screen.turn_y);

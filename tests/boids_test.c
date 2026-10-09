@@ -4290,6 +4290,28 @@ static void test_a_notch_survives_the_round_trip(void) {
            10); /* 52 is notch ten. */
 }
 
+/* A report is a cell of the screen. Billions of columns is not a place. */
+static void test_a_pointer_reported_beyond_the_screen_is_at_its_edge(void) {
+    reset_test_config();
+    apply_screen_size(80, 24, 80 * 8, 24 * 16);
+    mouse.present = 0;
+    read_mouse_report("<35;2147483647;5");
+    assert(mouse.present && mouse.x == 79.5 * screen.cell_width &&
+           mouse.y == 4.5 * screen.cell_height);
+    read_mouse_report("<35;5;2147483647");
+    assert(mouse.x == 4.5 * screen.cell_width && mouse.y == 23.5 * screen.cell_height);
+    read_mouse_report("<35;81;25");
+    assert(mouse.x == 79.5 * screen.cell_width && mouse.y == 23.5 * screen.cell_height);
+    /* On the screen it is where it says, and nothing at all is not a place. */
+    read_mouse_report("<35;80;24");
+    assert(mouse.x == 79.5 * screen.cell_width && mouse.y == 23.5 * screen.cell_height);
+    read_mouse_report("<35;3;2");
+    assert(mouse.x == 2.5 * screen.cell_width && mouse.y == 1.5 * screen.cell_height);
+    read_mouse_report("<35;0;2147483647");
+    assert(mouse.x == 2.5 * screen.cell_width && mouse.y == 1.5 * screen.cell_height);
+    mouse.present = 0;
+}
+
 static void test_the_pointer_moves_the_flock(void) {
     reset_test_config();
     legend_enabled = 0;
@@ -5925,6 +5947,7 @@ int main(void) {
     test_presets_set_every_notch();
     test_a_notch_survives_the_round_trip();
     test_the_pointer_moves_the_flock();
+    test_a_pointer_reported_beyond_the_screen_is_at_its_edge();
     test_the_shade_follows_the_heading();
     test_the_hawk_is_never_the_colour_of_the_flock();
     test_the_help_names_every_ramp();

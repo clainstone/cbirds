@@ -6,6 +6,7 @@ spatial_grid_test
 sign_test
 picture_test
 sky3d_test
+link_test
 boids_test
 options_test
 png_test

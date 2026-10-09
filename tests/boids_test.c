@@ -3,6 +3,7 @@
 #undef main
 
 #include <assert.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/wait.h>
@@ -148,6 +149,8 @@ static void reset_test_config(void) {
     sky_mode = 0;
     sky_picture_size = 0;
     ink_is_known = 0;
+    share_the_sky = 0;
+    memset(&open_edges, 0, sizeof(open_edges));
     apply_notches();
     reset_the_waves();
 }
@@ -10653,6 +10656,761 @@ static void test_a_sign_recording_with_hawks_has_the_light_in_its_palette(void) 
     reset_sign_state();
 }
 
+/* ------------------------------------------------------------------------ */
+/* One sky, several windows                                                    */
+/* ------------------------------------------------------------------------ */
+
+/* The window under test is the program's own, joined to the sky in a directory of
+ * the run's; the window beside it is a second endpoint that the test drives by
+ * hand. Whichever joins first is on the left. */
+static link_t beside;
+static char sky_directory[64];
+
+/* A directory for sockets. A socket's path may be 104 bytes at most on macOS,
+ * where $TMPDIR is fifty of them and the scratch directory more, so these live
+ * directly under /tmp. */
+static void make_a_short_directory(char *path, size_t size) {
+    snprintf(path, size, "/tmp/cbs.XXXXXX");
+    assert(mkdtemp(path) != NULL);
+}
+
+static void settle_the_windows(void) {
+    clock_state.seconds += 1.1;
+    for (int pass = 0; pass < 3; pass++) {
+        sky_keep_up();
+        link_update(&beside, clock_state.seconds);
+        link_set_room(&beside, 1, 1);
+        link_traveller_t t;
+        while (link_receive(&beside, &t)) {
+        }
+        while (link_receive(&the_row, &t)) { /* Only statuses are about at this point. */
+        }
+    }
+    sky_keep_up();
+}
+
+static void join_the_sky(int neighbour_on_the_right) {
+    make_a_short_directory(sky_directory, sizeof(sky_directory));
+    clock_state.seconds = 0;
+    if (neighbour_on_the_right) {
+        assert(link_open(&the_row, sky_directory, 0) == LINK_OK);
+        assert(link_open(&beside, sky_directory, 0) == LINK_OK);
+    } else {
+        assert(link_open(&beside, sky_directory, 0) == LINK_OK);
+        assert(link_open(&the_row, sky_directory, 0) == LINK_OK);
+    }
+    settle_the_windows();
+}
+
+static void leave_the_sky(void) {
+    link_close(&beside);
+    sky_leave();
+    assert(rmdir(sky_directory) == 0);
+}
+
+static void test_an_edge_with_a_neighbour_is_a_door_and_pushes_nothing(void) {
+    reset_test_config();
+    set_test_screen(800, 480);
+    bird_t at_left = {.x = 20, .y = 240}, at_right = {.x = 780, .y = 240};
+    bird_t on_top = {.x = 400, .y = 5}, below = {.x = 400, .y = 470};
+
+    /* Walls on all four sides, as ever. */
+    assert(boundary_vector(&at_left).x > 0 && boundary_vector(&at_right).x < 0);
+    assert(boundary_vector(&on_top).y > 0 && boundary_vector(&below).y < 0);
+    vector_t wall_left = boundary_vector(&at_left), wall_right = boundary_vector(&at_right);
+
+    /* A door on the right: nothing pushes on that side, the rest are as they were. */
+    open_edges.right = 1;
+    assert(boundary_vector(&at_right).x == 0 && boundary_vector(&at_right).y == 0);
+    assert(boundary_vector(&at_left).x == wall_left.x);
+    assert(boundary_vector(&on_top).y > 0 && boundary_vector(&below).y < 0);
+    /* Not even for a bird that has gone past it. */
+    bird_t beyond = {.x = 900, .y = 240};
+    assert(boundary_vector(&beyond).x == 0);
+
+    /* And on the left. */
+    open_edges.right = 0;
+    open_edges.left = 1;
+    assert(boundary_vector(&at_left).x == 0);
+    assert(boundary_vector(&at_right).x == wall_right.x);
+    bird_t before = {.x = -60, .y = 240};
+    assert(boundary_vector(&before).x == 0);
+    /* The top and the bottom are walls whatever stands at the sides, corners too. */
+    bird_t corner = {.x = 5, .y = 5};
+    assert(boundary_vector(&corner).y > 0 && boundary_vector(&corner).x == 0);
+
+    /* Shut again, it is the wall it was, bit for bit. */
+    open_edges.left = 0;
+    assert(boundary_vector(&at_left).x == wall_left.x &&
+           boundary_vector(&at_right).x == wall_right.x);
+    reset_test_config();
+}
+
+static void test_a_hawk_is_not_turned_back_at_a_door(void) {
+    reset_test_config();
+    set_test_screen(800, 480);
+    update_speed(); /* The step a hawk takes follows the screen, which has just changed. */
+    config.birds = 0;
+    config.hawks = 1;
+    static bird_t none[1];
+    double margin = hawk_draw_offset();
+
+    /* At a wall it is bounced into the screen and clamped to it. */
+    hawks[0] = (hawk_t){.x = 799 - margin + 5, .y = 240, .direction = 0, .prey = -1};
+    hunt(none);
+    assert(hawks[0].x <= 800 - 1 - margin + 1e-9);
+    hawks[0] = (hawk_t){.x = margin - 5, .y = 240, .direction = M_PI, .prey = -1};
+    hunt(none);
+    assert(hawks[0].x >= margin - 1e-9);
+
+    /* At a door it flies on, and the wall does not steer it either. */
+    open_edges.hawk_right = 1;
+    hawks[0] = (hawk_t){.x = 700, .y = 240, .direction = 0, .prey = -1};
+    vector_t wall = hawk_wall_vector(&hawks[0]);
+    assert(wall.x == 0);
+    for (int frame = 0; frame < 30; frame++) hunt(none);
+    assert(hawks[0].x > 800 - margin);
+    open_edges.hawk_right = 0;
+    open_edges.hawk_left = 1;
+    hawks[0] = (hawk_t){.x = 100, .y = 240, .direction = M_PI, .prey = -1};
+    assert(hawk_wall_vector(&hawks[0]).x == 0);
+    for (int frame = 0; frame < 30; frame++) hunt(none);
+    assert(hawks[0].x < margin);
+    /* A door for birds is not one for hawks: a neighbour full of hawks still has room for birds. */
+    open_edges.hawk_left = 0;
+    open_edges.left = 1;
+    hawks[0] = (hawk_t){.x = 100, .y = 240, .direction = M_PI, .prey = -1};
+    assert(hawk_wall_vector(&hawks[0]).x > 0);
+    reset_test_config();
+}
+
+static void test_a_door_is_not_also_a_way_round_in_the_rain(void) {
+    reset_test_config();
+    set_test_screen(800, 480);
+    bird_t bird = {.x = 810, .y = 100};
+    wrap_position(&bird);
+    assert(bird.x == 10); /* No neighbour: the rain wraps. */
+    open_edges.right = 1;
+    bird = (bird_t){.x = 810, .y = 100};
+    wrap_position(&bird);
+    assert(bird.x == 810); /* A neighbour: it is posted instead. */
+    bird = (bird_t){.x = -10, .y = 500};
+    wrap_position(&bird);
+    assert(bird.x == 790 && bird.y == 20); /* The other edge is still a wall to wrap at. */
+    reset_test_config();
+}
+
+static void test_taking_a_bird_out_keeps_everything_that_points_at_birds_valid(void) {
+    static bird_t birds[10];
+    reset_test_config();
+    config.birds = 9;
+    config.hawks = 4;
+    for (int i = 0; i < 9; i++) {
+        birds[i] = (bird_t){.x = 10.0 * i, .y = 5.0 * i, .trail_held = 3, .trail_at = 2};
+        for (int k = 0; k < TRAIL_LENGTH; k++) birds[i].trail_x[k] = 100.0 * i + k;
+    }
+    /* Prey: the bird that goes, the bird that moves, a bird that is not touched,
+     * and one that is not chasing anything. */
+    hawks[0] = (hawk_t){.prey = 4, .commitment = 0.5};
+    hawks[1] = (hawk_t){.prey = 8, .commitment = 0.5};
+    hawks[2] = (hawk_t){.prey = 2, .commitment = 0.5};
+    hawks[3] = (hawk_t){.prey = -1};
+
+    take_out_bird(birds, 4);
+    assert(config.birds == 8);
+    /* The last bird is in its place, whole: position, and its tail with it. */
+    assert(birds[4].x == 80 && birds[4].y == 40);
+    assert(birds[4].trail_x[1] == 801);
+    assert(birds[3].x == 30 && birds[5].x == 50 && birds[7].x == 70); /* Nobody else moved. */
+    assert(hawks[0].prey == -1 && hawks[0].commitment == 0);          /* Its bird has gone. */
+    assert(hawks[1].prey == 4 &&
+           hawks[1].commitment == 0.5); /* Its bird is where the last one went. */
+    assert(hawks[2].prey == 2 && hawks[3].prey == -1);
+    /* Both places keep tails (every fourth bird): the ring came with the bird. */
+    assert(birds[4].trail_held == 3 && birds[4].trail_at == 2);
+
+    /* A tail onto a place that has none starts again: it is not a ring of ghosts. */
+    take_out_bird(birds, 4); /* Brings in the bird that was index 7; 7 % 4 != 0. */
+    assert(birds[4].x == 70 && birds[4].trail_held == 0 && birds[4].trail_at == 0);
+    /* And where it came from a place with none, to one without, it is left as it is. */
+    take_out_bird(birds, 1);
+    assert(birds[1].x == 60 && config.birds == 6);
+    /* The last bird out leaves none, and that is a flock that can be asked for. */
+    while (config.birds > 0) take_out_bird(birds, config.birds - 1);
+    assert(config.birds == 0);
+
+    config.hawks = 3;
+    hawks[0].x = 1;
+    hawks[1].x = 2;
+    hawks[2].x = 3;
+    take_out_hawk(1);
+    assert(config.hawks == 2 && hawks[0].x == 1 && hawks[1].x == 3);
+    take_out_hawk(1);
+    take_out_hawk(0);
+    assert(config.hawks == 0);
+    reset_test_config();
+}
+
+static void test_birds_that_fly_out_of_a_door_are_posted_whole(void) {
+    static bird_t birds[8];
+    link_traveller_t got;
+
+    reset_test_config();
+    set_test_screen(800, 480);
+    formation_clear();
+    join_the_sky(1);
+    assert(open_edges.right && open_edges.hawk_right && !open_edges.left && !open_edges.hawk_left);
+
+    config.birds = 5;
+    for (int i = 0; i < 5; i++) birds[i] = (bird_t){.x = 100.0 * (i + 1), .y = 100, .direction = 1};
+    /* The middle of a bird is half its size from its corner: 15 pixels. */
+    birds[1] = (bird_t){.x = 800 - 15 + 3,
+                        .y = 120,
+                        .direction = 0.25,
+                        .flock = 0,
+                        .shade = 3,
+                        .layer = 0,
+                        .wing = 2,
+                        .wing_clock = 0.4,
+                        .gliding = 0.7};
+    birds[3] = (bird_t){.x = 800 - 15 - 0.5, .y = 50, .direction = 0.1}; /* Not yet. */
+    birds[4] = (bird_t){.x = 830, .y = 479, .direction = 6.0, .layer = 1, .wing_clock = 0.9};
+    config.hawks = 4;
+    hawks[0].prey = 4; /* Goes. */
+    hawks[1].prey = 1; /* Goes. */
+    hawks[2].prey = 3; /* Stays, but is moved into the place of the bird that goes. */
+    hawks[3].prey = 0;
+    int live = 5;
+
+    sky_hand_over(birds, &live);
+    assert(config.birds == 3 && live == 3);
+    assert(birds[0].x == 100 && birds[1].x == 800 - 15 - 0.5 && birds[2].x == 300);
+    assert(hawks[0].prey == -1 && hawks[1].prey == -1); /* Their birds have gone. */
+    assert(hawks[2].prey == 1 && hawks[3].prey == 0);   /* And the bird that moved is followed. */
+
+    /* In the order they were found, the highest first, whole. */
+    assert(link_receive(&beside, &got) == 1);
+    assert(got.kind == LINK_BIRD && got.enters == LINK_LEFT);
+    assert(fabs(got.height - 479.0 / 480) < 1e-12 && fabs(got.reach - 45) < 1e-9);
+    assert(got.direction == 6.0 && got.layer == 1 && got.wing_clock == 0.9);
+    assert(link_receive(&beside, &got) == 1);
+    assert(got.kind == LINK_BIRD && got.enters == LINK_LEFT);
+    assert(fabs(got.height - 0.25) < 1e-12 && fabs(got.reach - 3) < 1e-9);
+    assert(got.direction == 0.25 && got.shade == 3 && got.wing == 2);
+    assert(got.wing_clock == 0.4 && got.holding == 0.7 && got.flock == 0 && got.layer == 0);
+    assert(link_receive(&beside, &got) == 0);
+
+    /* A bird a very long way out of a door that would not open is still sent as
+     * one the format believes, and lands near the edge it was meant for. */
+    assert(link_edge_open(&the_row, LINK_RIGHT, LINK_BIRD));
+    bird_t straggler = {.x = 5e5, .y = 100};
+    assert(traveller_of_bird(&straggler, 5e5).reach == 800);
+    assert(traveller_of_hawk(&hawks[0], 5e5).reach == 800);
+
+    /* Nothing leaves by an edge that is not a door, however far out. */
+    birds[0].x = -200;
+    sky_hand_over(birds, &live);
+    assert(config.birds == 3 && link_receive(&beside, &got) == 0);
+
+    leave_the_sky();
+    reset_test_config();
+}
+
+static void test_birds_come_in_by_the_facing_edge_at_the_same_height(void) {
+    static bird_t birds[16];
+    link_traveller_t post = {.kind = LINK_BIRD,
+                             .height = 0.5,
+                             .reach = 10,
+                             .direction = 1.0,
+                             .flock = 2,
+                             .shade = 7,
+                             .layer = 1,
+                             .wing = 3,
+                             .wing_clock = 0.6,
+                             .holding = 0.9};
+
+    reset_test_config();
+    render_mode = RENDER_UNSET; /* Which clips at the edge, as the text renderers do. */
+    set_test_screen(900, 400);  /* A different size from the sender's: only the share counts. */
+    formation_clear();
+    join_the_sky(0); /* The neighbour is on the left. */
+    assert(open_edges.left && !open_edges.right);
+    config.birds = 2;
+    int live = 2;
+
+    /* Out of its right edge, into ours by the left. */
+    assert(link_send(&beside, LINK_RIGHT, &post, 1) == 1);
+    sky_take_in(birds, &live);
+    assert(config.birds == 3 && live == 3);
+    const bird_t *in = &birds[2];
+    assert(fabs(in->x - (10 - 15)) < 1e-9 && fabs(in->y - 200) < 1e-9); /* Its middle 10 in. */
+    assert(in->direction == 1.0 && in->frame == direction_frame(1.0));
+    assert(in->wing == 3 && in->wing_clock == 0.6 && in->gliding == 0.9);
+    /* This window has one flock, and no far sky: what it was means what it can. */
+    assert(in->flock == 0 && in->layer == 0 && in->shade >= 0 && in->shade < palette_shades());
+    assert(in->trail_held == 0 && in->trail_at == 0);
+
+    /* With a far sky of its own, a far bird stays far; and with three flocks,
+     * the flock it was. */
+    deep_look = 1;
+    config.flocks = 3;
+    assert(link_send(&beside, LINK_RIGHT, &post, 1) == 1);
+    sky_take_in(birds, &live);
+    assert(config.birds == 4 && birds[3].layer == 1 && birds[3].flock == 2);
+    deep_look = 0;
+    config.flocks = 1;
+
+    /* The far end of a window with the door on its right. */
+    leave_the_sky();
+    join_the_sky(1);
+    post.reach = 30;
+    post.height = 0.25;
+    assert(link_send(&beside, LINK_LEFT, &post, 1) == 1);
+    config.birds = 0;
+    live = 0;
+    sky_take_in(birds, &live);
+    assert(config.birds == 1 && live == 1);
+    assert(fabs(birds[0].x - (900 - 30 - 15)) < 1e-9 && fabs(birds[0].y - 100) < 1e-9);
+
+    /* Kitty draws only what fits the window, so there it comes in wholly: the
+     * text renderers clip, and draw it as far in as it is. */
+    render_mode = RENDER_KITTY;
+    post.reach = 4;
+    assert(link_send(&beside, LINK_LEFT, &post, 1) == 1);
+    sky_take_in(birds, &live);
+    assert(birds[1].x == 900 - config.bird_size);
+    render_mode = RENDER_UNSET;
+    link_traveller_t from_the_left = post;
+    from_the_left.reach = 4;
+    leave_the_sky();
+    join_the_sky(0);
+    render_mode = RENDER_KITTY;
+    assert(link_send(&beside, LINK_RIGHT, &from_the_left, 1) == 1);
+    config.birds = 0;
+    live = 0;
+    sky_take_in(birds, &live);
+    assert(birds[0].x == 0);
+    render_mode = RENDER_UNSET;
+    leave_the_sky();
+    join_the_sky(1);
+    config.birds = 1;
+    live = 1;
+
+    /* Never so far in as to be across the window, whatever it says. */
+    post.reach = 9000;
+    assert(link_send(&beside, LINK_LEFT, &post, 1) == 1);
+    sky_take_in(birds, &live);
+    assert(birds[1].x >= 900 - 900 / 4.0 - 15 - 1e-9);
+    /* A share past the bottom is the bottom. */
+    post.reach = 1;
+    post.height = 1.0;
+    assert(link_send(&beside, LINK_LEFT, &post, 1) == 1);
+    sky_take_in(birds, &live);
+    assert(birds[2].y <= 399);
+
+    leave_the_sky();
+    reset_test_config();
+}
+
+static void test_a_bird_never_comes_in_behind_the_panel(void) {
+    static bird_t birds[4];
+    link_traveller_t post = {.kind = LINK_BIRD, .height = 0.02, .reach = 4, .direction = 0};
+
+    reset_test_config();
+    legend_enabled = 1;
+    apply_screen_size(100, 40, 800, 640);
+    assert(screen.legend_width > 0);
+    formation_clear();
+    join_the_sky(0);
+    config.birds = 0;
+    int live = 0;
+    assert(link_send(&beside, LINK_RIGHT, &post, 1) == 1);
+    sky_take_in(birds, &live);
+    assert(config.birds == 1);
+    assert(!legend_turn_zone(birds[0].x, birds[0].y));
+    assert(!sprite_overlaps_legend(birds[0].x, birds[0].y));
+    leave_the_sky();
+    legend_enabled = 0;
+    reset_test_config();
+}
+
+static void test_a_hawk_crosses_with_what_it_was_doing(void) {
+    static bird_t birds[2];
+    link_traveller_t got;
+
+    reset_test_config();
+    render_mode = RENDER_UNSET;
+    set_test_screen(800, 480);
+    formation_clear();
+    join_the_sky(1);
+    config.birds = 0;
+    config.hawks = 2;
+    hawks[0] = (hawk_t){.x = 300, .y = 100, .prey = -1};
+    hawks[1] = (hawk_t){.x = 801.5,
+                        .y = 240,
+                        .direction = 0.5,
+                        .prey = 7,
+                        .commitment = 0.3,
+                        .passing = 0.2,
+                        .wing = 2,
+                        .wing_clock = 0.3};
+    int live = 0;
+    sky_hand_over(birds, &live);
+    assert(config.hawks == 1 && hawks[0].x == 300);
+    assert(link_receive(&beside, &got) == 1);
+    assert(got.kind == LINK_HAWK && got.enters == LINK_LEFT);
+    assert(fabs(got.height - 0.5) < 1e-12 && fabs(got.reach - 1.5) < 1e-12);
+    assert(got.direction == 0.5 && got.wing == 2 && got.wing_clock == 0.3 && got.holding == 0.2);
+
+    /* And one coming in lands by the edge it came to, hunting for its own prey. */
+    got.enters = LINK_LEFT;
+    assert(link_send(&beside, LINK_LEFT, &got, 1) == 1); /* Sent right: it comes in at the right. */
+    sky_take_in(birds, &live);
+    assert(config.hawks == 2);
+    assert(fabs(hawks[1].x - (800 - 1.5)) < 1e-9 && fabs(hawks[1].y - 240) < 1e-9);
+    assert(hawks[1].prey == -1 && hawks[1].commitment == 0 && hawks[1].passing == 0.2);
+    assert(hawks[1].wing == 2 && hawks[1].frame == direction_frame(0.5));
+
+    leave_the_sky();
+    reset_test_config();
+}
+
+static void test_a_full_window_says_so_and_its_neighbours_treat_the_edge_as_a_wall(void) {
+    link_traveller_t t;
+    static bird_t birds[MAX_BIRDS + 8];
+
+    reset_test_config();
+    set_test_screen(800, 480);
+    formation_clear();
+    join_the_sky(1);
+    assert(link_edge_open(&beside, LINK_LEFT, LINK_BIRD));
+
+    /* A little short of full, so the birds on their way still find room. */
+    config.birds = MAX_BIRDS - SKY_HEADROOM;
+    sky_keep_up();
+    while (link_receive(&beside, &t)) {
+    }
+    assert(!link_edge_open(&beside, LINK_LEFT, LINK_BIRD));
+    assert(link_edge_open(&beside, LINK_LEFT, LINK_HAWK));
+
+    /* What comes in anyway, up to the last place, is taken, and not one more. */
+    config.birds = MAX_BIRDS - 1;
+    link_traveller_t post = {.kind = LINK_BIRD, .height = 0.5, .reach = 1};
+    link_traveller_t four[4] = {post, post, post, post};
+    /* The neighbour will not send into a wall, so this one goes by hand. */
+    link_set_room(&the_row, 1, 1);
+    while (link_receive(&beside, &t)) {
+    }
+    assert(link_send(&beside, LINK_LEFT, four, 4) == 4);
+    int live = config.birds;
+    sky_take_in(birds, &live);
+    assert(config.birds == MAX_BIRDS && live == MAX_BIRDS);
+
+    /* Room again and the door is open again. */
+    config.birds = 100;
+    sky_keep_up();
+    while (link_receive(&beside, &t)) {
+    }
+    assert(link_edge_open(&beside, LINK_LEFT, LINK_BIRD));
+
+    /* Hawks have a limit of their own. */
+    config.hawks = MAX_HAWKS;
+    sky_keep_up();
+    while (link_receive(&beside, &t)) {
+    }
+    assert(link_edge_open(&beside, LINK_LEFT, LINK_BIRD));
+    assert(!link_edge_open(&beside, LINK_LEFT, LINK_HAWK));
+
+    /* A window that is shut to hawks keeps its own at the wall, until it is not. */
+    leave_the_sky();
+    reset_test_config();
+}
+
+static void test_a_neighbour_that_goes_turns_the_door_back_into_a_wall(void) {
+    static bird_t birds[4];
+
+    reset_test_config();
+    set_test_screen(800, 480);
+    formation_clear();
+    join_the_sky(1);
+    assert(open_edges.right);
+    link_close(&beside); /* The window beside it is closed. */
+    clock_state.seconds += 1.1;
+    sky_keep_up();
+    assert(!open_edges.right && !open_edges.hawk_right);
+
+    /* A bird beyond the edge is no longer posted anywhere, and the wall draws it back. */
+    config.birds = 1;
+    birds[0] = (bird_t){.x = 850, .y = 100};
+    int live = 1;
+    sky_hand_over(birds, &live);
+    assert(config.birds == 1);
+    assert(boundary_vector(&birds[0]).x < 0);
+
+    sky_leave();
+    assert(rmdir(sky_directory) == 0);
+    reset_test_config();
+}
+
+/* A flock heading for an edge: through a door it goes and out of the window, and
+ * against a wall it stays. The neighbour is a sink here, taking what leaves. */
+static void test_an_open_edge_lets_the_flock_through_and_a_wall_does_not(void) {
+    enum { N = 120, FRAMES = 240 };
+    static bird_t birds[N], snapshot[N];
+    spatial_grid_t grid;
+
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    for (int door = 0; door <= 1; door++) {
+        reset_test_config();
+        set_test_screen(800, 480);
+        formation_clear();
+        config.birds = N;
+        open_edges.right = door;
+        assert(spatial_grid_prepare(&grid, screen.width, screen.height, N) == SPATIAL_GRID_OK);
+        seed_random(11);
+        for (int i = 0; i < N; i++) {
+            place_one_bird(&birds[i], i);
+            birds[i].x = 540 + 200 * random_unit(); /* Inside the right hand band. */
+            birds[i].y = 100 + 280 * random_unit();
+            birds[i].direction = 0;
+        }
+        int gone = 0, outside_most = 0;
+        for (int frame = 0; frame < FRAMES; frame++) {
+            memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
+            assert(spatial_grid_build(&grid, config.birds, read_bird_position, snapshot) ==
+                   SPATIAL_GRID_OK);
+            fly(birds, snapshot, &grid);
+            for (int i = config.birds - 1; i >= 0; i--) {
+                if (door && birds[i].x + config.bird_size / 2.0 >= screen.width) {
+                    take_out_bird(birds, i);
+                    gone++;
+                } else if (birds[i].x > screen.width + outside_most) {
+                    outside_most = (int)(birds[i].x - screen.width);
+                }
+            }
+        }
+        if (door) {
+            /* Not trapped by a band that is not there: nearly all are through, and
+             * the rest are still flying, not pinned. */
+            assert(gone >= N * 9 / 10);
+        } else {
+            /* A wall turns every one of them: none leaves, and none strays far. */
+            assert(gone == 0 && config.birds == N && outside_most < screen.turn_x);
+        }
+    }
+    spatial_grid_destroy(&grid);
+    reset_test_config();
+}
+
+static void test_a_window_with_no_birds_flies(void) {
+    static bird_t birds[1], snapshot[1];
+    spatial_grid_t grid;
+    kitty_graphics_t graphics;
+
+    reset_test_config();
+    set_test_screen(800, 480);
+    config.birds = 0;
+    config.hawks = 2;
+    place_hawks();
+    assert(grid_items() == 1);
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, grid_items()) ==
+           SPATIAL_GRID_OK);
+    assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
+    render_mode = RENDER_KITTY;
+    for (int frame = 0; frame < 30; frame++) {
+        assert(spatial_grid_build(&grid, 0, read_bird_position, snapshot) == SPATIAL_GRID_OK);
+        graphics.length = 0;
+        assert(render_frame(&graphics, birds, snapshot, &grid) == KITTY_GRAPHICS_OK);
+    }
+    /* The hawks are still on the screen, looking for something. */
+    assert(hawks[0].x >= 0 && hawks[0].x <= 800 && hawks[1].prey == -1);
+    kitty_graphics_destroy(&graphics);
+    spatial_grid_destroy(&grid);
+    render_mode = RENDER_UNSET;
+
+    /* And one bird more can be asked for, as the + key does, from nothing. */
+    bird_t *more = malloc(sizeof(*more)), *more_snapshot = malloc(sizeof(*more_snapshot));
+    assert(more != NULL && more_snapshot != NULL);
+    assert(resize_the_flock(&more, &more_snapshot, 0, 1) == 1);
+    assert(more[0].x >= 0 && more[0].x <= screen.width);
+    free(more);
+    free(more_snapshot);
+    reset_test_config();
+}
+
+static void test_a_shared_sky_has_room_for_all_it_may_take(void) {
+    bird_t *birds = malloc(sizeof(*birds));
+    bird_t *snapshot = malloc(sizeof(*snapshot));
+    assert(birds != NULL && snapshot != NULL);
+    reset_test_config();
+    config.birds = 800;
+
+    /* Alone, the arrays are the size of the flock, as they have always been. */
+    assert(bird_room(1) == 1 && bird_room(500) == 500);
+    share_the_sky = 1;
+    assert(bird_room(1) == MAX_BIRDS && bird_room(500) == MAX_BIRDS);
+    assert(resize_the_flock(&birds, &snapshot, 1, 40) == 1);
+    /* Room for a full window from the first key, so that arrivals never need a
+     * second allocation: writing the last place is the proof under a sanitizer. */
+    birds[MAX_BIRDS - 1] = (bird_t){.x = 1};
+    snapshot[MAX_BIRDS - 1] = (bird_t){.x = 1};
+    share_the_sky = 0;
+    free(birds);
+    free(snapshot);
+    reset_test_config();
+}
+
+static void test_the_link_option_is_in_the_table_and_off_by_default(void) {
+    char error[160];
+    char *argv[] = {"cbirds", "--link", NULL};
+    const option_t *link = NULL;
+    FILE *help;
+    char path[512], text[16384];
+
+    reset_test_config();
+    for (int i = 0; i < OPTION_COUNT; i++)
+        if (strcmp(OPTIONS[i].name, "link") == 0) link = &OPTIONS[i];
+    assert(link != NULL && link->kind == OPTION_FLAG && link->target == &share_the_sky);
+    assert(!link->essential && link->shorthand == 0);
+    /* In the voice of the other rows: lower case, short, no stop. */
+    assert(link->help[0] >= 'a' && link->help[0] <= 'z');
+    assert(link->help[strlen(link->help) - 1] != '.' && strlen(link->help) < 60);
+
+    assert(share_the_sky == 0 && !the_row.opened);
+    assert(options_parse(OPTIONS, OPTION_COUNT, 2, argv, error, sizeof(error)) == OPTIONS_OK);
+    assert(share_the_sky == 1);
+    share_the_sky = 0;
+
+    /* The help and the completions come off the same row. */
+    scratch_file(path, sizeof(path), "help.txt");
+    help = fopen(path, "w+");
+    assert(help != NULL);
+    usage(help, "cbirds", 1);
+    rewind(help);
+    size_t length = fread(text, 1, sizeof(text) - 1, help);
+    text[length] = '\0';
+    assert(strstr(text, "--link") != NULL && strstr(text, link->help) != NULL);
+    assert(strstr(text, "cbirds --link") != NULL);
+    fclose(help);
+    static const char *const SHELLS[] = {"bash", "zsh", "fish"};
+    for (int s = 0; s < 3; s++) {
+        help = fopen(path, "w+");
+        assert(help != NULL);
+        assert(options_completion(help, SHELLS[s], "cbirds", OPTIONS, OPTION_COUNT));
+        rewind(help);
+        length = fread(text, 1, sizeof(text) - 1, help);
+        text[length] = '\0';
+        assert(strstr(text, "link") != NULL);
+        fclose(help);
+    }
+    assert(unlink(path) == 0);
+    reset_test_config();
+}
+
+/* Starts the program's own option reading in a child and says how it ended. */
+static int read_options_in_a_child(char **argv, int argc, char *message, size_t size) {
+    int errors[2];
+    assert(pipe(errors) == 0);
+    fflush(NULL);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        close(errors[0]);
+        if (dup2(errors[1], STDERR_FILENO) < 0) _exit(99);
+        read_options(argc, argv);
+        _exit(0);
+    }
+    close(errors[1]);
+    ssize_t got = read(errors[0], message, size - 1);
+    message[got > 0 ? got : 0] = '\0';
+    close(errors[0]);
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status));
+    return WEXITSTATUS(status);
+}
+
+static void test_a_shared_sky_cannot_be_benchmarked_or_recorded(void) {
+    char message[512];
+    char *bench[] = {"cbirds", "--link", "--bench", "5", NULL};
+    char *record[] = {"cbirds", "--record", "x.gif", "--link", NULL};
+    char *live[] = {"cbirds", "--link", "--frames", "5", "--hawks", "1", NULL};
+
+    assert(read_options_in_a_child(bench, 4, message, sizeof(message)) == EXIT_USAGE);
+    assert(strstr(message, "--link") != NULL && strstr(message, "--bench") != NULL);
+    assert(read_options_in_a_child(record, 4, message, sizeof(message)) == EXIT_USAGE);
+    assert(strstr(message, "--link") != NULL && strstr(message, "--record") != NULL);
+    /* A live run, with whatever else a live run takes, is fine. */
+    assert(read_options_in_a_child(live, 6, message, sizeof(message)) == 0);
+    assert(message[0] == '\0');
+}
+
+/* A window that is told to die leaves no socket behind, whichever way. */
+static void test_a_signal_removes_the_socket(void) {
+    static const int SIGNALS[] = {SIGINT, SIGTERM, SIGHUP, SIGQUIT};
+    char directory[64];
+
+    make_a_short_directory(directory, sizeof(directory));
+    for (size_t s = 0; s < sizeof(SIGNALS) / sizeof(*SIGNALS); s++) {
+        fflush(NULL);
+        pid_t child = fork();
+        assert(child >= 0);
+        if (child == 0) {
+            setenv("XDG_RUNTIME_DIR", directory, 1);
+            terminal_is_raw = terminal_restored = alt_screen_is_on = sprites_uploaded = 0;
+            share_the_sky = 1;
+            install_signal_handlers();
+            sky_join();
+            raise(SIGNALS[s]);
+            _exit(99);
+        }
+        int status = 0;
+        assert(waitpid(child, &status, 0) == child);
+        assert(WIFEXITED(status) && WEXITSTATUS(status) == 128 + SIGNALS[s]);
+        char sky_path[100];
+        snprintf(sky_path, sizeof(sky_path), "%s/cbirds", directory);
+        DIR *dir = opendir(sky_path);
+        assert(dir != NULL);
+        int left = 0;
+        for (struct dirent *entry; (entry = readdir(dir)) != NULL;)
+            if (entry->d_name[0] != '.') left++;
+        closedir(dir);
+        assert(left == 0);
+    }
+    char sky_path[100];
+    snprintf(sky_path, sizeof(sky_path), "%s/cbirds", directory);
+    assert(rmdir(sky_path) == 0);
+    assert(rmdir(directory) == 0);
+}
+
+/* The way out through a closed pipe, which takes the normal exit and so the
+ * atexit hook: with a sky joined, the socket goes with it. */
+static void test_leaving_through_exit_removes_the_socket(void) {
+    char directory[64], sky_path[100];
+
+    make_a_short_directory(directory, sizeof(directory));
+    snprintf(sky_path, sizeof(sky_path), "%s/cbirds", directory);
+    fflush(NULL);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        setenv("XDG_RUNTIME_DIR", directory, 1);
+        share_the_sky = 1;
+        sky_join();
+        exit(7);
+    }
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 7);
+    DIR *dir = opendir(sky_path);
+    assert(dir != NULL);
+    for (struct dirent *entry; (entry = readdir(dir)) != NULL;) assert(entry->d_name[0] == '.');
+    closedir(dir);
+    assert(rmdir(sky_path) == 0);
+    assert(rmdir(directory) == 0);
+}
+
 int main(void) {
     make_scratch();
     trig_lookup_init();
@@ -10852,6 +11610,23 @@ int main(void) {
     test_a_new_hawk_starts_from_nothing();
     test_a_whipped_pointer_scatters_a_sign_and_lights_the_letters_it_scattered();
     test_a_sign_recording_with_hawks_has_the_light_in_its_palette();
+    test_an_edge_with_a_neighbour_is_a_door_and_pushes_nothing();
+    test_a_hawk_is_not_turned_back_at_a_door();
+    test_a_door_is_not_also_a_way_round_in_the_rain();
+    test_taking_a_bird_out_keeps_everything_that_points_at_birds_valid();
+    test_birds_that_fly_out_of_a_door_are_posted_whole();
+    test_birds_come_in_by_the_facing_edge_at_the_same_height();
+    test_a_bird_never_comes_in_behind_the_panel();
+    test_a_hawk_crosses_with_what_it_was_doing();
+    test_a_full_window_says_so_and_its_neighbours_treat_the_edge_as_a_wall();
+    test_a_neighbour_that_goes_turns_the_door_back_into_a_wall();
+    test_an_open_edge_lets_the_flock_through_and_a_wall_does_not();
+    test_a_window_with_no_birds_flies();
+    test_a_shared_sky_has_room_for_all_it_may_take();
+    test_the_link_option_is_in_the_table_and_off_by_default();
+    test_a_shared_sky_cannot_be_benchmarked_or_recorded();
+    test_a_signal_removes_the_socket();
+    test_leaving_through_exit_removes_the_socket();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);
     return 0;

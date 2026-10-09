@@ -1406,10 +1406,20 @@ static const double SIGN_BREATH_LIFT = 0.5;
 static const double POINTER_MOVING_SECONDS = 0.6;
 static const double SCATTER_SECONDS = 1.2;
 static const double SCATTER_STAGGER = 1.0;
-/* A hawk scatters the places it is within this share of the way to where the
- * flock starts to flee it, for a shorter time than the pointer does. */
-static const double HAWK_SCATTER = 0.35;
-static const double HAWK_SCATTER_SECONDS = 0.4, HAWK_SCATTER_STAGGER = 0.6;
+/* A hawk scatters the places it passes within this share of the way to where the
+ * flock starts to flee it, for a shorter time than the pointer does. A hawk hunts
+ * the free birds, and those are all round a sign, so it is over the sign a good
+ * part of the time and not only when it dives. It scattered at 0.35 of the reach
+ * for 0.4 to 1.0 seconds, and on 800 birds at 96 by 26 cells 43% of the writers
+ * were scattered on average with one hawk up (a clock: 40%) and 67% with two: a
+ * sign was in pieces all the time. At 0.08, which is eleven pixels there, about
+ * the hawk's own half width, and 0.2 to 0.4 seconds, the share is 5 to 7% with
+ * one hawk and 9 to 12% with two, at 25 frames a second and at 60, at 96 by 26 and
+ * at 80 by 24, over twelve seeds. A hawk flown straight through the middle of a
+ * line of letters still scatters 26% of HELLO and 16% of 10:09, every bird of them
+ * three letter cells from home, at either rate. */
+static const double HAWK_SCATTER = 0.08;
+static const double HAWK_SCATTER_SECONDS = 0.2, HAWK_SCATTER_STAGGER = 0.2;
 /* A lock command is started by the key that is about to be pressed: input in the
  * first half second is whatever started it. That is the first half second of the
  * program and not of its first frame: a Kitty terminal is sent its sprites before
@@ -2156,6 +2166,7 @@ typedef struct {
     double passing;    /* Seconds left of a straight run out of the flock. */
     int wing;          /* A hawk soars, wings out, and beats them only in the dive. */
     double wing_clock;
+    double stride; /* How far it flew in the last step, along its heading. */
 } hawk_t;
 
 static hawk_t hawks[MAX_HAWKS];
@@ -2214,6 +2225,7 @@ static void place_one_hawk(int i) {
     hawks[i].passing = 0;
     hawks[i].wing = 0;
     hawks[i].wing_clock = 0;
+    hawks[i].stride = 0;
 }
 
 static void place_hawks(void) {
@@ -2479,8 +2491,9 @@ static void hunt(const bird_t *birds) {
             hawk->direction =
                 turn_towards(hawk->direction, normalized_angle(want_y, want_x), hawk_turn_limit());
 
-        hawk->x += config.speed * pace * cos(hawk->direction);
-        hawk->y += config.speed * pace * sin(hawk->direction);
+        hawk->stride = config.speed * pace;
+        hawk->x += hawk->stride * cos(hawk->direction);
+        hawk->y += hawk->stride * sin(hawk->direction);
 
         /* Turned back at the walls rather than pinned against them: a clamp left
          * it sliding along an edge for a quarter of every run. The margin is half
@@ -3024,13 +3037,23 @@ static int pointer_is_moving(void) {
     return mouse.present && clock_state.seconds - mouse.moved_at < POINTER_MOVING_SECONDS;
 }
 
-/* Whether the place is under a hawk: nearer than most of the way to where the
- * flock starts to flee it. */
+/* Whether the place is under a hawk: within HAWK_SCATTER of the way to where the
+ * flock starts to flee it of anywhere the hawk was in the last step. At the shipped
+ * pace a hawk flies 23 pixels a frame at 60 frames a second and 56 at 25, against a
+ * reach of 11, and a point test saw only the places it stood over at the end of a
+ * frame: through a line of letters it scattered 21% of the writers live and 10% in
+ * a recording. The step it flew is a segment. */
 static int a_hawk_is_over(double x, double y) {
     double reach = HAWK_SCATTER * hawk_reach();
     for (int i = 0; i < config.hawks; i++) {
-        double dx = hawks[i].x - x, dy = hawks[i].y - y;
-        if (dx * dx + dy * dy < reach * reach) return 1;
+        double along_x = cos(hawks[i].direction), along_y = sin(hawks[i].direction);
+        double dx = x - hawks[i].x, dy = y - hawks[i].y;
+        /* Where on the step the place is nearest: the end of it, the start, or between. */
+        double behind = dx * along_x + dy * along_y;
+        if (behind > 0) behind = 0;
+        if (behind < -hawks[i].stride) behind = -hawks[i].stride;
+        double off_x = dx - behind * along_x, off_y = dy - behind * along_y;
+        if (off_x * off_x + off_y * off_y < reach * reach) return 1;
     }
     return 0;
 }

@@ -3160,6 +3160,200 @@ static void lay_out_a_sign_on(world_t *world, int columns, int rows, int fps, co
     assert(the_sign.up);
 }
 
+/* A hawk is over the places it flew over in the last step and not only the ones it
+ * ended it on: it flies two or three times its reach in a frame. */
+static void test_a_hawk_scatters_the_places_along_the_step_it_flew(void) {
+    reset_sign_state();
+    apply_screen_size(200, 50, 1600, 800);
+    config.hawks = 1;
+    double reach = HAWK_SCATTER * hawk_reach();
+    hawks[0] = (hawk_t){.x = 500, .y = 300, .direction = 0, .stride = 100};
+    assert(a_hawk_is_over(500, 300));                /* Where it is. */
+    assert(a_hawk_is_over(420, 300 + 0.9 * reach));  /* Behind it, on the step... */
+    assert(!a_hawk_is_over(420, 300 + 1.1 * reach)); /* ...and not off to one side. */
+    assert(a_hawk_is_over(400, 300));                /* Where the step began. */
+    assert(!a_hawk_is_over(400 - 1.1 * reach, 300)); /* Not before that. */
+    assert(a_hawk_is_over(500 + 0.9 * reach, 300));  /* Its own reach beyond it... */
+    assert(!a_hawk_is_over(500 + 1.1 * reach, 300)); /* ...and not where it has yet to go. */
+    /* Whichever way it heads: down the screen, the step is above it. */
+    hawks[0].direction = M_PI / 2;
+    assert(a_hawk_is_over(500, 230) && !a_hawk_is_over(500, 370));
+    assert(a_hawk_is_over(500 + 0.9 * reach, 230) && !a_hawk_is_over(500 + 1.1 * reach, 230));
+    /* A hawk that has flown nowhere is a point, as it was. */
+    hawks[0].stride = 0;
+    assert(!a_hawk_is_over(500, 230) && a_hawk_is_over(500, 300 + 0.9 * reach));
+    /* And the hunt is where the stride comes from: the step it just took. */
+    config.hawks = 0;
+    reset_sign_state();
+    apply_screen_size(200, 50, 1600, 800);
+    world_t world;
+    open_the_world(&world, 200, 3);
+    config.hawks = 1;
+    place_hawks();
+    assert(hawks[0].stride == 0);
+    fly_the_world(&world, 0, 1, 60);
+    assert(fabs(hawks[0].stride - config.speed * HAWK_SPEED) < 1e-9 ||
+           fabs(hawks[0].stride - config.speed * HAWK_DIVE_SPEED) < 1e-9);
+    config.hawks = 0;
+    close_the_world(&world);
+    reset_sign_state();
+}
+
+/* The share of a sign's writers that are scattered, over the seconds it is held,
+ * with this many hawks hunting the flock round it. */
+static double share_of_a_sign_scattered(const char *text, int hawks_up, int fps, int seed) {
+    world_t world;
+    lay_out_a_sign_on(&world, 96, 26, fps, text, 800, seed);
+    config.hawks = hawks_up;
+    place_hawks();
+    double sum = 0;
+    int frames = 0;
+    for (double at = 1.0 / fps; at < 22; at += 1.0 / fps) {
+        step_the_world(&world, at);
+        if (at < 8 || !the_sign.up) continue; /* Written by then, and held. */
+        int writers = 0, away = 0;
+        for (int i = 0; i < config.birds; i++) {
+            if (formation.slot[i] < 0) continue;
+            writers++;
+            away += world.birds[i].scattered > 0;
+        }
+        sum += (double)away / writers;
+        frames++;
+    }
+    assert(frames > 0 && the_sign.up);
+    config.hawks = 0;
+    close_the_world(&world);
+    reset_sign_state();
+    return sum / frames;
+}
+
+/* A hawk hunts the free birds, which are all round a sign, so it is over the sign
+ * much of the time. On 800 birds at 96 by 26 cells it left 43% of the writers
+ * scattered with one hawk and 67% with two, and a clock could not be read; now 5 to
+ * 6% and 10 to 11%. */
+static void test_one_hawk_leaves_a_sign_readable(void) {
+    for (int seed = 5; seed <= 6; seed++) {
+        double one = share_of_a_sign_scattered("HELLO WORLD", 1, 25, seed);
+        double two = share_of_a_sign_scattered("HELLO WORLD", 2, 25, seed);
+        assert(one > 0.01); /* A hawk over the sign does scatter it... */
+        assert(one < 0.10); /* ...and a sign with one hawk up is whole nearly always. */
+        assert(two > one && two < 0.15);
+    }
+    /* A clock is the same story, and at the rate a person sees it. */
+    reset_sign_state();
+    apply_screen_size(96, 26, 96 * 8, 26 * 16);
+    config.pace_notch = DEFAULT_PACE_NOTCH;
+    apply_notches();
+    frame_seconds = 1.0 / 60;
+    update_speed();
+    the_sign.kind = SIGN_CLOCK;
+    the_sign.virtual_clock = 1;
+    the_sign.origin = local_time(10, 9, 0);
+    config.bird_size = 0;
+    settle_the_bird_size();
+    begin_the_intro();
+    world_t world;
+    open_the_world(&world, 800, 5);
+    sign_advance(world.birds);
+    assert(the_sign.up);
+    config.hawks = 1;
+    place_hawks();
+    double sum = 0;
+    int frames = 0;
+    for (double at = 1.0 / 60; at < 30; at += 1.0 / 60) {
+        step_the_world(&world, at);
+        if (at < 8 || !the_sign.up) continue;
+        int writers = 0, away = 0;
+        for (int i = 0; i < config.birds; i++) {
+            if (formation.slot[i] < 0) continue;
+            writers++;
+            away += world.birds[i].scattered > 0;
+        }
+        sum += (double)away / writers;
+        frames++;
+    }
+    assert(frames > 0 && sum / frames < 0.10);
+    config.hawks = 0;
+    close_the_world(&world);
+    reset_sign_state();
+}
+
+/* The other side of it: a hawk that dives straight through a line of letters takes
+ * a good part of them from their places, a quarter of the line at 96 by 26 cells,
+ * and as many places in a recording at 25 frames a second as live at 60, though it
+ * flies two and a half times as far in a frame there. */
+static double share_of_a_line_a_dive_takes(int fps, int seed, int *places, int *count) {
+    world_t world;
+    lay_out_a_sign_on(&world, 96, 26, fps, "HELLO", 800, seed);
+    fly_the_world(&world, 1.0 / fps, 8, fps);
+    config.hawks = 1;
+    place_hawks();
+    double middle_x = 0, middle_y = 0;
+    for (int t = 0; t < formation.count; t++) {
+        middle_x += formation.x[t] / formation.count;
+        middle_y += formation.y[t] / formation.count;
+    }
+    int writers = 0;
+    for (int i = 0; i < config.birds; i++) writers += formation.slot[i] >= 0;
+    char *scattered = calloc((size_t)config.birds, 1);
+    char *gone = calloc((size_t)config.birds, 1);
+    char *passed = calloc(FORMATION_MAX_TARGETS, 1);
+    assert(scattered != NULL && gone != NULL && passed != NULL);
+    /* Along the line, at the pace of a dive, from well before the first letter. */
+    double step = config.speed * HAWK_DIVE_SPEED;
+    double x = middle_x - 4 * formation.cell * FONT_ADVANCE;
+    double end = middle_x + 4 * formation.cell * FONT_ADVANCE;
+    for (double at = 8 + 1.0 / fps; x < end; at += 1.0 / fps, x += step) {
+        hawks[0].x = x;
+        hawks[0].y = middle_y;
+        hawks[0].direction = 0;
+        hawks[0].stride = step;
+        hawks[0].prey = -1;
+        /* The places under the step it flew, before the hunt turns it. */
+        for (int t = 0; t < formation.count; t++)
+            if (a_hawk_is_over(formation.x[t], formation.y[t])) passed[t] = 1;
+        step_the_world(&world, at);
+        hawks[0].x = x; /* Held to its line: the hunt moved it a little. */
+        hawks[0].y = middle_y;
+        for (int i = 0; i < config.birds; i++) {
+            if (formation.slot[i] < 0) continue;
+            if (world.birds[i].scattered > 0) scattered[i] = 1;
+            if (home_distance(&world, i) > 3 * formation.cell) gone[i] = 1;
+        }
+    }
+    int hit = 0, away = 0;
+    for (int i = 0; i < config.birds; i++) hit += scattered[i], away += gone[i];
+    *places = 0;
+    for (int t = 0; t < formation.count; t++) *places += passed[t];
+    *count = formation.count;
+    double taken = (double)hit / writers;
+    assert(away * 10 >= hit * 9); /* Visibly: nearly every one it takes flies off. */
+    free(scattered);
+    free(gone);
+    free(passed);
+    config.hawks = 0;
+    close_the_world(&world);
+    reset_sign_state();
+    return taken;
+}
+
+/* The places are the same at either rate, to a place or two at the ends of the
+ * line: that is the step being a segment, and it is exact. Which birds come off
+ * them is not: the hunt, and the text it is turned from, turn the hawk within the
+ * frame, more at 25 frames than at 60, and a recording's dive, held to its line
+ * only between frames, took 16 to 25% of the line from flock to flock where live
+ * took 27% every time. */
+static void test_a_hawk_diving_through_the_letters_scatters_them_at_any_frame_rate(void) {
+    int places[2], count[2];
+    double live = share_of_a_line_a_dive_takes(60, 5, &places[1], &count[1]);
+    double recorded = share_of_a_line_a_dive_takes(25, 5, &places[0], &count[0]);
+    assert(count[0] == count[1]);
+    assert(places[1] > count[1] * 15 / 100 && places[1] < count[1] / 2); /* A stripe, not all. */
+    assert(abs(places[0] - places[1]) <= 2 + places[1] / 20);
+    assert(live > 0.15 && live < 0.5);
+    assert(recorded > 0.05 && recorded < 0.5);
+}
+
 static void test_a_small_screen_leaves_the_flock_sky_and_a_roomy_one_is_as_it_was(void) {
     world_t world;
 
@@ -5408,6 +5602,9 @@ int main(void) {
     test_a_large_picture_is_kept_small();
     test_a_picture_that_cannot_be_drawn_says_so();
     test_a_colour_given_is_told_from_the_default();
+    test_a_hawk_scatters_the_places_along_the_step_it_flew();
+    test_one_hawk_leaves_a_sign_readable();
+    test_a_hawk_diving_through_the_letters_scatters_them_at_any_frame_rate();
     test_a_small_screen_leaves_the_flock_sky_and_a_roomy_one_is_as_it_was();
     test_a_sign_that_cannot_be_laid_out_says_so_when_the_run_is_over();
     test_a_text_too_big_for_the_terminal_is_said_after_the_terminal_is_given_back();

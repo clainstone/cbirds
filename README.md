@@ -210,10 +210,18 @@ terminal it is. That is the report that helps most.
 
 ## Windows
 
-cbirds runs on Windows 10 (version 1809 or later) and Windows 11, in Windows
-Terminal and in the classic console. Everything works as it does elsewhere:
-every option, the keys and the pointer, resizing, and the recordings. `q`,
-Ctrl-C and closing the window all leave the console as it was found.
+cbirds is written for Windows 10 (version 1809 or later) and Windows 11, for
+Windows Terminal and for the classic console. The tests that run on every
+change start the real program in a pseudo console, the layer Windows Terminal
+is built on, and check that braille, sextants and blocks are drawn, that `q`
+and Ctrl-C end it, that a resize is followed, that closing the window ends it,
+and that a recording is exact: a cast has no carriage returns, a GIF decodes to
+its trailer, and the same seed writes the same bytes. The pointer and the
+classic console are implemented and have not been tested on Windows.
+
+What cbirds writes is the same bytes everywhere. Whether braille and sextants
+show as dots or as empty boxes depends on the font the console uses; if you see
+boxes, try `--render blocks` or another font.
 
 It needs a console to run in. mintty, which is the window of Git Bash and of
 MSYS2, gives a program a pipe instead, so start cbirds from Windows Terminal or
@@ -233,7 +241,7 @@ file can be copied anywhere. `make test` runs the tests, among them one that
 starts the real program in a pseudo console and plays terminal to it.
 
 `--render kitty` is for terminals that speak the Kitty graphics protocol, here
-as everywhere. Braille, sextants and blocks work in every Windows console.
+as everywhere, and is not tested on Windows.
 
 ## Options
 

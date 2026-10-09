@@ -1322,6 +1322,7 @@ static int formation_target_for(const bird_t *bird, int index, double *x, double
  * and the rest keep flocking round it, kept out of the box the text is in.
  */
 typedef enum { SIGN_NONE, SIGN_SAY, SIGN_CLOCK, SIGN_PICTURE } sign_kind_t;
+typedef enum { SIGN_FITS, SIGN_NO_ROOM, SIGN_TOO_FEW_BIRDS } sign_failure_t;
 
 static const char *say_text;           /* --say, as it was typed. */
 static char sign_words[SIGN_TEXT_MAX]; /* And as the font can draw it. */
@@ -1428,6 +1429,13 @@ static struct {
     double last_tick;
     char written[SIGN_TEXT_MAX]; /* What is up now. */
     int per_cell;                /* Birds to a lit cell, the same for every cell of it. */
+    /* Why the last layout failed, if one did, and what has come of it: said once at
+     * the end of the run, when the terminal is back, because inside it nobody
+     * could read it. */
+    sign_failure_t why;
+    int needs, has; /* Birds a text takes and the flock has, when that is what failed. */
+    int failures, was_up;
+    int failed_columns, failed_rows;
     int twelve_hours;
     unsigned seed;     /* --seed, for what a picture picks without the flock's numbers. */
     int virtual_clock; /* The time is the start time and the run's clock, not the wall's. */
@@ -1599,6 +1607,7 @@ static int sign_place(const char *clean, int reference_columns, int lift_the_col
         height = tried_height;
     }
     sign_begin_layout();
+    the_sign.why = SIGN_NO_ROOM;
     if (line_count == 0) return 0;
 
     int lit = 0;
@@ -1609,7 +1618,12 @@ static int sign_place(const char *clean, int reference_columns, int lift_the_col
     }
     int near_birds = 0;
     for (int i = 0; i < config.birds; i++) near_birds += birds[i].layer == 0;
-    if (lit > FORMATION_MAX_TARGETS || lit > near_birds) return 0;
+    if (lit > FORMATION_MAX_TARGETS || lit > near_birds) {
+        the_sign.why = SIGN_TOO_FEW_BIRDS;
+        the_sign.needs = lit;
+        the_sign.has = near_birds < FORMATION_MAX_TARGETS ? near_birds : FORMATION_MAX_TARGETS;
+        return 0;
+    }
 
     /* The text is centred by where its birds are drawn, which is a bird's top left
      * corner: half a bird off to the right and down of the place it is flown to. */
@@ -1617,7 +1631,7 @@ static int sign_place(const char *clean, int reference_columns, int lift_the_col
     left += (free_width - width) / 2 - shift;
     top += (free_height - height) / 2 - shift;
     formation_place(text, line_count, left, top, left + width, top + height, cell, lift_the_colon);
-    if (formation.count == 0) return 0;
+    if (formation.count == 0) return 0; /* All of it in the panel's corner. */
 
     formation.cell = cell;
     formation.hover = sign_hover_for(cell);
@@ -1657,6 +1671,7 @@ static int sign_place(const char *clean, int reference_columns, int lift_the_col
                                  x_max + config.bird_size, y_max + config.bird_size};
     formation.band = SIGN_KEEP_OUT_BAND * config.bird_size;
     formation.keep_out = 1;
+    the_sign.why = SIGN_FITS;
     return 1;
 }
 
@@ -1703,6 +1718,7 @@ static int sign_place_picture(void) {
     int room_count = sign_rooms(rooms);
 
     sign_begin_layout();
+    the_sign.why = SIGN_NO_ROOM;
     /* Centred by where a bird is drawn, as a sign is: from its top left corner. */
     double shift = config.bird_size / 2.0;
     picture_fit_t fit = {0, 0, 0, 0, 0};
@@ -1729,6 +1745,7 @@ static int sign_place_picture(void) {
     /* The distance between two birds that are neighbours in the picture. */
     formation.cell = sqrt(fit.width * fit.height * picture_ink / made);
     formation.hover = sign_hover_for(formation.cell);
+    the_sign.why = SIGN_FITS;
     return 1;
 }
 
@@ -1891,11 +1908,15 @@ static int sign_write(const bird_t *birds) {
     if (!fits) {
         formation_clear();
         the_sign.up = 0;
+        the_sign.failures++;
+        the_sign.failed_columns = screen.cols;
+        the_sign.failed_rows = screen.rows;
         return 0;
     }
     snprintf(the_sign.written, sizeof(the_sign.written), "%s", text);
     formation.until = -1; /* A sign lets go when it is time, not when the intro is. */
     the_sign.up = 1;
+    the_sign.was_up = 1;
     sign_move_the_letters();
     return 1;
 }
@@ -1907,6 +1928,34 @@ static void sign_let_go(void) {
         clock_state.seconds +
         (the_sign.kind == SIGN_CLOCK ? SIGN_CLOCK_FLIGHT : sign_flight_seconds(the_sign.cycle));
     the_sign.cycle++; /* One held and flown: the next is a little different. */
+}
+
+/* Said when the run is over and the terminal is back, and not before: a sign that
+ * cannot be laid out once the run has started, because the window is smaller than
+ * it was told of or the flock has shrunk, leaves the flock flying as usual, and
+ * inside the alternate screen nobody can read why. Once, for the last time it
+ * failed. */
+static void sign_report_failure(void) {
+    if (the_sign.failures == 0) return;
+    const char *option = the_sign.kind == SIGN_CLOCK     ? "--clock"
+                         : the_sign.kind == SIGN_PICTURE ? "--picture"
+                                                         : "--say";
+    const char *what = the_sign.kind == SIGN_CLOCK     ? "the time"
+                       : the_sign.kind == SIGN_PICTURE ? "the picture"
+                                                       : "the text";
+    char reason[160];
+    if (the_sign.why == SIGN_TOO_FEW_BIRDS)
+        snprintf(reason, sizeof(reason),
+                 "it takes %d birds to write and the flock has %d to write with", the_sign.needs,
+                 the_sign.has);
+    else if (the_sign.kind == SIGN_PICTURE)
+        snprintf(reason, sizeof(reason), "there is no room for it");
+    else
+        snprintf(reason, sizeof(reason), "%s is too big for it", what);
+    fprintf(stderr, "%s: %s could not be laid out%s on a screen of %d by %d cells: %s%s\n",
+            program_name, option, the_sign.was_up ? " for a time" : "", the_sign.failed_columns,
+            the_sign.failed_rows, reason, the_sign.was_up ? "" : ", so the flock flew as usual");
+    the_sign.failures = 0; /* Said. */
 }
 
 static void begin_the_sign(void) {
@@ -4665,6 +4714,7 @@ static int run_cast_recording(void) {
     printf("%s: %d frames, %dx%d cells, %d fps, %.1fs, %.1f KB of braille\n", record_path, total,
            screen.cols, screen.rows, record_fps, (double)total / record_fps,
            (double)bytes / 1024.0);
+    sign_report_failure();
     return EXIT_SUCCESS;
 }
 
@@ -4789,6 +4839,7 @@ static int run_recording(void) {
                 "100/3 and so on, and viewers clamp anything under two hundredths up to a\n"
                 "tenth. %.4g is the nearest rate this format can actually carry.\n",
                 program_name, record_fps, actual_fps, actual_fps);
+    sign_report_failure();
     return EXIT_SUCCESS;
 }
 
@@ -4850,6 +4901,7 @@ static int run_benchmark(void) {
     printf("ceiling      %.0f fps\n", 1.0 / per_frame);
     printf("bytes/frame  %.0f (%.1f KB)\n", bytes / bench_frames, bytes / bench_frames / 1024.0);
     printf("at %d fps    %.1f MB/s\n", FRAME_RATE, bytes / bench_frames * FRAME_RATE / 1e6);
+    sign_report_failure();
 
     kitty_graphics_destroy(&graphics);
     spatial_grid_destroy(&grid);
@@ -5059,11 +5111,15 @@ int main(int argc, char **argv) {
             nanosleep(&delay, NULL);
         }
     }
+    /* The terminal is back before anything is said to the person at it. */
+    if (the_sign.failures > 0) {
+        restore_terminal();
+        sign_report_failure();
+    }
     /* A snapshot asked for and not written is a failed run, so a script that
      * takes one can tell. */
     int outcome = EXIT_SUCCESS;
     if (snapshot_path != NULL) {
-        restore_terminal();
         if (write_snapshot(snapshot_path, birds)) {
             fprintf(stderr, "%s: wrote %s\n", program_name, snapshot_path);
         } else {

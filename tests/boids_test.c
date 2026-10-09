@@ -4,6 +4,7 @@
 
 #include <assert.h>
 #include <fcntl.h>
+#include <sys/ioctl.h>
 #include <sys/wait.h>
 
 /* A directory of the run's own for the files it writes: a fixed name in /tmp
@@ -3292,6 +3293,189 @@ static void test_a_small_screen_leaves_the_flock_sky_and_a_roomy_one_is_as_it_wa
     reset_sign_state();
 }
 
+/* What sign_report_failure says, as a string: it speaks on stderr, which belongs to
+ * the person and not to the log of a test run. */
+static void what_the_sign_says(char *out, size_t size) {
+    fflush(stderr);
+    FILE *capture = tmpfile();
+    assert(capture != NULL);
+    int kept = dup(STDERR_FILENO);
+    assert(kept >= 0 && dup2(fileno(capture), STDERR_FILENO) == STDERR_FILENO);
+    sign_report_failure();
+    fflush(stderr);
+    assert(dup2(kept, STDERR_FILENO) == STDERR_FILENO);
+    close(kept);
+    rewind(capture);
+    size_t got = fread(out, 1, size - 1, capture);
+    out[got] = '\0';
+    fclose(capture);
+}
+
+static void test_a_sign_that_cannot_be_laid_out_says_so_when_the_run_is_over(void) {
+    char said[400];
+    world_t world;
+    program_name = "cbirds";
+
+    /* A sign that has not failed says nothing. */
+    reset_sign_state();
+    apply_screen_size(200, 50, 1600, 800);
+    ask_for_a_sign("HELLO");
+    begin_the_intro();
+    open_the_world(&world, 300, 3);
+    sign_advance(world.birds);
+    assert(the_sign.up && the_sign.failures == 0);
+    what_the_sign_says(said, sizeof(said));
+    assert(said[0] == '\0');
+    close_the_world(&world);
+
+    /* A text too big for the screen, found out once the run has started. */
+    reset_sign_state();
+    apply_screen_size(30, 8, 240, 128);
+    ask_for_a_sign("ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ");
+    begin_the_intro();
+    open_the_world(&world, 1000, 3);
+    for (double at = 0; at < 3; at += 0.5) {
+        clock_state.seconds = at;
+        sign_advance(world.birds);
+    }
+    assert(!the_sign.up && the_sign.failures > 0 && the_sign.why == SIGN_NO_ROOM);
+    what_the_sign_says(said, sizeof(said));
+    assert(strcmp(said,
+                  "cbirds: --say could not be laid out on a screen of 30 by 8 cells: the text is "
+                  "too big for it, so the flock flew as usual\n") == 0);
+    /* Said once. */
+    what_the_sign_says(said, sizeof(said));
+    assert(said[0] == '\0');
+    close_the_world(&world);
+
+    /* The clock has a time, not a text. */
+    reset_sign_state();
+    apply_screen_size(8, 3, 64, 48);
+    the_sign.kind = SIGN_CLOCK;
+    the_sign.virtual_clock = 1;
+    the_sign.origin = local_time(10, 9, 0);
+    begin_the_intro();
+    open_the_world(&world, 300, 3);
+    sign_advance(world.birds);
+    what_the_sign_says(said, sizeof(said));
+    assert(
+        strstr(said,
+               "--clock could not be laid out on a screen of 8 by 3 cells: the time is too big") ==
+        said + strlen("cbirds: "));
+    close_the_world(&world);
+
+    /* A flock that is too small for it says how many birds it takes. */
+    reset_sign_state();
+    apply_screen_size(200, 50, 1600, 800);
+    ask_for_a_sign("HELLO WORLD");
+    begin_the_intro();
+    open_the_world(&world, 40, 3);
+    sign_advance(world.birds);
+    assert(!the_sign.up && the_sign.why == SIGN_TOO_FEW_BIRDS);
+    what_the_sign_says(said, sizeof(said));
+    char want[300];
+    snprintf(want, sizeof(want),
+             "cbirds: --say could not be laid out on a screen of 200 by 50 cells: it takes %d "
+             "birds to write and the flock has 40 to write with, so the flock flew as usual\n",
+             font_text_cells("HELLO WORLD"));
+    assert(strcmp(said, want) == 0);
+    close_the_world(&world);
+
+    /* A sign that was up and lost its room says for how long it did not have it, not
+     * that the flock flew as usual: it did, for a time. */
+    reset_sign_state();
+    apply_screen_size(200, 50, 1600, 800);
+    ask_for_a_sign("HELLO WORLD");
+    begin_the_intro();
+    open_the_world(&world, 300, 3);
+    sign_advance(world.birds);
+    assert(the_sign.up);
+    apply_screen_size(30, 8, 240, 128);
+    clock_state.seconds = 1;
+    sign_advance(world.birds);
+    assert(!the_sign.up && the_sign.failures > 0 && the_sign.was_up);
+    what_the_sign_says(said, sizeof(said));
+    assert(
+        strcmp(said,
+               "cbirds: --say could not be laid out for a time on a screen of 30 by 8 cells: the "
+               "text is too big for it\n") == 0);
+    close_the_world(&world);
+    reset_sign_state();
+}
+
+/* The whole program, on a terminal of its own that is 30 by 8 cells, with a text no
+ * such screen can hold: the person at it is told when the screen has been given
+ * back, and not before, because the alternate screen would hide it. */
+static void test_a_text_too_big_for_the_terminal_is_said_after_the_terminal_is_given_back(void) {
+    reset_sign_state();
+    int master = posix_openpt(O_RDWR | O_NOCTTY);
+    assert(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0);
+    const char *name = ptsname(master);
+    assert(name != NULL);
+    int terminal = open(name, O_RDWR | O_NOCTTY);
+    assert(terminal >= 0);
+    struct winsize size = {.ws_row = 8, .ws_col = 30, .ws_xpixel = 240, .ws_ypixel = 128};
+    assert(ioctl(terminal, TIOCSWINSZ, &size) == 0);
+    fflush(NULL);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        alarm(60);
+        /* The person's stderr is their terminal too. */
+        if (dup2(terminal, STDIN_FILENO) < 0 || dup2(terminal, STDOUT_FILENO) < 0 ||
+            dup2(terminal, STDERR_FILENO) < 0)
+            _exit(99);
+        terminal_is_raw = terminal_restored = alt_screen_is_on = sprites_uploaded = 0;
+        char *argv[] = {
+            "cbirds", "--unlock-fps", "--frames",
+            "60",     "--color",      "ember",
+            "-n",     "1000",         "--seed",
+            "3",      "--say",        "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ",
+            NULL};
+        _exit(cbirds_application_main(12, argv));
+    }
+    close(terminal);
+    static char output[1 << 20];
+    size_t length = 0;
+    int status = 0;
+    for (;;) {
+        struct pollfd wait = {.fd = master, .events = POLLIN};
+        if (poll(&wait, 1, 100) > 0) {
+            ssize_t got = read(master, output + length, sizeof(output) - 1 - length);
+            if (got <= 0) break;
+            length += (size_t)got;
+        }
+        if (waitpid(child, &status, WNOHANG) == child) {
+            child = -1;
+            break;
+        }
+    }
+    if (child > 0) assert(waitpid(child, &status, 0) == child);
+    /* What the program had still to say when it exited. */
+    for (struct pollfd wait = {.fd = master, .events = POLLIN}; poll(&wait, 1, 100) > 0;) {
+        ssize_t got = read(master, output + length, sizeof(output) - 1 - length);
+        if (got <= 0) break;
+        length += (size_t)got;
+    }
+    output[length] = '\0';
+    close(master);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS);
+
+    const char *message =
+        "--say could not be laid out on a screen of 30 by 8 cells: the text is too "
+        "big for it, so the flock flew as usual";
+    const char *told = strstr(output, message);
+    const char *taken = strstr(output, ALT_SCREEN_ON);
+    const char *given_back = NULL;
+    for (const char *at = strstr(output, ALT_SCREEN_OFF); at != NULL;
+         at = strstr(at + 1, ALT_SCREEN_OFF))
+        given_back = at;
+    assert(taken != NULL && given_back != NULL && told != NULL);
+    assert(told > given_back && given_back > taken); /* Said once, after the screen is back. */
+    assert(strstr(told + 1, message) == NULL);
+    reset_sign_state();
+}
+
 static void test_a_sign_has_a_bird_as_wide_as_its_cells_unless_it_is_told(void) {
     reset_sign_state();
     /* The usual thirty on a roomy screen, and smaller on a small one, where a bird
@@ -5121,6 +5305,8 @@ int main(void) {
     test_a_picture_that_cannot_be_drawn_says_so();
     test_a_colour_given_is_told_from_the_default();
     test_a_small_screen_leaves_the_flock_sky_and_a_roomy_one_is_as_it_was();
+    test_a_sign_that_cannot_be_laid_out_says_so_when_the_run_is_over();
+    test_a_text_too_big_for_the_terminal_is_said_after_the_terminal_is_given_back();
     test_a_sign_has_a_bird_as_wide_as_its_cells_unless_it_is_told();
     test_a_sign_records_in_a_gif_and_a_cast();
     test_a_sign_survives_the_flock_growing_under_it();

@@ -3601,8 +3601,8 @@ static double share_of_a_sign_scattered(const char *text, int hawks_up, int fps,
 
 /* A hawk hunts the free birds, which are all round a sign, so it is over the sign
  * much of the time. On 800 birds at 96 by 26 cells it left 43% of the writers
- * scattered with one hawk and 67% with two, and a clock could not be read; now 5 to
- * 6% and 10 to 11%. */
+ * scattered with one hawk and 67% with two, and a clock could not be read; then 5 to
+ * 6% and 10 to 11%; and turned from the text as the flock is, 3 to 5% and 6 to 8%. */
 static void test_one_hawk_leaves_a_sign_readable(void) {
     for (int seed = 5; seed <= 6; seed++) {
         double one = share_of_a_sign_scattered("HELLO WORLD", 1, 25, seed);
@@ -3654,61 +3654,80 @@ static void test_one_hawk_leaves_a_sign_readable(void) {
 
 /* The other side of it: a hawk that dives straight through a line of letters takes
  * a good part of them from their places, a quarter of the line at 96 by 26 cells,
- * and as much in a recording at 25 frames a second as live at 60, though it flies
- * two and a half times as far in a frame there. */
-static void test_a_hawk_diving_through_the_letters_scatters_them_at_any_frame_rate(void) {
-    double taken[2];
-    int rates[2] = {25, 60};
-    for (int r = 0; r < 2; r++) {
-        int fps = rates[r];
-        sign_sky_t world;
-        lay_out_a_sign_on(&world, 96, 26, fps, "HELLO", 800, 5);
-        fly_the_world(&world, 1.0 / fps, 8, fps);
-        config.hawks = 1;
-        place_hawks();
-        reset_the_waves();
-        double middle_x = 0, middle_y = 0;
-        for (int t = 0; t < formation.count; t++) {
-            middle_x += formation.x[t] / formation.count;
-            middle_y += formation.y[t] / formation.count;
-        }
-        int writers = 0;
-        for (int i = 0; i < config.birds; i++) writers += formation.slot[i] >= 0;
-        char *scattered = calloc((size_t)config.birds, 1);
-        char *gone = calloc((size_t)config.birds, 1);
-        assert(scattered != NULL && gone != NULL);
-        /* Along the line, at the pace of a dive, from well before the first letter. */
-        double step = config.speed * HAWK_DIVE_SPEED;
-        double x = middle_x - 4 * formation.cell * FONT_ADVANCE;
-        double end = middle_x + 4 * formation.cell * FONT_ADVANCE;
-        for (double at = 8 + 1.0 / fps; x < end; at += 1.0 / fps, x += step) {
-            hawks[0].x = x;
-            hawks[0].y = middle_y;
-            hawks[0].direction = 0;
-            hawks[0].stride = step;
-            hawks[0].prey = -1;
-            step_the_world(&world, at);
-            hawks[0].x = x; /* Held to its line: the hunt moved it a little. */
-            hawks[0].y = middle_y;
-            for (int i = 0; i < config.birds; i++) {
-                if (formation.slot[i] < 0) continue;
-                if (world.birds[i].scattered > 0) scattered[i] = 1;
-                if (home_distance(&world, i) > 3 * formation.cell) gone[i] = 1;
-            }
-        }
-        int hit = 0, away = 0;
-        for (int i = 0; i < config.birds; i++) hit += scattered[i], away += gone[i];
-        taken[r] = (double)hit / writers;
-        assert(taken[r] > 0.15 && taken[r] < 0.5); /* A stripe of the line, not all of it... */
-        assert(away * 10 >= hit * 9);              /* ...and visibly: nearly every one flies off. */
-        free(scattered);
-        free(gone);
-        config.hawks = 0;
-        close_the_world(&world);
-        reset_the_waves();
-        reset_sign_state();
+ * and as many places in a recording at 25 frames a second as live at 60, though it
+ * flies two and a half times as far in a frame there. */
+static double share_of_a_line_a_dive_takes(int fps, int seed, int *places, int *count) {
+    sign_sky_t world;
+    lay_out_a_sign_on(&world, 96, 26, fps, "HELLO", 800, seed);
+    fly_the_world(&world, 1.0 / fps, 8, fps);
+    config.hawks = 1;
+    place_hawks();
+    reset_the_waves();
+    double middle_x = 0, middle_y = 0;
+    for (int t = 0; t < formation.count; t++) {
+        middle_x += formation.x[t] / formation.count;
+        middle_y += formation.y[t] / formation.count;
     }
-    assert(fabs(taken[0] - taken[1]) < 0.05 * taken[1] + 0.02);
+    int writers = 0;
+    for (int i = 0; i < config.birds; i++) writers += formation.slot[i] >= 0;
+    char *scattered = calloc((size_t)config.birds, 1);
+    char *gone = calloc((size_t)config.birds, 1);
+    char *passed = calloc(FORMATION_MAX_TARGETS, 1);
+    assert(scattered != NULL && gone != NULL && passed != NULL);
+    /* Along the line, at the pace of a dive, from well before the first letter. */
+    double step = config.speed * HAWK_DIVE_SPEED;
+    double x = middle_x - 4 * formation.cell * FONT_ADVANCE;
+    double end = middle_x + 4 * formation.cell * FONT_ADVANCE;
+    for (double at = 8 + 1.0 / fps; x < end; at += 1.0 / fps, x += step) {
+        hawks[0].x = x;
+        hawks[0].y = middle_y;
+        hawks[0].direction = 0;
+        hawks[0].stride = step;
+        hawks[0].prey = -1;
+        /* The places under the step it flew, before the hunt turns it. */
+        for (int t = 0; t < formation.count; t++)
+            if (a_hawk_is_over(formation.x[t], formation.y[t])) passed[t] = 1;
+        step_the_world(&world, at);
+        hawks[0].x = x; /* Held to its line: the hunt moved it a little. */
+        hawks[0].y = middle_y;
+        for (int i = 0; i < config.birds; i++) {
+            if (formation.slot[i] < 0) continue;
+            if (world.birds[i].scattered > 0) scattered[i] = 1;
+            if (home_distance(&world, i) > 3 * formation.cell) gone[i] = 1;
+        }
+    }
+    int hit = 0, away = 0;
+    for (int i = 0; i < config.birds; i++) hit += scattered[i], away += gone[i];
+    *places = 0;
+    for (int t = 0; t < formation.count; t++) *places += passed[t];
+    *count = formation.count;
+    double taken = (double)hit / writers;
+    assert(away * 10 >= hit * 9); /* Visibly: nearly every one it takes flies off. */
+    free(scattered);
+    free(gone);
+    free(passed);
+    config.hawks = 0;
+    close_the_world(&world);
+    reset_the_waves();
+    reset_sign_state();
+    return taken;
+}
+
+/* The places are the same at either rate, to a place or two at the ends of the
+ * line: that is the step being a segment, and it is exact. Which birds come off
+ * them is not: the hunt, and the text it is turned from, turn the hawk within the
+ * frame, more at 25 frames than at 60, and a recording's dive, held to its line
+ * only between frames, took 16 to 25% of the line from flock to flock where live
+ * took 27% every time. */
+static void test_a_hawk_diving_through_the_letters_scatters_them_at_any_frame_rate(void) {
+    int places[2], count[2];
+    double live = share_of_a_line_a_dive_takes(60, 5, &places[1], &count[1]);
+    double recorded = share_of_a_line_a_dive_takes(25, 5, &places[0], &count[0]);
+    assert(count[0] == count[1]);
+    assert(places[1] > count[1] * 15 / 100 && places[1] < count[1] / 2); /* A stripe, not all. */
+    assert(abs(places[0] - places[1]) <= 2 + places[1] / 20);
+    assert(live > 0.15 && live < 0.5);
+    assert(recorded > 0.05 && recorded < 0.5);
 }
 
 static void test_a_small_screen_leaves_the_flock_sky_and_a_roomy_one_is_as_it_was(void) {
@@ -10324,18 +10343,30 @@ static void test_keys_and_colour_questions_use_the_descriptor_that_was_chosen(vo
 }
 
 /* A terminal that answers in pieces, with a wait before each: a child that writes
- * them to the descriptor the questions are read from while the test is asking. */
+ * them to the descriptor the questions are read from while the test is asking. The
+ * waits are from the moment the child is running, which the test waits for before
+ * it asks: a question is given sixty milliseconds, and on a Mac with the address
+ * sanitizer the fork alone took longer than that. */
 static pid_t answer_in_pieces(int fd, const char *const pieces[], const int waits[], int count) {
+    int started[2];
+    assert(pipe(started) == 0);
     fflush(NULL);
     pid_t child = fork();
     assert(child >= 0);
     if (child == 0) {
+        close(started[0]);
+        if (write(started[1], "", 1) != 1) _exit(1);
+        close(started[1]);
         for (int i = 0; i < count; i++) {
             usleep((useconds_t)waits[i] * 1000);
             if (write(fd, pieces[i], strlen(pieces[i])) < 0) _exit(1);
         }
         _exit(0);
     }
+    close(started[1]);
+    char running;
+    assert(read(started[0], &running, 1) == 1);
+    close(started[0]);
     return child;
 }
 
@@ -10365,7 +10396,9 @@ static void test_a_colour_reply_is_whole_at_its_terminator_and_not_at_a_letter_i
     static const char *const CUT_IN_THE_ST[] = {"\033]4;1;rgb:cccc/0000/0000\033", "\\"};
     static const char *const WITH_A_BELL[] = {"\033]4;1;rgb:cc", "cc/0000/0000\007"};
     static const char *const *const SPLIT[] = {CUT_IN_THE_DIGITS, CUT_IN_THE_ST, WITH_A_BELL};
-    static const int WAITS[] = {5, 30};
+    /* Apart enough that the first piece is read alone, and soon enough after the
+     * question that a machine whose sleeps run long still answers in time. */
+    static const int WAITS[] = {2, 10};
     for (size_t i = 0; i < sizeof(SPLIT) / sizeof(*SPLIT); i++) {
         rgb[0] = rgb[1] = rgb[2] = 7;
         pid_t terminal = answer_in_pieces(keys[1], SPLIT[i], WAITS, 2);

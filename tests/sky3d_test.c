@@ -258,11 +258,44 @@ static void test_the_flock_stays_within_reach_of_its_roost(void) {
 /* The flock holds together as well as it holds to its roost: most of the birds
  * are in one piece, a bird's neighbours are about as near as they were meant to
  * be, and it is flatter than it is long. */
+/* The share of the flock in its largest piece: follow the links between a bird and
+ * its nearest four that are shorter than three metres. */
+static double largest_piece(sky_t *sky, int count) {
+    int *parent = malloc(sizeof(int) * (size_t)count), *size = calloc((size_t)count, sizeof(int));
+    assert(parent != NULL && size != NULL);
+    for (int i = 0; i < count; i++) parent[i] = i;
+    assert(sky_index(sky, count) == SKY_OK);
+    for (int i = 0; i < count; i++) {
+        int near[4];
+        double squared[4];
+        int found = sky_neighbours(sky, i, 4, 3.0, near, squared);
+        for (int n = 0; n < found; n++) {
+            int a = i, b = near[n];
+            while (parent[a] != a) a = parent[a] = parent[parent[a]];
+            while (parent[b] != b) b = parent[b] = parent[parent[b]];
+            parent[b] = a;
+        }
+    }
+    int biggest = 0;
+    for (int i = 0; i < count; i++) {
+        int root = i;
+        while (parent[root] != root) root = parent[root];
+        if (++size[root] > biggest) biggest = size[root];
+    }
+    free(parent);
+    free(size);
+    return (double)biggest / count;
+}
+
+/* A sheet: thin against its length. And one piece, over the minute it is watched
+ * and not at one moment of it: a murmuration splits and joins, and the last step
+ * of one flight found it in two on one machine and in one on another, where the
+ * arithmetic fused a multiply and an add. */
 static void test_the_flock_is_a_sheet_and_not_a_ball(void) {
     enum { COUNT = 500, STEPS = 1200 };
     sky_rules_t rules = sky_default_rules();
     sky_t sky;
-    double thin = 0, long_side = 0;
+    double thin = 0, long_side = 0, piece = 0;
     int samples = 0;
 
     assert(sky_init(&sky, COUNT, 5) == SKY_OK);
@@ -288,37 +321,12 @@ static void test_the_flock_is_a_sheet_and_not_a_ball(void) {
         double biggest = trace / 2 + sqrt(fmax(trace * trace / 4 - determinant, 0));
         thin += sqrt(sz / COUNT);
         long_side += sqrt(biggest);
+        piece += largest_piece(&sky, COUNT);
         samples++;
     }
     assert(samples > 10);
     assert(thin / samples < 0.5 * long_side / samples);
-
-    /* One piece: follow the links between a bird and its nearest four that are
-     * shorter than three metres. */
-    int *parent = malloc(sizeof(int) * COUNT), *size = calloc(COUNT, sizeof(int));
-    assert(parent != NULL && size != NULL);
-    for (int i = 0; i < COUNT; i++) parent[i] = i;
-    assert(sky_index(&sky, COUNT) == SKY_OK);
-    for (int i = 0; i < COUNT; i++) {
-        int near[4];
-        double squared[4];
-        int found = sky_neighbours(&sky, i, 4, 3.0, near, squared);
-        for (int n = 0; n < found; n++) {
-            int a = i, b = near[n];
-            while (parent[a] != a) a = parent[a] = parent[parent[a]];
-            while (parent[b] != b) b = parent[b] = parent[parent[b]];
-            parent[b] = a;
-        }
-    }
-    int biggest = 0;
-    for (int i = 0; i < COUNT; i++) {
-        int root = i;
-        while (parent[root] != root) root = parent[root];
-        if (++size[root] > biggest) biggest = size[root];
-    }
-    assert(biggest > COUNT * 6 / 10);
-    free(parent);
-    free(size);
+    assert(piece / samples > 0.6);
     sky_destroy(&sky);
 }
 

@@ -1683,6 +1683,7 @@ static void reset_sign_state(void) {
     sign_words[0] = '\0';
     clock_mode = 0;
     clock_start = NULL;
+    clock_seconds = 0;
     screensaver_mode = 0;
     picture_path = NULL;
     picture_colours_in_use = 0;
@@ -2312,6 +2313,158 @@ static void test_the_hour_lets_go_of_the_whole_clock(void) {
     reset_sign_state();
 }
 
+/* A clock with the seconds, at 200 by 50 cells with a flock of 800. */
+static void open_a_seconds_clock_at(world_t *world, int hour, int minute, int second) {
+    open_a_clock_at(world, hour, minute, second, 800);
+    the_sign.seconds = 1;
+}
+
+/* The writers of a letter, and whether every one of them is in its loop. */
+static int the_glyph_of(int bird) {
+    return formation.slot[bird] < 0 ? -1 : formation.glyph[formation.slot[bird]];
+}
+
+static int writers_of_glyph_home(const world_t *world, int glyph) {
+    for (int i = 0; i < config.birds; i++)
+        if (the_glyph_of(i) == glyph && home_distance(world, i) > formation.hover + 1e-6) return 0;
+    return 1;
+}
+
+/* With the seconds the clock changes every second, and every second it is a digit
+ * that changes and not the clock: the birds of a digit of the seconds move over to
+ * the next one and are home within half a second, the minutes are written by other
+ * birds as they always were, and the rest never moves. A new minute is not the
+ * hour, though the seconds end in two zeros then. */
+static void test_a_clock_with_seconds_ticks_a_digit_at_a_time(void) {
+    world_t world;
+    open_a_seconds_clock_at(&world, 10, 9, 55);
+    fly_the_world(&world, 0, 4.9, 60);
+    assert(the_sign.up && strcmp(the_sign.written, "10:09:59") == 0);
+    assert(formation.count == font_text_cells("10:09:59"));
+    assert_every_cell_has_its_writers(&world);
+    int per_cell = the_sign.per_cell;
+    double cell = formation.cell;
+
+    /* "10:09:59": the hour and its colon are 0 to 2, the minutes 3 and 4, the
+     * second colon 5, and the seconds 6 and 7. */
+    static int before[MAX_BIRDS];
+    static double place_x[MAX_BIRDS], place_y[MAX_BIRDS];
+    int written[8] = {0};
+    for (int i = 0; i < config.birds; i++) {
+        before[i] = the_glyph_of(i);
+        if (before[i] < 0) continue;
+        written[before[i]]++;
+        place_x[i] = formation.x[formation.slot[i]];
+        place_y[i] = formation.y[formation.slot[i]];
+    }
+
+    /* 10:10:00: the minutes and both seconds change, and nothing else. */
+    step_the_world(&world, 5.0);
+    assert(the_sign.up && formation.writing && strcmp(the_sign.written, "10:10:00") == 0);
+    assert(the_sign.per_cell == per_cell && formation.cell == cell);
+    int now_cells[8] = {0}, from_own[8] = {0};
+    for (int t = 0; t < formation.count; t++) now_cells[formation.glyph[t]]++;
+    for (int i = 0; i < config.birds; i++) {
+        int g = the_glyph_of(i);
+        if (before[i] == 0 || before[i] == 1 || before[i] == 2 || before[i] == 5) {
+            /* Kept: the same letter, the same place. */
+            assert(g == before[i]);
+            assert(formation.x[formation.slot[i]] == place_x[i] &&
+                   formation.y[formation.slot[i]] == place_y[i]);
+        }
+        if (before[i] == 3 || before[i] == 4) assert(g < 0); /* The minutes: let go. */
+        if (g == 3 || g == 4) assert(before[i] < 0);         /* Written by others. */
+        if (g >= 6 && before[i] == g) from_own[g]++;
+    }
+    for (int g = 6; g <= 7; g++) {
+        int wanted = now_cells[g] * per_cell;
+        assert(from_own[g] == (written[g] < wanted ? written[g] : wanted));
+    }
+    /* Half a second on, the seconds are written whole, by birds in their loops. */
+    fly_the_world(&world, 5.0 + 1.0 / 60, 5.5, 60);
+    assert(writers_of_glyph_home(&world, 6) && writers_of_glyph_home(&world, 7));
+
+    /* 10:10:01: the last digit, and all of its birds were the zero's. */
+    fly_the_world(&world, 5.5, 5.99, 60);
+    for (int i = 0; i < config.birds; i++) before[i] = the_glyph_of(i);
+    step_the_world(&world, 6.0);
+    assert(strcmp(the_sign.written, "10:10:01") == 0);
+    for (int i = 0; i < config.birds; i++) {
+        int g = the_glyph_of(i);
+        if (before[i] >= 0 && before[i] < 7) assert(g == before[i]);
+        if (g == 7) assert(before[i] == 7);
+    }
+    fly_the_world(&world, 6.0 + 1.0 / 60, 6.5, 60);
+    assert_every_cell_has_its_writers(&world);
+    assert(the_sign.per_cell == per_cell && formation.cell == cell);
+    close_the_world(&world);
+    reset_sign_state();
+}
+
+/* The hour lets go of the whole clock with the seconds as without them, and the
+ * clock comes back on the second it has got to. */
+static void test_the_hour_lets_go_of_a_clock_with_seconds(void) {
+    world_t world;
+    open_a_seconds_clock_at(&world, 10, 59, 57);
+    fly_the_world(&world, 0, 2.9, 60);
+    assert(the_sign.up && strcmp(the_sign.written, "10:59:59") == 0);
+    step_the_world(&world, 3.0);
+    assert(!the_sign.up && !formation.writing);
+    fly_the_world(&world, 3.0 + 1.0 / 60, 3.0 + SIGN_CLOCK_FLIGHT - 0.1, 60);
+    assert(!the_sign.up);
+    fly_the_world(&world, 3.0 + SIGN_CLOCK_FLIGHT - 0.1, 3.0 + SIGN_CLOCK_FLIGHT + 1.5, 60);
+    assert(the_sign.up && strncmp(the_sign.written, "11:00:0", 7) == 0);
+    close_the_world(&world);
+    reset_sign_state();
+}
+
+/* HH:MM:SS is wider than HH:MM, and fits the screens a clock does, in cells that
+ * are letters: from 96 by 26 up it takes the most a sign may take to keep eight
+ * pixels a cell, and at 80 by 24 it has all of that, which is seven and a half.
+ * And a twelve hour clock with one digit of hour has the cell of one with two. */
+static void test_a_clock_with_seconds_fits_the_screens_a_clock_does(void) {
+    int sizes[][2] = {{80, 24}, {96, 26}, {120, 34}, {200, 50}};
+    for (int s = 0; s < 4; s++) {
+        double cells[2];
+        for (int twelve = 0; twelve < 2; twelve++) {
+            world_t world;
+            reset_sign_state();
+            config.pace_notch = DEFAULT_PACE_NOTCH;
+            apply_notches();
+            apply_screen_size(sizes[s][0], sizes[s][1], sizes[s][0] * 8, sizes[s][1] * 16);
+            config.bird_size = 0;
+            settle_the_bird_size();
+            the_sign.kind = SIGN_CLOCK;
+            the_sign.virtual_clock = 1;
+            the_sign.seconds = 1;
+            the_sign.twelve_hours = twelve;
+            the_sign.origin = local_time(13, 9, 5);
+            begin_the_intro();
+            open_the_world(&world, 800, 6);
+            sign_advance(world.birds);
+            assert(the_sign.up);
+            assert(strcmp(the_sign.written, twelve ? "1:09:05" : "13:09:05") == 0);
+            /* Eight pixels a cell, or what the most a sign may take gives if that is
+             * less, which it is only on the smallest of these. */
+            double pad = config.bird_size * 2.0, most_cell;
+            sign_lines_t lines;
+            assert(sign_fit("00:00:00", 0, (screen.width - 2 * pad) * SIGN_WIDTH_MOST,
+                            (screen.height - 2 * pad) * SIGN_HEIGHT_MOST,
+                            SIGN_LARGEST_CELL * config.bird_size, &lines, &most_cell) == 1);
+            double floor_cell = most_cell < SIGN_SMALLEST_CELL ? most_cell : SIGN_SMALLEST_CELL;
+            assert(formation.cell >= floor_cell - 1e-9);
+            if (sizes[s][0] >= 96) assert(formation.cell >= SIGN_SMALLEST_CELL - 1e-9);
+            for (int t = 0; t < formation.count; t++)
+                assert(formation.x[t] > 0 && formation.x[t] < screen.width && formation.y[t] > 0 &&
+                       formation.y[t] < screen.height);
+            cells[twelve] = formation.cell;
+            close_the_world(&world);
+        }
+        assert(fabs(cells[0] - cells[1]) < 1e-9);
+    }
+    reset_sign_state();
+}
+
 /* The same on a twelve hour clock, whose hour has no zero in front of it: "1:09" to
  * "1:10" is two letters, and "12:59" to "1:00" is the hour, of another length. */
 static void test_a_twelve_hour_clock_changes_a_letter_at_a_time_too(void) {
@@ -2846,6 +2999,40 @@ static int exit_status_of(int argc, char **argv) {
     int status = 0;
     assert(waitpid(child, &status, 0) == child);
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+/* --seconds is a clock on its own, as --clock-at is, and goes with either of them;
+ * beside another sign it is refused as --clock is. */
+static void test_seconds_is_a_clock(void) {
+    reset_sign_state();
+    char *alone[] = {"cbirds", "--seconds", NULL};
+    read_options(2, alone);
+    assert(the_sign.kind == SIGN_CLOCK && the_sign.seconds);
+    reset_sign_state();
+    char *both[] = {"cbirds", "--clock", "--seconds", NULL};
+    read_options(3, both);
+    assert(the_sign.kind == SIGN_CLOCK && the_sign.seconds);
+    reset_sign_state();
+    char *from[] = {"cbirds", "--clock-at", "10:09:58", "--seconds", NULL};
+    read_options(4, from);
+    assert(the_sign.kind == SIGN_CLOCK && the_sign.seconds && the_sign.virtual_clock);
+    {
+        char text[SIGN_TEXT_MAX];
+        clock_state.seconds = 0;
+        sign_text_now(text, sizeof(text));
+        assert(strcmp(text, "10:09:58") == 0);
+        clock_state.seconds = 2.5;
+        sign_text_now(text, sizeof(text));
+        assert(strcmp(text, "10:10:00") == 0);
+    }
+    reset_sign_state();
+    char *plain[] = {"cbirds", "--clock", NULL};
+    read_options(2, plain);
+    assert(the_sign.kind == SIGN_CLOCK && !the_sign.seconds);
+    reset_sign_state();
+    char *said[] = {"cbirds", "--say", "hi", "--seconds", NULL};
+    assert(exit_status_of(4, said) == EXIT_USAGE);
+    reset_sign_state();
 }
 
 static void test_the_options_that_make_a_sign(void) {
@@ -6030,6 +6217,10 @@ int main(void) {
     test_the_clock_tells_the_time_and_changes_it_a_letter_at_a_time();
     test_a_new_minute_lets_go_of_the_letters_that_changed_and_of_nothing_else();
     test_the_hour_lets_go_of_the_whole_clock();
+    test_a_clock_with_seconds_ticks_a_digit_at_a_time();
+    test_the_hour_lets_go_of_a_clock_with_seconds();
+    test_seconds_is_a_clock();
+    test_a_clock_with_seconds_fits_the_screens_a_clock_does();
     test_a_twelve_hour_clock_changes_a_letter_at_a_time_too();
     test_every_lit_cell_of_a_clock_keeps_its_writers_through_an_hour();
     test_a_sign_is_coloured_along_its_text();

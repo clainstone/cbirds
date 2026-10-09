@@ -98,8 +98,8 @@ instead (`~/.local/bin` has to be on your `PATH`):
 make install PREFIX="$HOME/.local"
 ```
 
-Linux and macOS. You need a C compiler and `make`, nothing else.
-`make test` runs the tests. The build uses the system's `cc` and honours `CC`,
+Linux and macOS; Windows is [below](#windows). You need a C compiler and `make`,
+nothing else. `make test` runs the tests. The build uses the system's `cc` and honours `CC`,
 `CFLAGS`, `LDFLAGS`, `PREFIX` and `DESTDIR`, so `make CC=clang` and packaging
 work as usual.
 
@@ -207,6 +207,34 @@ and inside tmux the sprites never reach the terminal.
 
 If braille does not look right in your terminal, open an issue and say which
 terminal it is. That is the report that helps most.
+
+## Windows
+
+cbirds runs on Windows 10 (version 1809 or later) and Windows 11, in Windows
+Terminal and in the classic console. Everything works as it does elsewhere:
+every option, the keys and the pointer, resizing, and the recordings. `q`,
+Ctrl-C and closing the window all leave the console as it was found.
+
+It needs a console to run in. mintty, which is the window of Git Bash and of
+MSYS2, gives a program a pipe instead, so start cbirds from Windows Terminal or
+from `cmd` or PowerShell, or put `winpty` in front of it in mintty. With no
+console it says so and stops. `--record`, `--bench`, `--help` and `--version`
+need none and work anywhere.
+
+To build it, install [MSYS2](https://www.msys2.org), open its UCRT64 shell, and:
+
+```
+pacman -S --needed make mingw-w64-ucrt-x86_64-gcc
+make
+```
+
+That writes `cbirds.exe`, which needs nothing but Windows itself, so the one
+file can be copied anywhere. `make test` runs the tests, among them one that
+starts the real program in a pseudo console and plays terminal to it.
+
+`--render kitty` is for terminals that speak the Kitty graphics protocol, here
+as everywhere, and Windows Terminal does not. Braille, sextants and blocks are
+what you get there.
 
 ## Options
 

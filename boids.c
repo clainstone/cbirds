@@ -441,9 +441,9 @@ static int layer_in_pass(int pass) {
 /* How big a bin's sprite is. The bird at the middle of the flock's depth is the
  * size that was asked for on a picture 512 pixels high, and the sprites grow with
  * the picture: the flock is framed to fill it, so on a bigger one the same bird
- * would be a speck. The height they were built for is kept, because the sprites
- * are not rebuilt when the window is resized and where they are placed must agree
- * with what they were drawn at. */
+ * would be a speck. The height they were built for is kept, because where they
+ * are placed must agree with what they were drawn at, and they are rebuilt only
+ * once the window has settled at another size (fit_the_sprites_to_the_window). */
 static int sky_picture_size;
 
 static int sky_bin_size(int bin) {
@@ -3755,6 +3755,52 @@ static void free_sprites(png_image_t *frames) {
     for (int i = 0; i < ROTATION_FRAMES * MAX_SPRITE_SETS; i++) png_image_free(&frames[i]);
 }
 
+/*
+ * A window of another size wants birds of another size, in a space.
+ *
+ * The flat flock's birds are as big as --size says in whatever window they fly,
+ * but a space is framed to fill the picture and its birds are a share of the
+ * picture, so a terminal made twice as big showed the same flock at half the
+ * size, every bird a speck. The sprites are rebuilt, then, when the picture is
+ * a different size; and not before it has stayed that size for a third of a
+ * second, because dragging a corner is a new size every frame and a rebuild is a
+ * pause of a few hundredths of a second. A change of under a twentieth is not
+ * worth the pause, and the birds are a pixel off at most.
+ */
+enum { RESIZE_SETTLE_FRAMES = 20 };
+static const double RESIZE_WORTH = 0.05;
+static int picture_held_for, picture_last_seen;
+
+static int the_sprites_are_for_another_picture(void) {
+    if (!sky_mode || sky_picture_size <= 0) return 0;
+    double now = sky_picture(screen.width, screen.height);
+    return fabs(now - sky_picture_size) >= RESIZE_WORTH * sky_picture_size;
+}
+
+typedef enum { SPRITES_FIT, SPRITES_REBUILT, SPRITES_FAILED } sprite_fit_t;
+
+/* Called every frame, after the window has been measured. A failure is the
+ * caller's to report, as it is at startup. A rebuild is the caller's to tell the
+ * clock about: it takes between a third of a second and two, as it does at
+ * startup, and the flock should wait for it, not fly on through it. */
+static sprite_fit_t fit_the_sprites_to_the_window(kitty_graphics_t *graphics) {
+    if (!sky_mode) return SPRITES_FIT;
+    int picture = (int)sky_picture(screen.width, screen.height);
+    picture_held_for = picture == picture_last_seen ? picture_held_for + 1 : 0;
+    picture_last_seen = picture;
+    if (picture_held_for < RESIZE_SETTLE_FRAMES || !the_sprites_are_for_another_picture())
+        return SPRITES_FIT;
+
+    free_sprites(text_sprites);
+    if (rasterise_sprites(text_sprites) != PNG_OK) return SPRITES_FAILED;
+    if (render_mode != RENDER_KITTY) return SPRITES_REBUILT;
+    /* Kitty keeps what it was sent, under the same ids, so the new images replace
+     * the old; and the placements are all made again every frame. */
+    kitty_graphics_status_t status = upload_sprite_sets(graphics, text_sprites);
+    free_sprites(text_sprites);
+    return status == KITTY_GRAPHICS_OK ? SPRITES_REBUILT : SPRITES_FAILED;
+}
+
 /* The ground, opaque, so a picture looks like the terminal it was taken in
  * rather than like a cut out. */
 static void fill_ground(png_image_t *canvas) {
@@ -4499,6 +4545,13 @@ int main(int argc, char **argv) {
             formation_clear();
         maybe_drift();
         update_screen_dimensions();
+        sprite_fit_t fit = fit_the_sprites_to_the_window(&graphics);
+        if (fit == SPRITES_FAILED) {
+            fprintf(stderr, "%s: cannot build the sprites to draw with\n", program_name);
+            exit(EXIT_FAILURE);
+        }
+        /* The pause was building, not flying: the next frame is one frame long. */
+        if (fit == SPRITES_REBUILT) clock_gettime(CLOCK_MONOTONIC, &previous_frame);
         grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, config.birds);
         if (grid_status != SPATIAL_GRID_OK) {
             fprintf(stderr, "Cannot resize spatial grid: %s\n",

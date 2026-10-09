@@ -3847,6 +3847,96 @@ static void test_ink_without_a_terminal_is_ash(void) {
     reset_test_config();
 }
 
+/* A space is framed to fill the window, so its birds are a share of it, and a
+ * window that settles at another size gets birds of another size: not at once, or
+ * dragging a corner would rebuild them every frame, and not for a change too small
+ * to see. The flat flock's are the size it was asked for, and are left alone. */
+static void test_the_birds_are_rebuilt_when_the_window_settles(void) {
+    kitty_graphics_t graphics;
+    int quiet = open("/dev/null", O_WRONLY);
+    assert(quiet >= 0 && kitty_graphics_init(&graphics, quiet) == KITTY_GRAPHICS_OK);
+
+    reset_test_config();
+    sky_mode = 1;
+    config.bird_size = 8;
+    config.palette = palette_named("ash");
+    render_mode = RENDER_BRAILLE;
+    picture_held_for = picture_last_seen = 0;
+    apply_screen_size(96, 32, 768, 512);
+    assert(rasterise_sprites(text_sprites) == PNG_OK);
+    int built_for = sky_picture_size;
+    int near_size = text_sprites[flock_set(0, 0, SKY_BINS - 1) * ROTATION_FRAMES].width;
+    assert(built_for == 512 && near_size == sky_bin_size(SKY_BINS - 1));
+    /* The window as it was needs nothing, however long it is looked at. */
+    for (int frame = 0; frame < 3 * RESIZE_SETTLE_FRAMES; frame++)
+        assert(fit_the_sprites_to_the_window(&graphics) == SPRITES_FIT);
+    assert(sky_picture_size == built_for);
+
+    /* Dragged: a new size every frame, however far it goes, is never rebuilt for. */
+    for (int frame = 0; frame < 4 * RESIZE_SETTLE_FRAMES; frame++) {
+        int height = 512 + 10 * (frame + 1);
+        apply_screen_size(96, 32, height * 3 / 2, height);
+        assert(the_sprites_are_for_another_picture() || frame < 4);
+        assert(fit_the_sprites_to_the_window(&graphics) == SPRITES_FIT);
+    }
+    assert(sky_picture_size == built_for);
+
+    /* Settled at twice the size: nothing for a third of a second, then a rebuild,
+     * once, and the birds are twice as big and placed by what they were drawn at. */
+    apply_screen_size(192, 64, 1536, 1024);
+    assert(the_sprites_are_for_another_picture());
+    int frames_to_wait = 0;
+    while (fit_the_sprites_to_the_window(&graphics) == SPRITES_FIT) {
+        assert(sky_picture_size == built_for && ++frames_to_wait <= 3 * RESIZE_SETTLE_FRAMES);
+    }
+    assert(frames_to_wait == RESIZE_SETTLE_FRAMES);
+    assert(sky_picture_size == 1024 && !the_sprites_are_for_another_picture());
+    int grown = text_sprites[flock_set(0, 0, SKY_BINS - 1) * ROTATION_FRAMES].width;
+    assert(grown == sky_bin_size(SKY_BINS - 1) && grown >= near_size * 2 - 1);
+    for (int bin = 0; bin < SKY_BINS; bin++)
+        for (int shape = 0; shape < SKY_SHAPES; shape++)
+            assert(text_sprites[flock_set(0, shape, bin) * ROTATION_FRAMES].width ==
+                   sky_bin_size(bin));
+    assert(hawk_size_in_layer(0) == sky_bin_size(0) * 3 &&
+           text_sprites[hawk_set(0) * ROTATION_FRAMES].width == hawk_size_in_layer(0));
+    for (int frame = 0; frame < 3 * RESIZE_SETTLE_FRAMES; frame++)
+        assert(fit_the_sprites_to_the_window(&graphics) == SPRITES_FIT);
+
+    /* A change of a few in a hundred is not worth the pause. */
+    apply_screen_size(192, 64, 1536 * 103 / 100, 1024 * 103 / 100);
+    for (int frame = 0; frame < 3 * RESIZE_SETTLE_FRAMES; frame++)
+        assert(fit_the_sprites_to_the_window(&graphics) == SPRITES_FIT);
+    assert(sky_picture_size == 1024);
+
+    /* And smaller again; and under Kitty the images are sent, and freed here. */
+    render_mode = RENDER_KITTY;
+    apply_screen_size(96, 32, 768, 512);
+    sprite_fit_t fit = SPRITES_FIT;
+    for (int frame = 0; frame < 2 * RESIZE_SETTLE_FRAMES && fit == SPRITES_FIT; frame++)
+        fit = fit_the_sprites_to_the_window(&graphics);
+    assert(fit == SPRITES_REBUILT && sky_picture_size == 512);
+    assert(text_sprites[flock_set(0, 0, 0) * ROTATION_FRAMES].pixels == NULL);
+    assert(graphics.length == 0); /* Sent, not left in the buffer. */
+
+    /* The flat flock's sprites do not depend on the window, so they are never
+     * rebuilt for it. */
+    free_sprites(text_sprites);
+    reset_test_config();
+    render_mode = RENDER_BRAILLE;
+    apply_screen_size(96, 32, 768, 512);
+    for (int frame = 0; frame < 3 * RESIZE_SETTLE_FRAMES; frame++) {
+        apply_screen_size(96 + frame, 32, 768 + 8 * frame, 512);
+        assert(fit_the_sprites_to_the_window(&graphics) == SPRITES_FIT);
+    }
+    assert(text_sprites[flock_set(0, 0, 0) * ROTATION_FRAMES].pixels == NULL);
+
+    kitty_graphics_destroy(&graphics);
+    close(quiet);
+    picture_held_for = picture_last_seen = 0;
+    render_mode = RENDER_KITTY;
+    reset_test_config();
+}
+
 /* A set of pictures for every size and shape, and the hawks' and the tails' after
  * them, where the flat flock has its far plane. */
 static void test_a_space_has_a_picture_for_every_size_and_shape(void) {
@@ -4524,6 +4614,7 @@ int main(void) {
     test_a_flock_of_ink_is_seen_on_a_white_ground();
     test_ink_is_asked_of_the_terminal();
     test_ink_without_a_terminal_is_ash();
+    test_the_birds_are_rebuilt_when_the_window_settles();
     test_a_space_has_a_picture_for_every_size_and_shape();
     test_a_birds_shape_follows_what_the_camera_sees();
     test_a_space_is_drawn_by_the_renderers_of_the_flat_flock();

@@ -1202,6 +1202,7 @@ static struct {
     double hover_x[MAX_BIRDS], hover_y[MAX_BIRDS]; /* Where in its loop, this frame. */
     double lift[FORMATION_MAX_TARGETS];    /* One for a target that rises with the breath. */
     double shift_y[FORMATION_MAX_TARGETS]; /* And how far it has risen, this frame. */
+    int glyph[FORMATION_MAX_TARGETS];      /* Which letter of the text a target is a cell of. */
     int keep_out;                          /* The rest of the flock stays out of box. */
     sign_box_t box;
     double band;
@@ -1228,12 +1229,14 @@ static void formation_place(const char *const *lines, int line_count, double lef
     double origin_x = left + (right - left - width) / 2;
     double origin_y = top + (bottom - top - height) / 2;
 
+    int letter = 0; /* Counted through all the lines: a clock changes a letter at a time. */
     for (int l = 0; l < line_count; l++) {
         double indent = (columns - font_text_width(lines[l])) / 2.0;
         int column = 0;
         for (const char *c = lines[l]; *c != '\0'; c++) {
             const char *glyph = font_glyph(*c);
             if (glyph == NULL) continue;
+            letter++;
             for (int row = 0; row < FONT_HEIGHT; row++) {
                 for (int x = 0; x < FONT_WIDTH; x++) {
                     if (glyph[row * FONT_WIDTH + x] != '#') continue;
@@ -1245,6 +1248,7 @@ static void formation_place(const char *const *lines, int line_count, double lef
                     formation.y[formation.count] = py;
                     formation.lift[formation.count] = lift_the_colon && *c == ':' ? 1.0 : 0.0;
                     formation.shift_y[formation.count] = 0;
+                    formation.glyph[formation.count] = letter - 1;
                     formation.count++;
                 }
             }
@@ -1353,8 +1357,10 @@ static const double SIGN_KEEP_OUT_STEPS = 4.0;
  * the panel's turn zone. At three frames, which is what the top notch asks, the
  * room under the panel on an eighty column terminal was a hand's breadth. */
 static const double SIGN_PANEL_GAP = DEFAULT_SPEED;
-/* A clock lets go for this long, once a minute: long enough to be a murmuration,
- * short enough that it is a clock the rest of the time. */
+/* A clock lets go as a whole for this long, once an hour: long enough to be a
+ * murmuration, which is the show. The rest of the hour it only ever lets go of the
+ * letters that change, and the time can be read at any moment. It used to let go
+ * of every letter at each minute, and was unreadable for four seconds in sixty. */
 static const double SIGN_CLOCK_FLIGHT = 3.0;
 /* The colon rises by this many cells at the top of its breath. */
 static const double SIGN_BREATH_LIFT = 0.5;
@@ -1386,6 +1392,7 @@ static struct {
     double until;   /* On the run's clock: when the hold or the flight is over. */
     double last_tick;
     char written[SIGN_TEXT_MAX]; /* What is up now. */
+    int per_cell;                /* Birds to a lit cell, the same for every cell of it. */
     int twelve_hours;
     unsigned seed;     /* --seed, for what a picture picks without the flock's numbers. */
     int virtual_clock; /* The time is the start time and the run's clock, not the wall's. */
@@ -1413,12 +1420,16 @@ static time_t sign_wall_time(double *into_the_second) {
     return now.tv_sec;
 }
 
+static void sign_local_now(struct tm *local) {
+    double unused;
+    time_t now = sign_wall_time(&unused);
+    if (localtime_r(&now, local) == NULL) memset(local, 0, sizeof(*local));
+}
+
 static void sign_text_now(char *out, size_t size) {
     if (the_sign.kind == SIGN_CLOCK) {
-        double unused;
-        time_t now = sign_wall_time(&unused);
         struct tm local;
-        if (localtime_r(&now, &local) == NULL) memset(&local, 0, sizeof(local));
+        sign_local_now(&local);
         sign_clock_text(&local, the_sign.twelve_hours, out, size);
     } else {
         snprintf(out, size, "%s", sign_words);
@@ -1526,18 +1537,26 @@ static int sign_place(const char *clean, int reference_columns, int lift_the_col
     formation.cell = cell;
     formation.hover = sign_hover_for(cell);
 
-    /* A few birds to a lit cell, as many as the flock can spare. */
-    int per_cell = (int)(near_birds * SIGN_WRITER_SHARE) / formation.count;
+    /* A few birds to a lit cell, as many as the flock can spare, and the same
+     * number to every cell for as long as the text is up. A clock is budgeted for
+     * the busiest minute of its hour and not for the minute it is writing: it
+     * changes a letter at a time, and a cell that had four birds at ten past ten
+     * and three at ten to eleven would be a stroke that thickens and thins. */
+    int budget = formation.count;
+    if (the_sign.kind == SIGN_CLOCK) {
+        struct tm when;
+        sign_local_now(&when);
+        for (int minute = 0; minute < 60; minute++) {
+            char time_text[SIGN_TEXT_MAX];
+            when.tm_min = minute;
+            sign_clock_text(&when, the_sign.twelve_hours, time_text, sizeof(time_text));
+            if (font_text_cells(time_text) > budget) budget = font_text_cells(time_text);
+        }
+    }
+    int per_cell = (int)(near_birds * SIGN_WRITER_SHARE) / budget;
     if (per_cell > SIGN_PER_CELL_MAX) per_cell = SIGN_PER_CELL_MAX;
     if (per_cell < 1) per_cell = 1;
-    int writers = per_cell * formation.count;
-    if (writers > near_birds) writers = near_birds;
-    for (int i = 0; i < MAX_BIRDS; i++) formation.slot[i] = -1;
-    int next = 0;
-    for (int i = 0; i < config.birds && next < writers; i++) {
-        if (birds[i].layer > 0) continue; /* The far sky is another sky. */
-        formation.slot[i] = next++ % formation.count;
-    }
+    the_sign.per_cell = per_cell;
 
     /* The box the rest of the flock is turned away from: the text, and a bird's
      * width round it. */
@@ -1553,6 +1572,21 @@ static int sign_place(const char *clean, int reference_columns, int lift_the_col
     formation.band = SIGN_KEEP_OUT_BAND * config.bird_size;
     formation.keep_out = 1;
     return 1;
+}
+
+/* Every lit cell gets its birds, the first of the near flock in order, so a cell
+ * is told only by its number. */
+static void sign_send_the_writers(const bird_t *birds) {
+    int near_birds = 0;
+    for (int i = 0; i < config.birds; i++) near_birds += birds[i].layer == 0;
+    int writers = the_sign.per_cell * formation.count;
+    if (writers > near_birds) writers = near_birds;
+    for (int i = 0; i < MAX_BIRDS; i++) formation.slot[i] = -1;
+    int next = 0;
+    for (int i = 0; i < config.birds && next < writers; i++) {
+        if (birds[i].layer > 0) continue; /* The far sky is another sky. */
+        formation.slot[i] = next++ % formation.count;
+    }
 }
 
 /* Which shade of the run's ramp a colour of the picture is: the nearest of the
@@ -1625,6 +1659,136 @@ static void sign_move_the_letters(void) {
         formation.shift_y[t] = -formation.lift[t] * SIGN_BREATH_LIFT * formation.cell * breath;
 }
 
+/* The targets of a letter are a run of them, and the first and how many of the
+ * run are all there is to know of where a letter is. */
+static int sign_find_the_letters(int first[], int cells[], int most) {
+    int letters = 0;
+    for (int t = 0; t < formation.count; t++) {
+        int letter = formation.glyph[t];
+        if (letter >= most) break;
+        while (letters <= letter) {
+            first[letters] = t;
+            cells[letters] = 0;
+            letters++;
+        }
+        cells[letter]++;
+    }
+    return letters;
+}
+
+typedef struct {
+    double distance;
+    int bird;
+} sign_candidate_t;
+
+static int sign_nearer(const void *a, const void *b) {
+    double d = ((const sign_candidate_t *)a)->distance - ((const sign_candidate_t *)b)->distance;
+    return (d > 0) - (d < 0);
+}
+
+/* The birds that write a letter that was not there: the ones nearest to it that
+ * are flocking. Those that wrote what it replaces have only now been let go, and
+ * are used only if there is nobody else, so that a letter is a letter made of new
+ * birds and not the same ones turning into another. They are matched to the
+ * letter's cells nearest first, each cell taking as many as every other, so that
+ * the letter is as thick as the ones that held. */
+static void sign_send_the_birds_to_a_letter(const bird_t *birds, const char *let_go, int first,
+                                            int cells) {
+    static sign_candidate_t candidates[MAX_BIRDS];
+    double centre_x = 0, centre_y = 0;
+    for (int t = first; t < first + cells; t++) {
+        centre_x += formation.x[t] / cells;
+        centre_y += formation.y[t] / cells;
+    }
+    int count = 0;
+    for (int i = 0; i < config.birds; i++) {
+        if (formation.slot[i] >= 0 || birds[i].layer > 0 || birds[i].scattered > 0) continue;
+        double dx = birds[i].x - centre_x, dy = birds[i].y - centre_y;
+        /* Behind everybody who was already flying free, however far they are. */
+        candidates[count].distance = dx * dx + dy * dy + (let_go[i] ? 1e12 : 0);
+        candidates[count].bird = i;
+        count++;
+    }
+    qsort(candidates, (size_t)count, sizeof(*candidates), sign_nearer);
+
+    static int taken[FORMATION_MAX_TARGETS];
+    for (int t = first; t < first + cells; t++) taken[t] = 0;
+    int wanted = the_sign.per_cell * cells;
+    if (wanted > count) wanted = count;
+    for (int c = 0; c < wanted; c++) {
+        int bird = candidates[c].bird, best = -1;
+        double nearest = 0;
+        for (int t = first; t < first + cells; t++) {
+            if (taken[t] >= the_sign.per_cell) continue;
+            double dx = birds[bird].x - formation.x[t], dy = birds[bird].y - formation.y[t];
+            double d = dx * dx + dy * dy;
+            if (best < 0 || d < nearest) {
+                best = t;
+                nearest = d;
+            }
+        }
+        taken[best]++;
+        formation.slot[bird] = best;
+    }
+}
+
+/* A new minute on a clock that is not a new hour: the letters that changed are
+ * let go of and written by other birds, and the rest are not touched, so the time
+ * can be read throughout. Returns 0, with nothing done, when it is the whole sign
+ * that has to go: the hour, a text of another length or another hour, or a
+ * layout that is no longer for this screen. */
+static int sign_change_the_letters(const bird_t *birds, const char *shown) {
+    char was[SIGN_TEXT_MAX], now[SIGN_TEXT_MAX];
+    sign_clean(the_sign.written, was, sizeof(was));
+    int letters = sign_clean(shown, now, sizeof(now));
+    size_t length = strlen(now);
+    const char *colon = strchr(now, ':');
+    if (letters == 0 || strlen(was) != length || colon == NULL || length < 2) return 0;
+    if (strncmp(was, now, (size_t)(colon - now) + 1) != 0) return 0; /* The hour changed. */
+    if (now[length - 2] == '0' && now[length - 1] == '0') return 0;  /* The hour is here. */
+    if (!sign_layout_is_current()) return 0;
+
+    static int was_slot[MAX_BIRDS];
+    static char let_go[MAX_BIRDS];
+    int was_first[SIGN_TEXT_MAX], was_cells[SIGN_TEXT_MAX];
+    int now_first[SIGN_TEXT_MAX], now_cells[SIGN_TEXT_MAX];
+    int was_letters = sign_find_the_letters(was_first, was_cells, SIGN_TEXT_MAX);
+    memcpy(was_slot, formation.slot, sizeof(*was_slot) * (size_t)config.birds);
+    sign_box_t box = formation.box;
+    double band = formation.band;
+
+    /* Laid out again for the new text, which puts every letter that did not change
+     * exactly where it was: the same cell, the same size. Only the numbers of its
+     * targets move, with the letters before it. */
+    if (!sign_place(now, sign_columns("00:00"), 1, birds)) return 0;
+    formation.box = box;
+    formation.band = band;
+    int now_letters = sign_find_the_letters(now_first, now_cells, SIGN_TEXT_MAX);
+    int changed[SIGN_TEXT_MAX];
+    for (int g = 0; g < now_letters; g++)
+        changed[g] = g >= was_letters || was[g] != now[g] || was_cells[g] != now_cells[g];
+
+    for (int i = 0; i < config.birds; i++) {
+        let_go[i] = 0;
+        formation.slot[i] = -1;
+        int old = was_slot[i];
+        if (old < 0) continue;
+        for (int g = 0; g < was_letters; g++) {
+            if (old < was_first[g] || old >= was_first[g] + was_cells[g]) continue;
+            if (g < now_letters && !changed[g])
+                formation.slot[i] = now_first[g] + (old - was_first[g]);
+            else
+                let_go[i] = 1;
+        }
+    }
+    for (int g = 0; g < now_letters; g++)
+        if (changed[g]) sign_send_the_birds_to_a_letter(birds, let_go, now_first[g], now_cells[g]);
+
+    snprintf(the_sign.written, sizeof(the_sign.written), "%s", shown);
+    sign_move_the_letters();
+    return 1;
+}
+
 static int sign_write(const bird_t *birds) {
     char text[SIGN_TEXT_MAX] = "";
     char clean[SIGN_TEXT_MAX];
@@ -1636,6 +1800,7 @@ static int sign_write(const bird_t *birds) {
         sign_clean(text, clean, sizeof(clean));
         fits = sign_place(clean, the_sign.kind == SIGN_CLOCK ? sign_columns("00:00") : 0,
                           the_sign.kind == SIGN_CLOCK, birds);
+        if (fits) sign_send_the_writers(birds);
     }
     if (!fits) {
         formation_clear();
@@ -1695,6 +1860,9 @@ static void sign_advance(const bird_t *birds) {
         char shown[SIGN_TEXT_MAX];
         sign_text_now(shown, sizeof(shown));
         new_minute = strcmp(shown, the_sign.written) != 0;
+        /* A minute lets go of the letters that changed and nothing else; the hour
+         * lets go of all of them, which is the show. */
+        if (new_minute && sign_change_the_letters(birds, shown)) return;
     }
     if (new_minute || (the_sign.until >= 0 && now >= the_sign.until)) {
         sign_let_go();

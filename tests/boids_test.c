@@ -1747,8 +1747,9 @@ static void fly_the_world(world_t *world, double from, double to, double fps) {
 static double home_distance(const world_t *world, int bird) {
     int target = formation.slot[bird];
     assert(target >= 0);
+    /* The colon of a clock rises and settles, and its place goes with it. */
     return hypot(world->birds[bird].x - formation.x[target],
-                 world->birds[bird].y - formation.y[target]);
+                 world->birds[bird].y - formation.y[target] - formation.shift_y[target]);
 }
 
 /* The intro, written out here the way it always was: one line, the largest cell
@@ -2151,7 +2152,22 @@ static time_t local_time(int hour, int minute, int second) {
     return made;
 }
 
-static void test_the_clock_tells_the_time_and_lets_go_at_each_minute(void) {
+/* Every lit cell of the sign has as many birds writing it as every other, and all
+ * of them are in their loops: what a sign is, whichever way it came to be. */
+static void assert_every_cell_has_its_writers(const world_t *world) {
+    static int writers[FORMATION_MAX_TARGETS];
+    for (int t = 0; t < formation.count; t++) writers[t] = 0;
+    for (int i = 0; i < config.birds; i++) {
+        int t = formation.slot[i];
+        if (t < 0) continue;
+        assert(t < formation.count);
+        writers[t]++;
+        assert(home_distance(world, i) <= formation.hover + 1e-6);
+    }
+    for (int t = 0; t < formation.count; t++) assert(writers[t] == the_sign.per_cell);
+}
+
+static void test_the_clock_tells_the_time_and_changes_it_a_letter_at_a_time(void) {
     reset_sign_state();
     apply_screen_size(200, 50, 1600, 800);
     world_t world;
@@ -2166,7 +2182,9 @@ static void test_the_clock_tells_the_time_and_lets_go_at_each_minute(void) {
     assert(formation.count == font_text_cells("10:09"));
     double cell = formation.cell;
 
-    /* It holds the minute it wrote, and lets go the moment the next one begins. */
+    /* It holds the minute it wrote, and the moment the next one begins it has
+     * written that: the letters that changed are other birds' work from then, and
+     * the clock is never down. */
     for (double at = 0.1; at < 9.99; at += 0.1) {
         clock_state.seconds = at;
         sign_advance(world.birds);
@@ -2174,19 +2192,11 @@ static void test_the_clock_tells_the_time_and_lets_go_at_each_minute(void) {
     }
     clock_state.seconds = 10.0;
     sign_advance(world.birds);
-    assert(!the_sign.up && !formation.writing);
-
-    /* A few seconds of murmuration, and then the new time, as large as the old. */
-    clock_state.seconds = 10.0 + SIGN_CLOCK_FLIGHT - 0.1;
-    sign_advance(world.birds);
-    assert(!the_sign.up);
-    clock_state.seconds = 10.0 + SIGN_CLOCK_FLIGHT + 0.1;
-    sign_advance(world.birds);
-    assert(the_sign.up && strcmp(the_sign.written, "10:10") == 0);
+    assert(the_sign.up && formation.writing && strcmp(the_sign.written, "10:10") == 0);
     assert(formation.count == font_text_cells("10:10"));
     assert(formation.cell == cell);
-    /* And a clock does not let go again for the rest of the minute. */
-    for (double at = 14; at < 69.9; at += 0.5) {
+    /* And it does not change again for the rest of the minute. */
+    for (double at = 10.5; at < 69.9; at += 0.5) {
         clock_state.seconds = at;
         sign_advance(world.birds);
         assert(the_sign.up && strcmp(the_sign.written, "10:10") == 0);
@@ -2207,6 +2217,161 @@ static void test_the_clock_tells_the_time_and_lets_go_at_each_minute(void) {
     assert(strcmp(the_sign.written, "1:05") == 0);
     assert(formation.count == font_text_cells("1:05"));
     assert(fabs(formation.cell - cell) < 1e-9);
+    close_the_world(&world);
+    reset_sign_state();
+}
+
+/* A clock that has landed, at 200 by 50 cells with a flock of 800: ten past ten
+ * and five seconds from the next minute. */
+static void open_a_clock_at(world_t *world, int hour, int minute, int second, int birds) {
+    reset_sign_state();
+    apply_screen_size(200, 50, 1600, 800);
+    the_sign.kind = SIGN_CLOCK;
+    the_sign.virtual_clock = 1;
+    the_sign.origin = local_time(hour, minute, second);
+    begin_the_intro();
+    open_the_world(world, birds, 6);
+}
+
+static void test_a_new_minute_lets_go_of_the_letters_that_changed_and_of_nothing_else(void) {
+    world_t world;
+    open_a_clock_at(&world, 10, 9, 55, 800);
+    /* Five seconds to the new minute, and a second of that is enough to land. */
+    fly_the_world(&world, 0, 4.9, 60);
+    assert(strcmp(the_sign.written, "10:09") == 0);
+    assert_every_cell_has_its_writers(&world);
+
+    /* Who writes the hour and the colon, and where, and who writes the minutes. */
+    enum { KEPT_LETTERS = 3 }; /* "10:" */
+    static int kept_birds[MAX_BIRDS], minute_birds[MAX_BIRDS];
+    static double kept_x[MAX_BIRDS], kept_y[MAX_BIRDS];
+    int kept = 0, minutes = 0;
+    for (int i = 0; i < config.birds; i++) {
+        int t = formation.slot[i];
+        if (t < 0) continue;
+        if (formation.glyph[t] < KEPT_LETTERS) {
+            kept_birds[kept] = i;
+            kept_x[kept] = formation.x[t];
+            kept_y[kept] = formation.y[t];
+            kept++;
+        } else {
+            minute_birds[minutes++] = i;
+        }
+    }
+    assert(kept > 0 && minutes > 0);
+
+    /* Across the change, frame by frame: the writers of "10:" never leave their
+     * loops, never change their places and never let go. */
+    int changed_at = -1;
+    for (double at = 4.9; at < 8.0; at += 1.0 / 60) {
+        step_the_world(&world, at);
+        if (changed_at < 0 && strcmp(the_sign.written, "10:10") == 0) changed_at = (int)(at * 60);
+        assert(the_sign.up && formation.writing);
+        for (int k = 0; k < kept; k++) {
+            int t = formation.slot[kept_birds[k]];
+            assert(t >= 0 && formation.glyph[t] < KEPT_LETTERS);
+            assert(formation.x[t] == kept_x[k] && formation.y[t] == kept_y[k]);
+            assert(home_distance(&world, kept_birds[k]) <= formation.hover + 1e-6);
+        }
+    }
+    assert(changed_at == (int)(5.0 * 60));
+
+    /* The birds that wrote the old minutes are flocking, and the new ones are other
+     * birds, in their loops, as many to a cell as before. */
+    for (int m = 0; m < minutes; m++) assert(formation.slot[minute_birds[m]] < 0);
+    assert(formation.count == font_text_cells("10:10"));
+    assert_every_cell_has_its_writers(&world);
+    close_the_world(&world);
+    reset_sign_state();
+}
+
+static void test_the_hour_lets_go_of_the_whole_clock(void) {
+    world_t world;
+    open_a_clock_at(&world, 10, 59, 55, 800);
+    fly_the_world(&world, 0, 4.9, 60);
+    assert(strcmp(the_sign.written, "10:59") == 0);
+    assert_every_cell_has_its_writers(&world);
+
+    clock_state.seconds = 5.0;
+    step_the_world(&world, 5.0);
+    assert(!the_sign.up && !formation.writing);
+    for (int i = 0; i < config.birds; i++) {
+        double x, y;
+        assert(!formation_target_of(i, &x, &y));
+    }
+    /* It flies for the three seconds, and then the new time is written. */
+    fly_the_world(&world, 5.0 + 1.0 / 60, 5.0 + SIGN_CLOCK_FLIGHT - 0.1, 60);
+    assert(!the_sign.up && !formation.writing);
+    fly_the_world(&world, 5.0 + SIGN_CLOCK_FLIGHT - 0.1, 5.0 + SIGN_CLOCK_FLIGHT + 2.0, 60);
+    assert(the_sign.up && strcmp(the_sign.written, "11:00") == 0);
+    assert_every_cell_has_its_writers(&world);
+    close_the_world(&world);
+    reset_sign_state();
+}
+
+/* The same on a twelve hour clock, whose hour has no zero in front of it: "1:09" to
+ * "1:10" is two letters, and "12:59" to "1:00" is the hour, of another length. */
+static void test_a_twelve_hour_clock_changes_a_letter_at_a_time_too(void) {
+    world_t world;
+    open_a_clock_at(&world, 13, 9, 55, 800);
+    the_sign.twelve_hours = 1;
+    fly_the_world(&world, 0, 4.9, 60);
+    assert(strcmp(the_sign.written, "1:09") == 0);
+    assert_every_cell_has_its_writers(&world);
+    static int kept[MAX_BIRDS];
+    int held = 0;
+    for (int i = 0; i < config.birds; i++)
+        if (formation.slot[i] >= 0 && formation.glyph[formation.slot[i]] < 2) kept[held++] = i;
+    assert(held > 0);
+    fly_the_world(&world, 4.9, 7.0, 60);
+    assert(the_sign.up && strcmp(the_sign.written, "1:10") == 0);
+    assert(formation.count == font_text_cells("1:10"));
+    for (int k = 0; k < held; k++) {
+        int t = formation.slot[kept[k]];
+        assert(t >= 0 && formation.glyph[t] < 2);
+    }
+    assert_every_cell_has_its_writers(&world);
+    close_the_world(&world);
+
+    open_a_clock_at(&world, 12, 59, 55, 800);
+    the_sign.twelve_hours = 1;
+    fly_the_world(&world, 0, 4.9, 60);
+    assert(strcmp(the_sign.written, "12:59") == 0);
+    clock_state.seconds = 5.0;
+    step_the_world(&world, 5.0);
+    assert(!the_sign.up && !formation.writing);
+    fly_the_world(&world, 5.0 + 1.0 / 60, 5.0 + SIGN_CLOCK_FLIGHT + 2.0, 60);
+    assert(the_sign.up && strcmp(the_sign.written, "1:00") == 0);
+    assert_every_cell_has_its_writers(&world);
+    close_the_world(&world);
+    reset_sign_state();
+}
+
+/* Fresh birds for each letter that changes must not run the clock down: after an
+ * hour of minutes, and the hour itself, every lit cell has as many birds as it
+ * had at the start, and the same as every other cell. */
+static void test_every_lit_cell_of_a_clock_keeps_its_writers_through_an_hour(void) {
+    world_t world;
+    open_a_clock_at(&world, 10, 0, 30, 800);
+    fly_the_world(&world, 0, 3.0, 20);
+    assert(strcmp(the_sign.written, "10:00") == 0);
+    assert_every_cell_has_its_writers(&world);
+    int per_cell = the_sign.per_cell;
+    assert(per_cell >= 2); /* So that there is something to starve. */
+
+    /* The change of each minute, and a few seconds either side of it, flown; the
+     * rest of the minute is held, and need not be. Sixty one changes, which is the
+     * hour at the sixtieth. */
+    for (int minute = 1; minute <= 61; minute++) {
+        double change = 30.0 + 60.0 * (minute - 1);
+        fly_the_world(&world, change - 1.0, change + 4.5, 20);
+        char want[16];
+        snprintf(want, sizeof(want), "%d:%02d", 10 + (minute >= 60), minute % 60);
+        assert(strcmp(the_sign.written, want) == 0);
+        assert(the_sign.up && formation.count == font_text_cells(want));
+        assert(the_sign.per_cell == per_cell);
+        assert_every_cell_has_its_writers(&world);
+    }
     close_the_world(&world);
     reset_sign_state();
 }
@@ -4676,7 +4841,11 @@ int main(void) {
     test_a_sign_draws_no_random_numbers_and_the_flock_keeps_its_own();
     test_the_sign_comes_back_after_its_flight();
     test_a_pause_holds_a_sign_too();
-    test_the_clock_tells_the_time_and_lets_go_at_each_minute();
+    test_the_clock_tells_the_time_and_changes_it_a_letter_at_a_time();
+    test_a_new_minute_lets_go_of_the_letters_that_changed_and_of_nothing_else();
+    test_the_hour_lets_go_of_the_whole_clock();
+    test_a_twelve_hour_clock_changes_a_letter_at_a_time_too();
+    test_every_lit_cell_of_a_clock_keeps_its_writers_through_an_hour();
     test_the_clock_tells_local_time();
     test_the_colon_lifts_with_the_seconds();
     test_the_pointer_scatters_a_sign_and_it_comes_back();

@@ -213,8 +213,10 @@ over, for less time.
 `--clock` writes the time, HH:MM, in local time, and follows the locale for the
 hour: twelve hours, with no AM or PM, if `LC_TIME` has a time format that shows
 the hour on a twelve hour clock, and twenty four otherwise. The colon rises and
-settles once a second. At each new minute the digits let go for a few seconds
-and the flock writes the next time.
+settles once a second. At each new minute the digits that change let go and
+other birds write the new ones, while the rest of the time stays where it is,
+so the clock can be read at any moment. On the hour the whole of it lets go for
+a few seconds, and the flock writes the next time.
 
 `--picture FILE` has the flock draw a PNG instead. Every bird takes a place in
 the opaque part of the picture, where a pixel with an alpha above half is ink,

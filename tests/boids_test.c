@@ -2376,6 +2376,90 @@ static void test_every_lit_cell_of_a_clock_keeps_its_writers_through_an_hour(voi
     reset_sign_state();
 }
 
+/* The colour of a sign is a gradient along the text, from one end of the ramp to
+ * the other, and the colour of the place and not of the bird. */
+static void test_a_sign_is_coloured_along_its_text(void) {
+    world_t world;
+    int shades = 5;
+    const char *texts[] = {"HELLO", "BACK IN FIVE MINUTES PLEASE", "I"};
+    for (int k = 0; k < 3; k++) {
+        reset_sign_state();
+        apply_screen_size(200, 50, 1600, 800);
+        ask_for_a_sign(texts[k]);
+        begin_the_intro();
+        open_the_world(&world, 600, 5);
+        assert(palette_shades() == shades);
+        fly_the_world(&world, 0, 2.5, 60);
+        assert(the_sign.up);
+        if (k == 1) assert(formation.y[formation.count - 1] > formation.y[0] + 5 * formation.cell);
+
+        /* Every writer is the shade of its place's distance along the text, and
+         * the places that are further along are never a lighter shade. */
+        int lowest = shades, highest = -1, writers = 0;
+        for (int i = 0; i < config.birds; i++) {
+            int t = formation.slot[i];
+            if (t < 0) continue;
+            writers++;
+            int want = (int)(formation.across[t] * shades);
+            if (want >= shades) want = shades - 1;
+            assert(world.birds[i].shade == want);
+            if (world.birds[i].shade < lowest) lowest = world.birds[i].shade;
+            if (world.birds[i].shade > highest) highest = world.birds[i].shade;
+            for (int j = 0; j < config.birds; j++) {
+                int u = formation.slot[j];
+                if (u >= 0 && formation.across[u] < formation.across[t])
+                    assert(world.birds[j].shade <= world.birds[i].shade);
+            }
+        }
+        assert(writers > 0);
+        /* A word runs the ramp from end to end, a wrapped text too, whatever its
+         * lines, which are the colours of the columns they are in, and a lone
+         * letter runs it across itself. */
+        assert(lowest == 0 && highest == shades - 1);
+        /* And it stays so while the birds hover, whichever way they are turned. */
+        static int kept[MAX_BIRDS];
+        for (int i = 0; i < config.birds; i++) kept[i] = world.birds[i].shade;
+        fly_the_world(&world, 2.5, 4.0, 60);
+        for (int i = 0; i < config.birds; i++)
+            if (formation.slot[i] >= 0) assert(world.birds[i].shade == kept[i]);
+        close_the_world(&world);
+    }
+
+    /* Two flocks are two colours, and a sign does not take that from them. */
+    reset_sign_state();
+    apply_screen_size(200, 50, 1600, 800);
+    config.flocks = 2;
+    ask_for_a_sign("HELLO");
+    begin_the_intro();
+    open_the_world(&world, 600, 5);
+    fly_the_world(&world, 0, 2.5, 60);
+    for (int i = 0; i < config.birds; i++)
+        assert(world.birds[i].shade == shade_for_flock(world.birds[i].flock));
+    close_the_world(&world);
+    reset_sign_state();
+}
+
+/* Five letters, five shades: a clock of ice is a letter a colour, and a letter
+ * keeps its colour when the letters round it are written again. */
+static void test_the_letters_of_a_clock_are_a_shade_each_and_keep_it(void) {
+    world_t world;
+    open_a_clock_at(&world, 10, 9, 55, 800);
+    fly_the_world(&world, 0, 4.9, 60);
+    assert(palette_shades() == 5);
+    for (int i = 0; i < config.birds; i++) {
+        int t = formation.slot[i];
+        if (t >= 0) assert(world.birds[i].shade == formation.glyph[t]);
+    }
+    fly_the_world(&world, 4.9, 7.0, 60);
+    assert(strcmp(the_sign.written, "10:10") == 0);
+    for (int i = 0; i < config.birds; i++) {
+        int t = formation.slot[i];
+        if (t >= 0) assert(world.birds[i].shade == formation.glyph[t]);
+    }
+    close_the_world(&world);
+    reset_sign_state();
+}
+
 /* The time is the local time, wherever the program is: the same instant is one
  * time in one zone and another in the next. A POSIX zone written out, so that no
  * zone database has to be there. */
@@ -4846,6 +4930,8 @@ int main(void) {
     test_the_hour_lets_go_of_the_whole_clock();
     test_a_twelve_hour_clock_changes_a_letter_at_a_time_too();
     test_every_lit_cell_of_a_clock_keeps_its_writers_through_an_hour();
+    test_a_sign_is_coloured_along_its_text();
+    test_the_letters_of_a_clock_are_a_shade_each_and_keep_it();
     test_the_clock_tells_local_time();
     test_the_colon_lifts_with_the_seconds();
     test_the_pointer_scatters_a_sign_and_it_comes_back();

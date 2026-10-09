@@ -1203,6 +1203,7 @@ static struct {
     double lift[FORMATION_MAX_TARGETS];    /* One for a target that rises with the breath. */
     double shift_y[FORMATION_MAX_TARGETS]; /* And how far it has risen, this frame. */
     int glyph[FORMATION_MAX_TARGETS];      /* Which letter of the text a target is a cell of. */
+    double across[FORMATION_MAX_TARGETS];  /* How far along the text a target is, 0 to 1. */
     int keep_out;                          /* The rest of the flock stays out of box. */
     sign_box_t box;
     double band;
@@ -1249,6 +1250,7 @@ static void formation_place(const char *const *lines, int line_count, double lef
                     formation.lift[formation.count] = lift_the_colon && *c == ':' ? 1.0 : 0.0;
                     formation.shift_y[formation.count] = 0;
                     formation.glyph[formation.count] = letter - 1;
+                    formation.across[formation.count] = (indent + column + x + 0.5) / columns;
                     formation.count++;
                 }
             }
@@ -1891,6 +1893,21 @@ static vector_t sign_keep_out_vector(const bird_t *bird) {
     if (band < formation.band) band = formation.band;
     sign_box_push(&formation.box, band, bird->x, bird->y, &push.x, &push.y);
     return push;
+}
+
+/* A writer is coloured by where its place is along the text, from one end of the
+ * ramp to the other, and a wrapped text runs the whole ramp on every line. Tried
+ * against a hash of the bird, which speckled every letter across the ramp, and
+ * against a colour a line (flat, and sloping down the lines): the gradient reads
+ * best, a word coming out as a few letters of one shade each. By line, the last
+ * line of ice or ember is the dark end of the ramp from end to end, and is the
+ * dimmest line of the sign; with the ramp on every line, every line is as easy to
+ * read as the first. The shade is the place's and not the bird's, so a letter that
+ * is written again by other birds is the colour it was. */
+static int sign_shade_for(int index) {
+    int shades = palette_shades();
+    int shade = (int)(formation.across[formation.slot[index]] * shades);
+    return shade >= shades ? shades - 1 : shade;
 }
 
 /* It opens by writing its name, in the middle, for a moment; then the flock
@@ -2934,13 +2951,14 @@ static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_gr
         if (the_rain_is_falling) wrap_position(&birds[i]);
         if (formation.sign) birds[i].scattered = sign_scatter_left(&snapshot[i], i);
         birds[i].shade = shade_for(&birds[i]);
-        /* A writer of a sign keeps one colour from the moment it is sent: its
-         * heading goes round the loop of its hover once or twice a second, and a
-         * colour that went round the ramp with it would make the letters flicker. */
+        /* A writer of a sign is the colour of its place, and keeps it from the
+         * moment it is sent: its heading goes round the loop of its hover once or
+         * twice a second, and a colour that went round the ramp with it would make
+         * the letters flicker. */
         if (the_sign.kind == SIGN_PICTURE)
             birds[i].shade = picture_shade[i]; /* The picture's colour, flying or home. */
         else if (writing && formation.sign && config.flocks == 1 && palette_shades() > 1)
-            birds[i].shade = (int)(sign_unit((unsigned)i) * palette_shades()) % palette_shades();
+            birds[i].shade = sign_shade_for(i);
         beat_wings(&birds[i]);
         if (config.trails && i % TRAIL_EVERY == 0) {
             /* Where it was, not where it is: a tail behind, never under. */

@@ -201,8 +201,9 @@ fps.
 up. A sign is for reading, so it is held for thirty to forty-five seconds, and
 then the flock lets go for ten to fifteen, flies as a murmuration, and writes
 it again. The birds that write do not stand still: each hovers round its place
-in a small loop of its own, so the strokes shimmer and stay sharp. The rest of
-the flock flies round the sign, not through it. Lower case is written in
+in a small loop of its own, so the strokes shimmer and stay sharp. The colour
+runs along the text, from one end of the ramp to the other. The rest of the
+flock flies round the sign, not through it. Lower case is written in
 capitals and characters the font lacks are left out. Text too long for one line
 wraps at its spaces onto two or three, as large as fits, and a text the flock
 has too few birds to write is said so on stderr and left unwritten. A key does

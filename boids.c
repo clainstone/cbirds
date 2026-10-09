@@ -1875,6 +1875,7 @@ static char sign_words[SIGN_TEXT_MAX]; /* And as the font can draw it. */
 static int clock_mode;
 static const char *clock_start; /* --clock-at: a time to start from. */
 static int clock_seconds;       /* --seconds: HH:MM:SS. */
+static int sign_font_rows;      /* --font-size: a letter's height in rows, 0 if not given. */
 static int screensaver_mode;
 
 /* Half of the free width, centred, which is sky on either side for the flock,
@@ -1901,6 +1902,19 @@ static const double SIGN_HEIGHT_SHARE = 0.45, SIGN_HEIGHT_SHARE_SMALL = 0.5;
  * which is what a roomy screen gave every sign before the river. At 80 by 24 with
  * three lines that is what keeps a cell at eight pixels. */
 static const double SIGN_WIDTH_MOST = 2.0 / 3.0, SIGN_HEIGHT_MOST = 0.6;
+/* How many rows of the terminal a letter of a sign is tall: --font-size, or by
+ * default a seventh of the window's rows, from four to ten either way, and never
+ * more than the shares above leave room for. Tried from three rows to sixteen
+ * at 80 by 24, 120 by 34, 160 by 45 and 200 by 50 cells, with 10:09, 10:09:36 and
+ * HELLO WORLD, the free flock wheeling round. At three the cells are seven pixels
+ * and the text is lost in the river; past ten the birds, which are as large as
+ * the cells, are as large as the birds of a flock with nothing to write, and the
+ * river round the text is two heavy bands above and below it. Between them the
+ * best was four rows at 80 by 24, five at 120 by 34, five or six at 160 by 45 and
+ * six to eight at 200 by 50: a seventh of the rows. The shares alone, which made
+ * a short text as large as half the screen allowed, gave eleven rows at 200 by 50,
+ * which was the heavy one. */
+enum { SIGN_FONT_ROWS_MIN = 4, SIGN_FONT_ROWS_MAX = 10, SIGN_FONT_SHARE_OF_ROWS = 7 };
 /* The largest a cell grows, in bird sizes: past two and a half the cells of a
  * short word are further apart than a bird is wide, and the letters fall apart
  * into dots. */
@@ -2117,10 +2131,27 @@ static double sign_band(void) {
  * gives if that is less, so that a long text on a small screen is as large as it
  * was and not smaller still. Returns the lines (0 if it does not fit), and the
  * width and height of the share that was used. */
+/* How many rows tall the letters are to be. */
+static int sign_font_rows_now(void) {
+    if (sign_font_rows > 0) return sign_font_rows;
+    int rows = (int)((double)screen.rows / SIGN_FONT_SHARE_OF_ROWS + 0.5);
+    return rows < SIGN_FONT_ROWS_MIN ? SIGN_FONT_ROWS_MIN
+                                     : (rows > SIGN_FONT_ROWS_MAX ? SIGN_FONT_ROWS_MAX : rows);
+}
+
+/* The side of a lit cell for that, in pixels: a letter is FONT_HEIGHT cells tall. */
+static double sign_font_cell(void) {
+    if (screen.rows <= 0 || screen.height <= 0) return 0;
+    return sign_font_rows_now() * ((double)screen.height / screen.rows) / FONT_HEIGHT;
+}
+
 static int sign_fit_in(const char *clean, int reference_columns, double room_width,
                        double room_height, double largest, sign_lines_t *lines, double *cell,
                        double *width, double *height) {
     double most_width = room_width * SIGN_WIDTH_MOST, most_height = room_height * SIGN_HEIGHT_MOST;
+    /* The font's size, on as few lines as it fits on, or as large as fits. */
+    double font = sign_font_cell();
+    if (font > 0 && font < largest) largest = font;
     *width = room_width * sign_share(SIGN_WIDTH_SHARE, SIGN_WIDTH_SHARE_SMALL);
     *height = room_height * sign_share(SIGN_HEIGHT_SHARE, SIGN_HEIGHT_SHARE_SMALL);
     int count = sign_fit(clean, reference_columns, *width, *height, largest, lines, cell);
@@ -2653,6 +2684,11 @@ static vector_t sign_keep_out_vector(const bird_t *bird) {
 static vector_t sign_orbit_vector(const bird_t *bird) {
     vector_t flow = {0, 0};
     if (!formation.writing || !formation.keep_out || bird->layer > 0) return flow;
+    /* A sky shared through a door is one the birds cross, and a river round the
+     * text kept them from the door: in a window of 120 by 40 cells, with letters a
+     * seventh of it tall, fewer than a hundred crossed it one way or the other in
+     * fourteen seconds, and more than a hundred cross each way without it. */
+    if (open_edges.left || open_edges.right) return flow;
     const sign_box_t *box = &formation.box;
     double band = sign_band() * SIGN_ORBIT_BAND;
     double cx = (box->left + box->right) / 2, cy = (box->top + box->bottom) / 2;
@@ -5712,6 +5748,8 @@ static const option_t OPTIONS[] = {
      "start the clock at HH:MM or HH:MM:SS, not now", "Sign", 0},
     {0, "seconds", NULL, OPTION_FLAG, &clock_seconds, 0, 0, NULL, NULL,
      "the clock shows the seconds too, HH:MM:SS", "Sign", 0},
+    {0, "font-size", "fontsize", OPTION_INT, &sign_font_rows, SIGN_FONT_ROWS_MIN,
+     SIGN_FONT_ROWS_MAX, NULL, "ROWS", "how many rows tall a sign's letters are, 4 to 10", "Sign", 0},
     {0, "picture", NULL, OPTION_STRING, &picture_path, 0, 0, NULL, "FILE",
      "the flock draws a PNG, in its colours unless --color is given", "Sign", 0},
 
@@ -6356,7 +6394,7 @@ static int sign_bird_size(void) {
                                     : (size > DEFAULT_BIRD_SIZE ? DEFAULT_BIRD_SIZE : size);
     }
     if (the_sign.kind == SIGN_CLOCK)
-        sign_clean("00:00", clean, sizeof(clean));
+        sign_clean(the_sign.seconds ? "00:00:00" : "00:00", clean, sizeof(clean));
     else
         snprintf(clean, sizeof(clean), "%s", sign_words);
     double used_width, used_height;

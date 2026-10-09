@@ -1705,6 +1705,7 @@ static void reset_sign_state(void) {
     clock_mode = 0;
     clock_start = NULL;
     clock_seconds = 0;
+    sign_font_rows = 0;
     screensaver_mode = 0;
     picture_path = NULL;
     picture_colours_in_use = 0;
@@ -2728,6 +2729,8 @@ static void test_the_pointer_scatters_a_sign_and_it_comes_back(void) {
     reset_sign_state();
     apply_screen_size(200, 50, 1600, 800);
     sign_sky_t world;
+    /* As large as letters get, so that the pointer's reach is a part of the word. */
+    sign_font_rows = SIGN_FONT_ROWS_MAX;
     ask_for_a_sign("HI");
     begin_the_intro();
     open_the_world(&world, 300, 7);
@@ -3442,6 +3445,139 @@ static void test_seconds_is_a_clock(void) {
     reset_sign_state();
 }
 
+/* --font-size is rows, four to ten, and --fontsize is the same option; outside
+ * that it is a usage error. */
+static void test_the_font_size_is_rows_from_four_to_ten(void) {
+    reset_sign_state();
+    char *six[] = {"cbirds", "--clock", "--font-size", "6", NULL};
+    read_options(4, six);
+    assert(sign_font_rows == 6 && the_sign.kind == SIGN_CLOCK);
+    reset_sign_state();
+    char *joined[] = {"cbirds", "--say", "hi", "--fontsize", "9", NULL};
+    read_options(5, joined);
+    assert(sign_font_rows == 9 && the_sign.kind == SIGN_SAY);
+    reset_sign_state();
+    char *edges[][5] = {{"cbirds", "--clock", "--font-size", "4", NULL},
+                        {"cbirds", "--clock", "--font-size", "10", NULL}};
+    for (int e = 0; e < 2; e++) {
+        read_options(4, edges[e]);
+        assert(sign_font_rows == (e == 0 ? SIGN_FONT_ROWS_MIN : SIGN_FONT_ROWS_MAX));
+        reset_sign_state();
+    }
+    char *small[] = {"cbirds", "--clock", "--font-size", "3", NULL};
+    assert(exit_status_of(4, small) == EXIT_USAGE);
+    char *large[] = {"cbirds", "--clock", "--font-size", "11", NULL};
+    assert(exit_status_of(4, large) == EXIT_USAGE);
+    char *not_a_number[] = {"cbirds", "--clock", "--font-size", "big", NULL};
+    assert(exit_status_of(4, not_a_number) == EXIT_USAGE);
+    reset_sign_state();
+}
+
+/* Not given, the letters are a seventh of the window's rows, four at the least
+ * and ten at the most; given, they are what was given whatever the window. */
+static void test_the_letters_are_a_seventh_of_the_rows_unless_told(void) {
+    int rows[] = {18, 24, 26, 34, 45, 50, 60, 80};
+    int wanted[] = {4, 4, 4, 5, 6, 7, 9, 10};
+    for (int r = 0; r < 8; r++) {
+        reset_sign_state();
+        apply_screen_size(rows[r] * 3, rows[r], rows[r] * 3 * 8, rows[r] * 16);
+        assert(sign_font_rows_now() == wanted[r]);
+        assert(fabs(sign_font_cell() - wanted[r] * 16.0 / FONT_HEIGHT) < 1e-9);
+        sign_font_rows = 8;
+        assert(sign_font_rows_now() == 8);
+    }
+    /* In rows, not pixels: a screen of twice the pixels has cells twice as large. */
+    reset_sign_state();
+    apply_screen_size(200, 50, 3200, 1600);
+    assert(fabs(sign_font_cell() - 7 * 32.0 / FONT_HEIGHT) < 1e-9);
+    reset_sign_state();
+}
+
+/* A sign of the size asked for, if it fits, in the bird that size asks for: a
+ * clock at five rows of a 200 by 50 screen is cells of five sevenths of sixteen
+ * pixels, and its birds as wide; at ten, larger, and still the asked size. Too
+ * large for the room is as large as fits, and never larger than asked. A long text
+ * takes more lines at a larger size. */
+static void test_a_sign_is_as_tall_as_its_font_where_it_fits(void) {
+    for (int font = SIGN_FONT_ROWS_MIN; font <= SIGN_FONT_ROWS_MAX; font += 3) {
+        sign_sky_t world;
+        reset_sign_state();
+        apply_screen_size(200, 50, 1600, 800);
+        sign_font_rows = font;
+        config.bird_size = 0;
+        the_sign.kind = SIGN_CLOCK;
+        the_sign.virtual_clock = 1;
+        the_sign.origin = local_time(10, 9, 0);
+        settle_the_bird_size();
+        begin_the_intro();
+        open_the_world(&world, 800, 6);
+        sign_advance(world.birds);
+        assert(the_sign.up && strcmp(the_sign.written, "10:09") == 0);
+        double cell = font * 16.0 / FONT_HEIGHT;
+        assert(fabs(formation.cell - cell) < 1e-9);
+        assert(config.bird_size == (int)(cell + 0.5));
+        /* The rows the letters take, from the top of the highest cell to the bottom
+         * of the lowest: as many as were asked for. */
+        double top = 1e9, bottom = 0;
+        for (int t = 0; t < formation.count; t++) {
+            if (formation.lift[t] > 0) continue; /* The colon rises with its breath. */
+            if (formation.y[t] < top) top = formation.y[t];
+            if (formation.y[t] > bottom) bottom = formation.y[t];
+        }
+        assert(fabs((bottom - top + cell) / 16.0 - font) < 1e-6);
+        close_the_world(&world);
+    }
+    /* HH:MM:SS at ten rows is wider than an 80 column screen leaves it. */
+    {
+        sign_sky_t world;
+        reset_sign_state();
+        apply_screen_size(80, 24, 640, 384);
+        sign_font_rows = SIGN_FONT_ROWS_MAX;
+        config.bird_size = 0;
+        the_sign.kind = SIGN_CLOCK;
+        the_sign.seconds = 1;
+        the_sign.virtual_clock = 1;
+        the_sign.origin = local_time(10, 9, 0);
+        settle_the_bird_size();
+        begin_the_intro();
+        open_the_world(&world, 800, 6);
+        sign_advance(world.birds);
+        assert(the_sign.up && formation.cell < SIGN_FONT_ROWS_MAX * 16.0 / FONT_HEIGHT);
+        double most_right = 0, most_left = 1e9;
+        for (int t = 0; t < formation.count; t++) {
+            if (formation.x[t] > most_right) most_right = formation.x[t];
+            if (formation.x[t] < most_left) most_left = formation.x[t];
+        }
+        assert(most_left > 0 && most_right < 640);
+        close_the_world(&world);
+    }
+    /* A long text: on more lines at ten rows than at four. */
+    int lines_at[2];
+    for (int f = 0; f < 2; f++) {
+        sign_sky_t world;
+        reset_sign_state();
+        apply_screen_size(200, 50, 1600, 800);
+        sign_font_rows = f == 0 ? SIGN_FONT_ROWS_MIN : SIGN_FONT_ROWS_MAX;
+        ask_for_a_sign("back in five minutes");
+        config.bird_size = 0;
+        settle_the_bird_size();
+        begin_the_intro();
+        open_the_world(&world, 800, 6);
+        sign_advance(world.birds);
+        assert(the_sign.up);
+        double top = 1e9, bottom = 0;
+        for (int t = 0; t < formation.count; t++) {
+            if (formation.y[t] < top) top = formation.y[t];
+            if (formation.y[t] > bottom) bottom = formation.y[t];
+        }
+        int rows = (int)((bottom - top) / formation.cell + 0.5) + 1;
+        lines_at[f] = rows == sign_rows(1) ? 1 : rows == sign_rows(2) ? 2 : 3;
+        close_the_world(&world);
+    }
+    assert(lines_at[0] < lines_at[1]);
+    reset_sign_state();
+}
+
 /* The pull round a sign, as geometry: along the ellipse, one way while the sign is
  * held and the other way the next time, back towards it from far off, nothing to a
  * bird of the far sky, and nothing without a sign. */
@@ -3609,7 +3745,10 @@ static void test_one_hawk_leaves_a_sign_readable(void) {
         double two = share_of_a_sign_scattered("HELLO WORLD", 2, 25, seed);
         assert(one > 0.01); /* A hawk over the sign does scatter it... */
         assert(one < 0.10); /* ...and a sign with one hawk up is whole nearly always. */
-        assert(two > one && two < 0.15);
+        /* Two scatter it too, and not by much more: a hawk hunts round the text now,
+         * and whether two cross it more often than one in a flight of fourteen
+         * seconds is a matter of the chase, which came out either way. */
+        assert(two > 0.01 && two < 0.15);
     }
     /* A clock is the same story, and at the rate a person sees it. */
     reset_sign_state();
@@ -3748,17 +3887,20 @@ static void test_a_small_screen_leaves_the_flock_sky_and_a_roomy_one_is_as_it_wa
     apply_screen_size(120, 34, 120 * 8, 34 * 16);
     assert(sign_smallness() > 0.3 && sign_smallness() < 0.8);
 
-    /* A roomy screen gives the sign the roomy shares of the room, the writers a
-     * sixth of a flock short of three fifths, the band four steps of flight. */
+    /* A roomy screen gives the sign the roomy shares of the room, in letters a
+     * seventh of its rows tall, the writers a sixth of a flock short of three
+     * fifths, the band four steps of flight. */
     lay_out_a_sign_on(&world, 200, 50, 25, "HELLO WORLD", 800, 5);
     {
         double pad = config.bird_size * 2.0;
         sign_lines_t lines;
         double cell;
+        assert(sign_font_rows_now() == 7 && fabs(sign_font_cell() - 7 * 16.0 / FONT_HEIGHT) < 1e-9);
         assert(sign_fit("HELLO WORLD", 0, (1600 - 2 * pad) * SIGN_WIDTH_SHARE,
-                        (800 - 2 * pad) * SIGN_HEIGHT_SHARE, SIGN_LARGEST_CELL * config.bird_size,
-                        &lines, &cell) > 0);
-        assert(fabs(formation.cell - cell) < 1e-9);
+                        (800 - 2 * pad) * SIGN_HEIGHT_SHARE,
+                        fmin(SIGN_LARGEST_CELL * config.bird_size, sign_font_cell()), &lines,
+                        &cell) == 2);
+        assert(fabs(formation.cell - cell) < 1e-9 && fabs(cell - sign_font_cell()) < 1e-9);
         assert(the_sign.per_cell == (int)(800 * SIGN_WRITER_SHARE) / formation.count);
         assert(fabs(sign_band() - SIGN_KEEP_OUT_STEPS * config.speed) < 1e-9);
     }
@@ -3775,7 +3917,8 @@ static void test_a_small_screen_leaves_the_flock_sky_and_a_roomy_one_is_as_it_wa
         double small_cell, most_cell;
         assert(sign_fit("HELLO WORLD", 0, (768 - 2 * pad) * SIGN_WIDTH_SHARE_SMALL,
                         (416 - 2 * pad) * SIGN_HEIGHT_SHARE_SMALL,
-                        SIGN_LARGEST_CELL * config.bird_size, &lines, &small_cell) > 0);
+                        fmin(SIGN_LARGEST_CELL * config.bird_size, sign_font_cell()), &lines,
+                        &small_cell) > 0);
         assert(sign_fit("HELLO WORLD", 0, (768 - 2 * pad) * SIGN_WIDTH_MOST,
                         (416 - 2 * pad) * SIGN_HEIGHT_MOST, SIGN_LARGEST_CELL * config.bird_size,
                         &lines, &most_cell) > 0);
@@ -4199,9 +4342,17 @@ static void test_an_error_after_the_screen_is_taken_is_said_after_it_is_given_ba
 
 static void test_a_sign_has_a_bird_as_wide_as_its_cells_unless_it_is_told(void) {
     reset_sign_state();
-    /* The usual thirty on a roomy screen, and smaller on a small one, where a bird
-     * of thirty pixels is a smudge on a letter of twelve. */
+    /* As wide as the cells of its letters, where a bird of thirty pixels is a smudge
+     * on a letter of twelve: a letter a seventh of the rows of 200 by 50 cells is
+     * seven rows of sixteen pixels, which is a cell of sixteen. Never more than the
+     * usual thirty, which a screen of twice the pixels reaches. */
     apply_screen_size(200, 50, 1600, 800);
+    ask_for_a_sign("HI");
+    config.bird_size = 0;
+    settle_the_bird_size();
+    assert(config.bird_size == 16);
+    reset_sign_state();
+    apply_screen_size(200, 50, 3200, 1600);
     ask_for_a_sign("HI");
     config.bird_size = 0;
     settle_the_bird_size();
@@ -13103,6 +13254,9 @@ int main(void) {
     test_the_hour_lets_go_of_a_clock_with_seconds();
     test_seconds_is_a_clock();
     test_a_clock_with_seconds_fits_the_screens_a_clock_does();
+    test_the_font_size_is_rows_from_four_to_ten();
+    test_the_letters_are_a_seventh_of_the_rows_unless_told();
+    test_a_sign_is_as_tall_as_its_font_where_it_fits();
     test_the_free_flock_is_turned_round_a_sign();
     test_the_free_flock_wheels_round_a_sign_one_way();
     test_a_twelve_hour_clock_changes_a_letter_at_a_time_too();

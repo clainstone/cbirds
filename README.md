@@ -291,15 +291,25 @@ the text, from one end of the ramp to the other. The rest of the flock wheels
 round the sign, not through it: all of it the same way, on an ellipse round the
 text, as one river that bunches and thins, and the other way round the next time
 the sign is written. Each bird of it wears the colour of its heading, so the sky
-round the text turns like a wheel. The sign takes half the width of the screen
-and not quite half its height, which leaves the river room, half and half on a
-small terminal, where more of the flock writes so that the birds that are left
-have sky to fly in, and up to two thirds by three fifths for a long text that
-would be too small to read otherwise. A sign picks a
-bird as wide as the distance between the cells of its letters unless you give
-`--size`, so a short text is written with the usual bird and a long one on a
-small terminal with a smaller one. `--shape dot` gives sharp strokes, and more
-birds make thicker ones.
+round the text turns like a wheel. In a sky shared with `--link` there is no
+river, so that the birds are free to cross to the next window.
+
+The letters are a seventh of the window's rows tall: four rows at 80 by 24, five
+at 120 by 34, seven at 200 by 50. `--font-size ROWS` sets them from 4 to 10
+rows, on any window. Under four the text is lost in the river, and over ten the
+birds, which are as wide as the cells of the letters, are as heavy as a flock
+with nothing to write and the river is two bands above and below the text. A
+sign never takes more than half the width of the screen and not quite half its
+height, or half and half on a small terminal, so that the river has room; a
+size that does not fit there is made as large as fits, on up to three lines,
+and a long text that would be too small to read takes up to two thirds by three
+fifths. On a small terminal more of the flock writes, so that the birds that are
+left have sky to fly in.
+
+A sign picks a bird as wide as the distance between the cells of its letters
+unless you give `--size`, so larger letters are written by larger birds, up to
+the usual thirty pixels, and the whole flock flies at that size. `--shape dot`
+gives sharp strokes, and more birds make thicker ones.
 
 Lower case is written in capitals, and an accented letter as its plain one, so
 that città is CITTA and Straße is STRASSE; a symbol, or a letter of another
@@ -578,6 +588,7 @@ Sign
       --clock                   the flock tells the time, HH:MM, in local time
       --clock-at TIME           start the clock at HH:MM or HH:MM:SS, not now
       --seconds                 the clock shows the seconds too, HH:MM:SS
+      --font-size ROWS          how many rows tall a sign's letters are, 4 to 10
       --picture FILE            the flock draws a PNG, in its colours unless --color is given
 
 Oddities

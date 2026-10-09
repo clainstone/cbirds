@@ -358,12 +358,56 @@ static void test_a_colour_the_first_frame_lacks_can_be_reserved(void) {
     remove(reserved);
 }
 
+/* The table is chosen from the first frame. A colour that only turns up later has
+ * no entry of its own and is drawn as the nearest one that has, unless it was
+ * promised. */
+static void test_a_colour_promised_for_later_has_an_entry_of_its_own(void) {
+    enum { W = 32, H = 16 };
+    static const uint8_t late[3] = {200, 100, 250};
+    for (int promised = 0; promised < 2; promised++) {
+        const char *path = scratch_file("promised.gif");
+        gif_writer_t *writer = NULL;
+        png_image_t frame = {0, 0, NULL};
+        reading_t read;
+        assert(gif_open(&writer, path, W, H, 5) == GIF_OK);
+        assert(png_image_alloc(&frame, W, H) == PNG_OK);
+        if (promised) assert(gif_hint_colours(writer, late, 1) == GIF_OK);
+        paint(&frame, 0);
+        assert(gif_add_frame(writer, &frame) == GIF_OK);
+        /* Too late for the table once a frame has gone in. */
+        assert(gif_hint_colours(writer, late, 1) == GIF_ERR_ARGUMENT);
+        for (size_t i = 0; i < (size_t)W * H; i++) {
+            frame.pixels[i * 4 + 0] = late[0];
+            frame.pixels[i * 4 + 1] = late[1];
+            frame.pixels[i * 4 + 2] = late[2];
+        }
+        assert(gif_add_frame(writer, &frame) == GIF_OK);
+        assert(gif_close(writer, NULL, NULL) == GIF_OK);
+        assert(read_gif(path, &read));
+        const uint8_t *got = read.palette[read.indices[0]];
+        int near = got[0] > 192 && got[0] < 208 && got[1] > 92 && got[1] < 108 && got[2] > 242;
+        assert(near == promised);
+        free(read.indices);
+        png_image_free(&frame);
+        remove(path);
+    }
+    gif_writer_t *writer = NULL;
+    assert(gif_hint_colours(NULL, late, 1) == GIF_ERR_ARGUMENT);
+    assert(gif_open(&writer, scratch_file("hint.gif"), 4, 4, 5) == GIF_OK);
+    assert(gif_hint_colours(writer, NULL, 1) == GIF_ERR_ARGUMENT);
+    assert(gif_hint_colours(writer, NULL, 0) == GIF_OK);
+    assert(gif_hint_colours(writer, late, -1) == GIF_ERR_ARGUMENT);
+    assert(gif_close(writer, NULL, NULL) == GIF_OK);
+    remove(scratch_file("hint.gif"));
+}
+
 int main(void) {
     make_scratch();
     test_round_trip();
     test_refusals();
     test_flat_frames_compress();
     test_a_colour_the_first_frame_lacks_can_be_reserved();
+    test_a_colour_promised_for_later_has_an_entry_of_its_own();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);
     return 0;

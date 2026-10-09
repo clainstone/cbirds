@@ -16,7 +16,11 @@ enum {
      * into one pass over a fixed table. */
     QUANT_BITS = 5,
     QUANT_LEVELS = 1 << QUANT_BITS,
-    QUANT_BUCKETS = QUANT_LEVELS * QUANT_LEVELS * QUANT_LEVELS
+    QUANT_BUCKETS = QUANT_LEVELS * QUANT_LEVELS * QUANT_LEVELS,
+    /* How much a promised colour counts for, in pixels, when the table is chosen:
+     * more than a frame the size of a screen has of any one colour, so that it is
+     * in; small enough that the sums in a bucket stay inside 32 bits. */
+    SEED_WEIGHT = 1 << 22
 };
 
 struct gif_writer {
@@ -29,6 +33,8 @@ struct gif_writer {
     uint8_t reserved[GIF_RESERVED_MAX][3];
     int reserved_count;
     uint8_t palette[GIF_COLOURS][3];
+    uint8_t seeds[GIF_SEEDS][3]; /* Colours promised for later frames. */
+    int seed_count;
     uint8_t bucket_to_index[QUANT_BUCKETS]; /* Nearest palette entry, per bucket. */
     uint8_t *indices;                       /* One frame's worth. */
     /* LZW state, kept here so a frame does not allocate. */
@@ -92,6 +98,15 @@ static gif_status_t build_palette(gif_writer_t *w, const png_image_t *frame) {
         int bucket = bucket_of(rgb);
         counts[bucket]++;
         for (int c = 0; c < 3; c++) sums[(size_t)bucket * 3 + (size_t)c] += rgb[c];
+    }
+    /* A colour that was promised for a later frame is as good as a colour in this
+     * one: the table is decided once, here, and a colour with no entry is drawn as
+     * the nearest one that has. */
+    for (int i = 0; i < w->seed_count; i++) {
+        int bucket = bucket_of(w->seeds[i]);
+        counts[bucket] += SEED_WEIGHT;
+        for (int c = 0; c < 3; c++)
+            sums[(size_t)bucket * 3 + (size_t)c] += (uint32_t)w->seeds[i][c] * SEED_WEIGHT;
     }
 
     /* The colours the first frame does not have come first, exactly as given,
@@ -275,6 +290,14 @@ gif_status_t gif_reserve_colours(gif_writer_t *w, const uint8_t (*colours)[3], i
     memcpy(w->reserved, colours, (size_t)count * 3);
     w->reserved_count = count;
     return w->status;
+}
+
+gif_status_t gif_hint_colours(gif_writer_t *w, const uint8_t *rgb, int count) {
+    if (w == NULL || (count > 0 && rgb == NULL) || count < 0) return GIF_ERR_ARGUMENT;
+    if (w->have_palette || w->frames > 0) return GIF_ERR_ARGUMENT;
+    for (int i = 0; i < count && w->seed_count < GIF_SEEDS; i++)
+        memcpy(w->seeds[w->seed_count++], rgb + (size_t)i * 3, 3);
+    return GIF_OK;
 }
 
 gif_status_t gif_add_frame(gif_writer_t *w, const png_image_t *frame) {

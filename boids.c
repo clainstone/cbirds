@@ -1444,22 +1444,30 @@ static int clock_mode;
 static const char *clock_start; /* --clock-at: a time to start from. */
 static int screensaver_mode;
 
-/* Two thirds of the free width, centred, which is sky on either side for the
- * flock; and three fifths of the height, so that two or three lines of a long
- * text are still lines of a sign and not the whole screen. That is for a roomy
- * screen, 160 by 45 cells and up, where it leaves half the screen outside the
- * band the rest of the flock is kept out of. On a small one it left a thin ring:
- * the band is as wide in pixels there as anywhere, and the free flock streamed
- * round the sign along the edges. So the sign takes less of a small screen, down
- * to half the width and half the height, and the writers more of the flock:
- * measured on 800 birds saying HELLO WORLD at 96 by 26 cells and 25 frames a
- * second, the sky outside the band went from 7% of the screen to 42%, the free
- * birds within a bird of the sign or an edge from 23% to 6%, and the share of the
- * sky with a bird in it from 1% to 26%. Half and half were the smallest that
- * kept the letters as large as 11 pixels a cell; a width share alone left the
- * height, which is what binds two lines, as it was. */
-static const double SIGN_WIDTH_SHARE = 2.0 / 3.0, SIGN_WIDTH_SHARE_SMALL = 0.5;
-static const double SIGN_HEIGHT_SHARE = 0.6, SIGN_HEIGHT_SHARE_SMALL = 0.5;
+/* Half of the free width, centred, which is sky on either side for the flock,
+ * and not quite half of the height on a roomy screen, 160 by 45 cells and up; half
+ * and half on a small one, 96 by 26 and under, where the band the rest of the flock
+ * is kept out of is as wide in pixels as anywhere and the letters need what room
+ * there is. A roomy screen used to give the sign two thirds of its width and three
+ * fifths of its height: the letters were as large as they could be, and the rest
+ * of the flock had a corridor round them, which with the river of
+ * sign_orbit_vector is a belt the shape of the box. At half by not quite half the
+ * river has the room to be an ellipse round the text, and the text is still the
+ * largest thing on the screen. A small screen gave it half and half before the
+ * river too: measured on 800 birds saying HELLO WORLD at 96 by 26 cells and 25
+ * frames a second, against two thirds and three fifths, the sky outside the band
+ * went from 7% of the screen to 42%, the free birds within a bird of the sign or
+ * an edge from 23% to 6%, and the share of the sky with a bird in it from 1% to
+ * 26%. Less than half there is a smaller sign the hawks cross more often: with the
+ * river at two fifths, one hawk hunting round HELLO WORLD kept a tenth of its
+ * writers scattered, against a twentieth at half. */
+static const double SIGN_WIDTH_SHARE = 0.5, SIGN_WIDTH_SHARE_SMALL = 0.5;
+static const double SIGN_HEIGHT_SHARE = 0.45, SIGN_HEIGHT_SHARE_SMALL = 0.5;
+/* What a long text may take when those shares would make its letters smaller than
+ * SIGN_SMALLEST_CELL: two thirds of the width and three fifths of the height,
+ * which is what a roomy screen gave every sign before the river. At 80 by 24 with
+ * three lines that is what keeps a cell at eight pixels. */
+static const double SIGN_WIDTH_MOST = 2.0 / 3.0, SIGN_HEIGHT_MOST = 0.6;
 /* The largest a cell grows, in bird sizes: past two and a half the cells of a
  * short word are further apart than a bird is wide, and the letters fall apart
  * into dots. */
@@ -1501,6 +1509,20 @@ static const double SIGN_KEEP_OUT_STEPS = 4.0;
  * were 0.1%, as against none, and at 60 frames the band is four steps and
  * under a fifth, as it was. On 200 by 50 cells it is as it was at either. */
 static const double SIGN_KEEP_OUT_MOST = 0.2;
+/* The river round a sign (see sign_orbit_vector). Its ellipse goes through the
+ * corners of the box grown by half the band, and keeps a bird and a half from the
+ * edges of the screen. The pull along it weighs what a full turn of alignment
+ * does, a little less than the flock's own; the pull back to it is as strong, felt
+ * from a quarter of the ellipse off it and in full three tenths further. Tried at
+ * 96 by 26 and 160 by 45 cells with HELLO WORLD and 10:09, looking at the frames
+ * and at a second of them laid on one another: along at 0.5 the river was there
+ * and still crossed itself, at 1.3 it was a belt that never changed, and from 0.7
+ * to 1 it is a river with arms that wheel round the text, every bird of it the
+ * colour of its heading, so the sky round the text turns like a wheel. */
+static const double SIGN_ORBIT_ALONG = 1.0, SIGN_ORBIT_BACK = 1.0;
+static const double SIGN_ORBIT_FREE = 0.25, SIGN_ORBIT_SOFT = 0.3;
+static const double SIGN_ORBIT_GROW = 1.41421356237, SIGN_ORBIT_BAND = 0.5;
+static const double SIGN_ORBIT_MARGIN = 1.5;
 /* The room kept clear past the panel's own edge, when there is one: a frame of
  * flight at the shipped pace, which with the pad is more than a frame of flight at
  * any pace short of the top two or three notches, and so a letter does not land in
@@ -1656,32 +1678,31 @@ static double sign_band(void) {
 }
 
 /* The sign that fits in a room: the cleaned text wrapped onto the lines that make
- * its cell largest, in the share of the room the screen allows, which is less of
- * it the smaller the screen is. The cell is not taken below SMALLEST_CELL, or
- * below what the roomy shares give if that is less, so that a long text on a small
- * screen is as large as it was and not smaller still. Returns the lines (0 if it
- * does not fit), and the width and height of the share that was used. */
+ * its cell largest, in the share of the room the size of the screen gives it. The
+ * cell is not taken below SMALLEST_CELL, or below what the most a sign may take
+ * gives if that is less, so that a long text on a small screen is as large as it
+ * was and not smaller still. Returns the lines (0 if it does not fit), and the
+ * width and height of the share that was used. */
 static int sign_fit_in(const char *clean, int reference_columns, double room_width,
                        double room_height, double largest, sign_lines_t *lines, double *cell,
                        double *width, double *height) {
-    double roomy_width = room_width * SIGN_WIDTH_SHARE,
-           roomy_height = room_height * SIGN_HEIGHT_SHARE;
+    double most_width = room_width * SIGN_WIDTH_MOST, most_height = room_height * SIGN_HEIGHT_MOST;
     *width = room_width * sign_share(SIGN_WIDTH_SHARE, SIGN_WIDTH_SHARE_SMALL);
     *height = room_height * sign_share(SIGN_HEIGHT_SHARE, SIGN_HEIGHT_SHARE_SMALL);
     int count = sign_fit(clean, reference_columns, *width, *height, largest, lines, cell);
     if (count > 0 && *cell >= SIGN_SMALLEST_CELL) return count;
-    sign_lines_t roomy;
-    double roomy_cell;
-    int roomy_count =
-        sign_fit(clean, reference_columns, roomy_width, roomy_height, largest, &roomy, &roomy_cell);
-    if (roomy_count == 0) return count;
-    double wanted = roomy_cell < SIGN_SMALLEST_CELL ? roomy_cell : SIGN_SMALLEST_CELL;
+    sign_lines_t most;
+    double most_cell;
+    int most_count =
+        sign_fit(clean, reference_columns, most_width, most_height, largest, &most, &most_cell);
+    if (most_count == 0) return count;
+    double wanted = most_cell < SIGN_SMALLEST_CELL ? most_cell : SIGN_SMALLEST_CELL;
     if (count > 0 && *cell >= wanted) return count;
-    *lines = roomy;
+    *lines = most;
     *cell = wanted;
-    *width = roomy_width;
-    *height = roomy_height;
-    return roomy_count;
+    *width = most_width;
+    *height = most_height;
+    return most_count;
 }
 
 /* How far a bird loops, for targets this far apart. */
@@ -2160,6 +2181,51 @@ static vector_t sign_keep_out_vector(const bird_t *bird) {
      * thousandth. */
     sign_box_push(&formation.box, sign_band(), bird->x, bird->y, &push.x, &push.y);
     return push;
+}
+
+/* The rest of the flock flies round the sign, all of it the same way, on an
+ * ellipse through the corners of the text and its band, or as near to that as the
+ * screen has room for. Kept out of the box and nothing more, it came at the text
+ * from every side, split left and right at it, and met itself on the far side:
+ * streams that crossed, clumps against the edges, and birds over the letters. A
+ * pull along the ellipse makes one river of it, and a pull back to the ellipse
+ * keeps the river round the sign instead of in a corner; a bird a quarter of the
+ * way off it either side is left to the flock, so the river breathes, bunches and
+ * thins as a murmuration does. The way round turns with each hold. */
+static vector_t sign_orbit_vector(const bird_t *bird) {
+    vector_t flow = {0, 0};
+    if (!formation.writing || !formation.keep_out || bird->layer > 0) return flow;
+    const sign_box_t *box = &formation.box;
+    double band = sign_band() * SIGN_ORBIT_BAND;
+    double cx = (box->left + box->right) / 2, cy = (box->top + box->bottom) / 2;
+    double a = ((box->right - box->left) / 2 + band) * SIGN_ORBIT_GROW;
+    double b = ((box->bottom - box->top) / 2 + band) * SIGN_ORBIT_GROW;
+    double margin = SIGN_ORBIT_MARGIN * config.bird_size;
+    double room_x = (cx < screen.width - cx ? cx : screen.width - cx) - margin;
+    double room_y = (cy < screen.height - cy ? cy : screen.height - cy) - margin;
+    if (a > room_x) a = room_x;
+    if (b > room_y) b = room_y;
+    if (a < 1 || b < 1) return flow;
+    double u = (bird->x - cx) / a, v = (bird->y - cy) / b;
+    double r = sqrt(u * u + v * v);
+    if (r < 1e-9) return flow;
+    /* Along: the ellipse's own tangent where the bird is. Back: its normal. */
+    double along_x = -a * v, along_y = b * u;
+    double along = sqrt(along_x * along_x + along_y * along_y);
+    double out_x = u / a, out_y = v / b;
+    double out = sqrt(out_x * out_x + out_y * out_y);
+    double sense = the_sign.cycle % 2 ? -1.0 : 1.0;
+    flow.x = sense * SIGN_ORBIT_ALONG * along_x / along;
+    flow.y = sense * SIGN_ORBIT_ALONG * along_y / along;
+    double off = r - 1;
+    if (off > SIGN_ORBIT_FREE || off < -SIGN_ORBIT_FREE) {
+        double pull = (off > 0 ? off - SIGN_ORBIT_FREE : off + SIGN_ORBIT_FREE) / SIGN_ORBIT_SOFT;
+        if (pull > 1) pull = 1;
+        if (pull < -1) pull = -1;
+        flow.x -= SIGN_ORBIT_BACK * pull * out_x / out;
+        flow.y -= SIGN_ORBIT_BACK * pull * out_y / out;
+    }
+    return flow;
 }
 
 /* A writer is coloured by where its place is along the text, from one end of the
@@ -2994,6 +3060,7 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
     vector_t hawk = hawk_vector(target);
     vector_t wind = wind_vector();
     vector_t keep_out = sign_keep_out_vector(target);
+    vector_t orbit = sign_orbit_vector(target);
     int neighbors = 0, strangers = 0;
     double kin = 0; /* Counted in kinship: a whole bird for its own flock. */
     int center_x, center_y;
@@ -3074,17 +3141,19 @@ static double flock_direction(const bird_t *birds, const spatial_grid_t *grid, i
         double x = separation.x * config.separation + alignment.x * config.alignment +
                    cohesion.x * COHESION_W + boundary.x * config.boundary + leash.x * LEASH_WEIGHT +
                    pointer.x * MOUSE_WEIGHT + hawk.x * HAWK_WEIGHT + wind.x * WIND_WEIGHT +
-                   wary.x * config.avoid_weight + keep_out.x * SIGN_KEEP_OUT_WEIGHT;
+                   wary.x * config.avoid_weight + keep_out.x * SIGN_KEEP_OUT_WEIGHT + orbit.x;
         double y = separation.y * config.separation + alignment.y * config.alignment +
                    cohesion.y * COHESION_W + boundary.y * config.boundary + leash.y * LEASH_WEIGHT +
                    pointer.y * MOUSE_WEIGHT + hawk.y * HAWK_WEIGHT + wind.y * WIND_WEIGHT +
-                   wary.y * config.avoid_weight + keep_out.y * SIGN_KEEP_OUT_WEIGHT;
+                   wary.y * config.avoid_weight + keep_out.y * SIGN_KEEP_OUT_WEIGHT + orbit.y;
         return x == 0 && y == 0 ? target->direction : normalized_angle(y, x);
     }
     boundary.x = boundary.x * config.boundary + leash.x * LEASH_WEIGHT + pointer.x * MOUSE_WEIGHT +
-                 hawk.x * HAWK_WEIGHT + wind.x * WIND_WEIGHT + keep_out.x * SIGN_KEEP_OUT_WEIGHT;
+                 hawk.x * HAWK_WEIGHT + wind.x * WIND_WEIGHT + keep_out.x * SIGN_KEEP_OUT_WEIGHT +
+                 orbit.x;
     boundary.y = boundary.y * config.boundary + leash.y * LEASH_WEIGHT + pointer.y * MOUSE_WEIGHT +
-                 hawk.y * HAWK_WEIGHT + wind.y * WIND_WEIGHT + keep_out.y * SIGN_KEEP_OUT_WEIGHT;
+                 hawk.y * HAWK_WEIGHT + wind.y * WIND_WEIGHT + keep_out.y * SIGN_KEEP_OUT_WEIGHT +
+                 orbit.y;
     if (boundary.x != 0 || boundary.y != 0) {
         double x = cos(target->direction) + boundary.x;
         double y = sin(target->direction) + boundary.y;

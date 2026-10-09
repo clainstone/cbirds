@@ -1888,7 +1888,7 @@ static void test_a_text_is_laid_out_as_a_sign_in_lines(void) {
         if (formation.y[t] < least_y) least_y = formation.y[t];
         if (formation.y[t] > most_y) most_y = formation.y[t];
     }
-    assert(most_x - least_x <= screen.width * SIGN_WIDTH_SHARE);
+    assert(most_x - least_x <= screen.width * SIGN_WIDTH_MOST);
     assert(((least_x + most_x) / 2) > screen.width / 2.0 - 60 &&
            ((least_x + most_x) / 2) < screen.width / 2.0 + 60);
     assert(((least_y + most_y) / 2) > screen.height / 2.0 - 60 &&
@@ -3440,6 +3440,94 @@ static void test_a_hawk_diving_through_the_letters_scatters_them_at_any_frame_ra
     assert(recorded > 0.05 && recorded < 0.5);
 }
 
+/* The pull round a sign, as geometry: along the ellipse, one way while the sign is
+ * held and the other way the next time, back towards it from far off, nothing to a
+ * bird of the far sky, and nothing without a sign. */
+static void test_the_free_flock_is_turned_round_a_sign(void) {
+    reset_sign_state();
+    apply_screen_size(200, 50, 1600, 800);
+    config.bird_size = 12;
+    formation_clear();
+    formation.sign = 1;
+    formation.writing = 1;
+    formation.keep_out = 1;
+    formation.box = (sign_box_t){600, 300, 1000, 500};
+    formation.band = SIGN_KEEP_OUT_BAND * config.bird_size;
+    bird_t bird;
+    memset(&bird, 0, sizeof(bird));
+    for (unsigned cycle = 0; cycle < 4; cycle++) {
+        the_sign.cycle = cycle;
+        double way = cycle % 2 ? -1 : 1;
+        /* Right of the text: down the screen, then up; above it: right, then left;
+         * left of it: up; below it: left. */
+        double at[4][2] = {{1150, 400}, {800, 200}, {450, 400}, {800, 600}};
+        double expect[4][2] = {{0, 1}, {1, 0}, {0, -1}, {-1, 0}};
+        for (int k = 0; k < 4; k++) {
+            bird.x = at[k][0];
+            bird.y = at[k][1];
+            vector_t flow = sign_orbit_vector(&bird);
+            double along = flow.x * expect[k][0] + flow.y * expect[k][1];
+            assert(way * along > 0.5 * SIGN_ORBIT_ALONG);
+        }
+    }
+    /* From a corner of the screen it is pulled in as well as round. */
+    the_sign.cycle = 0;
+    bird.x = 30;
+    bird.y = 30;
+    vector_t flow = sign_orbit_vector(&bird);
+    assert(flow.x * (800 - 30) + flow.y * (400 - 30) > 0);
+    /* Not for a bird of the far sky, nor with no sign up. */
+    bird.layer = 1;
+    flow = sign_orbit_vector(&bird);
+    assert(flow.x == 0 && flow.y == 0);
+    bird.layer = 0;
+    formation.writing = 0;
+    flow = sign_orbit_vector(&bird);
+    assert(flow.x == 0 && flow.y == 0);
+    formation_clear();
+    reset_sign_state();
+}
+
+/* And as flight: the free birds round a sign wheel round it one way, most of them
+ * at any moment, and the other way on the next hold. Measured on 800 birds saying
+ * HELLO WORLD at 96 by 26 cells: without the pull, about half of them went each
+ * way. */
+static double share_wheeling_down_the_right(int columns, int rows, unsigned cycle, int seed) {
+    world_t world;
+    lay_out_a_sign_on(&world, columns, rows, 25, "HELLO WORLD", 800, seed);
+    the_sign.cycle = cycle;
+    double cx = (formation.box.left + formation.box.right) / 2;
+    double cy = (formation.box.top + formation.box.bottom) / 2;
+    double sum = 0;
+    int samples = 0;
+    for (double at = 0.04; at < 12; at += 0.04) {
+        step_the_world(&world, at);
+        if (at < 6 || ((int)(at * 25 + 0.5)) % 5 != 0) continue;
+        int free_birds = 0, wheeling = 0;
+        for (int i = 0; i < config.birds; i++) {
+            if (formation.slot[i] >= 0 || world.birds[i].layer > 0) continue;
+            free_birds++;
+            double dx = world.birds[i].x - cx, dy = world.birds[i].y - cy;
+            wheeling += dx * sin(world.birds[i].direction) - dy * cos(world.birds[i].direction) > 0;
+        }
+        sum += (double)wheeling / free_birds;
+        samples++;
+    }
+    assert(the_sign.up && samples > 0);
+    close_the_world(&world);
+    reset_sign_state();
+    return sum / samples;
+}
+
+static void test_the_free_flock_wheels_round_a_sign_one_way(void) {
+    int sizes[][2] = {{96, 26}, {200, 50}};
+    for (int s = 0; s < 2; s++)
+        for (int seed = 1; seed <= 2; seed++) {
+            assert(share_wheeling_down_the_right(sizes[s][0], sizes[s][1], 0, seed) > 0.75);
+            assert(share_wheeling_down_the_right(sizes[s][0], sizes[s][1], 1, seed) < 0.25);
+        }
+}
+
 static void test_a_small_screen_leaves_the_flock_sky_and_a_roomy_one_is_as_it_was(void) {
     world_t world;
 
@@ -3458,8 +3546,8 @@ static void test_a_small_screen_leaves_the_flock_sky_and_a_roomy_one_is_as_it_wa
     apply_screen_size(120, 34, 120 * 8, 34 * 16);
     assert(sign_smallness() > 0.3 && sign_smallness() < 0.8);
 
-    /* A roomy screen is laid out as it always was: the roomy shares of the room, the
-     * writers a sixth of a flock short of three fifths, the band four steps of flight. */
+    /* A roomy screen gives the sign the roomy shares of the room, the writers a
+     * sixth of a flock short of three fifths, the band four steps of flight. */
     lay_out_a_sign_on(&world, 200, 50, 25, "HELLO WORLD", 800, 5);
     {
         double pad = config.bird_size * 2.0;
@@ -3474,18 +3562,23 @@ static void test_a_small_screen_leaves_the_flock_sky_and_a_roomy_one_is_as_it_wa
     }
     close_the_world(&world);
 
-    /* A small one gives the sign less of it, in cells that are still letters, and
+    /* A small one gives the sign the small shares, half and half, in cells that are
+     * still letters and smaller than the most a sign may take would make them, and
      * the band is a fifth of the screen at the most, at the pace of a recording and
      * as it was at the pace of a terminal. */
     lay_out_a_sign_on(&world, 96, 26, 25, "HELLO WORLD", 800, 5);
     {
         double pad = config.bird_size * 2.0;
         sign_lines_t lines;
-        double roomy_cell;
-        assert(sign_fit("HELLO WORLD", 0, (768 - 2 * pad) * SIGN_WIDTH_SHARE,
-                        (416 - 2 * pad) * SIGN_HEIGHT_SHARE, SIGN_LARGEST_CELL * config.bird_size,
-                        &lines, &roomy_cell) > 0);
-        assert(formation.cell < roomy_cell && formation.cell >= SIGN_SMALLEST_CELL);
+        double small_cell, most_cell;
+        assert(sign_fit("HELLO WORLD", 0, (768 - 2 * pad) * SIGN_WIDTH_SHARE_SMALL,
+                        (416 - 2 * pad) * SIGN_HEIGHT_SHARE_SMALL,
+                        SIGN_LARGEST_CELL * config.bird_size, &lines, &small_cell) > 0);
+        assert(sign_fit("HELLO WORLD", 0, (768 - 2 * pad) * SIGN_WIDTH_MOST,
+                        (416 - 2 * pad) * SIGN_HEIGHT_MOST, SIGN_LARGEST_CELL * config.bird_size,
+                        &lines, &most_cell) > 0);
+        assert(fabs(formation.cell - small_cell) < 1e-9);
+        assert(formation.cell < most_cell && formation.cell >= SIGN_SMALLEST_CELL);
         assert((formation.box.right - formation.box.left) < 0.5 * 768);
         assert((formation.box.bottom - formation.box.top) < 0.5 * 416);
         assert(sign_band() <= SIGN_KEEP_OUT_MOST * 416 + 1e-9);
@@ -3518,7 +3611,8 @@ static void test_a_small_screen_leaves_the_flock_sky_and_a_roomy_one_is_as_it_wa
     assert(per_cell[0][1] == 2 && per_cell[1][1] == 1);
 
     /* A long text on a small screen is not made smaller than its letters can be: at
-     * 80 by 24 its cell is the floor, or the roomy cell if that is less. */
+     * 80 by 24 its cell is the floor, or what the most a sign may take gives if that
+     * is less. */
     reset_sign_state();
     apply_screen_size(80, 24, 640, 384);
     config.bird_size = 12;
@@ -3528,8 +3622,8 @@ static void test_a_small_screen_leaves_the_flock_sky_and_a_roomy_one_is_as_it_wa
         double room_width = 640 - 2 * 24.0, room_height = 384 - 2 * 24.0;
         assert(sign_fit_in("BACK IN FIVE MINUTES", 0, room_width, room_height, 1e9, &lines, &cell,
                            &width, &height) == 3);
-        assert(sign_fit("BACK IN FIVE MINUTES", 0, room_width * SIGN_WIDTH_SHARE,
-                        room_height * SIGN_HEIGHT_SHARE, 1e9, &roomy, &roomy_cell) == 3);
+        assert(sign_fit("BACK IN FIVE MINUTES", 0, room_width * SIGN_WIDTH_MOST,
+                        room_height * SIGN_HEIGHT_MOST, 1e9, &roomy, &roomy_cell) == 3);
         /* Eight pixels: under that a letter stops being one. */
         assert(roomy_cell > 8);
         assert(cell >= 8 - 1e-9 && cell <= roomy_cell + 1e-9);
@@ -3805,9 +3899,9 @@ static void test_a_snapshot_is_reported_after_the_terminal_is_given_back(void) {
                 dup2(terminal, STDERR_FILENO) < 0)
                 _exit(99);
             terminal_is_raw = terminal_restored = alt_screen_is_on = sprites_uploaded = 0;
-            char *argv[] = {"cbirds", "--unlock-fps", "--frames",   "30",
-                            "-n",     "200",          "--seed",     "3",
-                            "--snapshot", written ? good : bad, NULL};
+            char *argv[] = {
+                "cbirds", "--unlock-fps", "--frames",           "30", "-n", "200", "--seed",
+                "3",      "--snapshot",   written ? good : bad, NULL};
             exit(cbirds_application_main(10, argv)); /* exit: the terminal is put back. */
         }
         close(terminal);
@@ -3833,12 +3927,10 @@ static void test_a_snapshot_is_reported_after_the_terminal_is_given_back(void) {
         }
         output[length] = '\0';
         close(master);
-        assert(WIFEXITED(status) &&
-               WEXITSTATUS(status) == (written ? EXIT_SUCCESS : EXIT_FAILURE));
+        assert(WIFEXITED(status) && WEXITSTATUS(status) == (written ? EXIT_SUCCESS : EXIT_FAILURE));
         char message[800];
         snprintf(message, sizeof(message),
-                 written ? "cbirds: wrote %s" : "cbirds: could not write %s",
-                 written ? good : bad);
+                 written ? "cbirds: wrote %s" : "cbirds: could not write %s", written ? good : bad);
         const char *told = strstr(output, message);
         const char *taken = strstr(output, ALT_SCREEN_ON);
         const char *given_back = NULL;
@@ -5960,6 +6052,8 @@ int main(void) {
     test_one_hawk_leaves_a_sign_readable();
     test_a_hawk_diving_through_the_letters_scatters_them_at_any_frame_rate();
     test_a_small_screen_leaves_the_flock_sky_and_a_roomy_one_is_as_it_was();
+    test_the_free_flock_is_turned_round_a_sign();
+    test_the_free_flock_wheels_round_a_sign_one_way();
     test_a_sign_that_cannot_be_laid_out_says_so_when_the_run_is_over();
     test_a_text_too_big_for_the_terminal_is_said_after_the_terminal_is_given_back();
     test_a_snapshot_is_reported_after_the_terminal_is_given_back();

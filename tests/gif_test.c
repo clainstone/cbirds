@@ -1,5 +1,7 @@
+#ifndef _WIN32
 #define _XOPEN_SOURCE 700 /* mkdtemp. */
 #define _DARWIN_C_SOURCE
+#endif
 
 #include "../gif.h"
 
@@ -7,7 +9,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#include <direct.h>
+#include <process.h>
+#define rmdir _rmdir
+#else
 #include <unistd.h>
+#endif
 
 /* A directory of the run's own for the files it writes: a fixed name in /tmp
  * collides with a second run, and may already be something else, a symlink
@@ -15,10 +24,18 @@
 static char scratch[512];
 
 static void make_scratch(void) {
+#ifdef _WIN32
+    /* The process id is the run's own; _mkdir fails if the name is taken. */
+    const char *base = getenv("TEMP");
+    snprintf(scratch, sizeof(scratch), "%s/cbirds_gif_test.%d",
+             base != NULL && *base != '\0' ? base : ".", (int)_getpid());
+    assert(_mkdir(scratch) == 0);
+#else
     const char *base = getenv("TMPDIR");
     snprintf(scratch, sizeof(scratch), "%s/cbirds_gif_test.XXXXXX",
              base != NULL && *base != '\0' ? base : "/tmp");
     assert(mkdtemp(scratch) != NULL);
+#endif
 }
 
 static const char *scratch_file(const char *name) {

@@ -1,30 +1,36 @@
 /* Feature test macros must precede every include. */
+#ifdef _WIN32
+/* -std=c99 hides M_PI in MinGW's math.h unless it is asked for by name. */
+#define _USE_MATH_DEFINES
+#else
 #define _XOPEN_SOURCE 700
 #define _DEFAULT_SOURCE
 #define _DARWIN_C_SOURCE
+#endif
 
 #include <errno.h>
 #include <limits.h>
 #include <math.h>
-#include <poll.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
-#include <termios.h>
 #include <time.h>
-#include <unistd.h>
 
 #include "cells.h"
 #include "font.h"
 #include "gif.h"
 #include "kitty_graphics.h"
 #include "options.h"
+#include "platform.h"
 #include "png.h"
 #include "spatial_grid.h"
 #include "sprite_png.h"
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 enum {
     /* Sixty rotations, six degrees apart. It was ninety, and at four degrees a
@@ -458,7 +464,6 @@ static int population_changed;
  * ever needing an erase is one it occupied before being switched off. Clearing
  * the whole screen would take the uploaded sprites with it. */
 static int legend_drawn;
-static struct termios saved_termios;
 static volatile sig_atomic_t terminal_is_raw;
 static volatile sig_atomic_t terminal_restored;
 static volatile sig_atomic_t alt_screen_is_on;
@@ -467,7 +472,7 @@ static volatile sig_atomic_t sprites_uploaded;
 static void write_all(const void *data, size_t length) {
     const char *bytes = data;
     while (length > 0) {
-        ssize_t written = write(STDOUT_FILENO, bytes, length);
+        ssize_t written = platform_write(STDOUT_FILENO, bytes, length);
         if (written < 0) {
             if (errno == EINTR) continue;
             return;
@@ -479,13 +484,21 @@ static void write_all(const void *data, size_t length) {
 }
 
 static void restore_terminal(void) {
-    if (terminal_restored) return;
+    platform_lock_restore(); /* A Windows control event runs on a thread of its own. */
+    if (terminal_restored) {
+        platform_unlock_restore();
+        return;
+    }
     terminal_restored = 1;
     if (terminal_is_raw) {
-        tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios);
+        platform_leave_raw();
         terminal_is_raw = 0;
     }
-    if (!alt_screen_is_on) return; /* The probe failed before we took the screen. */
+    if (!alt_screen_is_on) { /* The probe failed before we took the screen. */
+        platform_leave_output();
+        platform_unlock_restore();
+        return;
+    }
     /* The sprites were uploaded once and outlive the frames that placed them:
      * the lowercase delete every frame sends clears placements only. Uppercase
      * frees every image left without one, so the terminal is not holding a few
@@ -495,31 +508,13 @@ static void restore_terminal(void) {
     write_all(SYNC_UPDATE_END, sizeof(SYNC_UPDATE_END) - 1);
     write_all(CURSOR_SHOW, sizeof(CURSOR_SHOW) - 1);
     write_all(ALT_SCREEN_OFF, sizeof(ALT_SCREEN_OFF) - 1);
+    platform_leave_output(); /* After the sequences: on Windows they need the mode. */
+    platform_unlock_restore();
 }
 
-static void signal_handler(int signal_number) {
-    restore_terminal();
-    _exit(128 + signal_number);
-}
-
-static void install_signal_handlers(void) {
-    static const int signals[] = {SIGINT,  SIGTERM, SIGHUP, SIGQUIT,
-                                  SIGSEGV, SIGFPE,  SIGBUS, SIGABRT};
-    struct sigaction action;
-    memset(&action, 0, sizeof(action));
-    action.sa_handler = signal_handler;
-    action.sa_flags = (int)SA_RESETHAND;
-    sigemptyset(&action.sa_mask);
-    for (size_t i = 0; i < sizeof(signals) / sizeof(*signals); i++)
-        sigaction(signals[i], &action, NULL);
-    /* A reader that goes away, as head does, is an error to report rather than a
-     * death: SIGPIPE's default kills the process before the terminal is put back,
-     * and leaves the shell without echo. Ignored, the write fails with EPIPE and
-     * the program leaves through exit, which restores it. */
-    action.sa_handler = SIG_IGN;
-    action.sa_flags = 0;
-    sigaction(SIGPIPE, &action, NULL);
-}
+/* The signals, and on Windows the console's control events, are handled in
+ * platform.c: they put the terminal back with restore_terminal and leave with
+ * 128 plus the signal, as a shell reports a death by one. */
 
 /* Sends a request and collects whatever comes back until a terminator or the
  * deadline, whichever is first. The colour queries ask the terminal a question
@@ -528,28 +523,27 @@ static void install_signal_handlers(void) {
  * be echoed and held until a newline. */
 static size_t terminal_query(const char *request, size_t request_length, char *reply,
                              size_t reply_size, int milliseconds) {
-    struct timespec start, now;
+    platform_time_t start, now;
     size_t length = 0;
 
     if (reply_size == 0) return 0;
     reply[0] = '\0';
     write_all(request, request_length);
-    clock_gettime(CLOCK_MONOTONIC, &start);
+    platform_now(&start);
 
     for (;;) {
-        clock_gettime(CLOCK_MONOTONIC, &now);
+        platform_now(&now);
         long spent = (now.tv_sec - start.tv_sec) * 1000L + (now.tv_nsec - start.tv_nsec) / 1000000L;
         if (spent >= milliseconds) break;
 
-        struct pollfd wait = {.fd = STDIN_FILENO, .events = POLLIN};
-        int ready = poll(&wait, 1, (int)(milliseconds - spent));
+        int ready = platform_wait_input((int)(milliseconds - spent));
         if (ready < 0) {
             if (errno == EINTR) continue;
             break;
         }
         if (ready == 0) break;
 
-        ssize_t got = read(STDIN_FILENO, reply + length, reply_size - 1 - length);
+        ssize_t got = platform_read_input(reply + length, reply_size - 1 - length);
         if (got <= 0) break;
         length += (size_t)got;
         reply[length] = '\0';
@@ -575,17 +569,7 @@ static void enter_alt_screen(void) {
 }
 
 static int enter_terminal(void) {
-    struct termios raw;
-    if (tcgetattr(STDIN_FILENO, &raw) < 0) return -1;
-    saved_termios = raw;
-    raw.c_iflag &= (tcflag_t) ~(tcflag_t)(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
-    raw.c_oflag &= (tcflag_t) ~(tcflag_t)OPOST;
-    raw.c_cflag |= CS8;
-    raw.c_lflag &= (tcflag_t) ~(tcflag_t)(ECHO | ICANON | IEXTEN);
-    raw.c_cc[VSUSP] = _POSIX_VDISABLE;
-    raw.c_cc[VMIN] = 0;
-    raw.c_cc[VTIME] = 0;
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) < 0) return -1;
+    if (platform_enter_raw() < 0) return -1;
     terminal_is_raw = 1;
     return 0;
 }
@@ -617,7 +601,7 @@ static void measure_legend(void) {
     screen.legend_height = legend_rows() * screen.cell_height;
 }
 
-/* Split out of the ioctl query so the tests drive the real derivation. */
+/* Split out of the size query so the tests drive the real derivation. */
 /* Defined with the other notch arithmetic; needed here because the step a bird
  * takes is capped by the size of the screen it is taking it on. */
 static void update_speed(void);
@@ -643,10 +627,9 @@ static void apply_screen_size(int cols, int rows, int pixel_width, int pixel_hei
 }
 
 static void update_screen_dimensions(void) {
-    struct winsize size;
-    memset(&size, 0, sizeof(size));
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) < 0) memset(&size, 0, sizeof(size));
-    apply_screen_size(size.ws_col, size.ws_row, size.ws_xpixel, size.ws_ypixel);
+    int columns, rows, pixel_width, pixel_height;
+    platform_window_size(&columns, &rows, &pixel_width, &pixel_height);
+    apply_screen_size(columns, rows, pixel_width, pixel_height);
 }
 
 /*
@@ -2902,13 +2885,13 @@ static void konami_note(char key) {
     place_hawks();
 }
 
-static int handle_input(void) {
+/* The bytes of a read, taken apart: the reading is the platform's, so that a
+ * test can hand over bytes without a terminal to type them on. */
+static int handle_input_bytes(const char *input, ssize_t length) {
     enum { INPUT_NORMAL, INPUT_ESCAPE, INPUT_SEQUENCE };
     static int input_state = INPUT_NORMAL;
     static char sequence[32];
     static size_t sequence_length;
-    char input[INPUT_BUFFER_SIZE];
-    ssize_t length = read(STDIN_FILENO, input, sizeof(input));
     if (length > 0) last_key_at = clock_state.seconds;
     for (ssize_t i = 0; i < length; i++) {
         unsigned char key = (unsigned char)input[i];
@@ -3056,16 +3039,9 @@ static int handle_input(void) {
     return 1;
 }
 
-static int wait_for_terminal_io(void) {
-    struct pollfd descriptors[] = {
-        {.fd = STDIN_FILENO, .events = POLLIN},
-        {.fd = STDOUT_FILENO, .events = POLLOUT},
-    };
-    int result;
-    do {
-        result = poll(descriptors, sizeof(descriptors) / sizeof(*descriptors), -1);
-    } while (result < 0 && errno == EINTR);
-    return result < 0 ? -1 : 0;
+static int handle_input(void) {
+    char input[INPUT_BUFFER_SIZE];
+    return handle_input_bytes(input, platform_read_input(input, sizeof(input)));
 }
 
 #define CBIRDS_VERSION "1.4.0"
@@ -3467,11 +3443,11 @@ static void read_options(int argc, char **argv) {
     }
 }
 
-static long elapsed_microseconds(const struct timespec *start, const struct timespec *end) {
+static long elapsed_microseconds(const platform_time_t *start, const platform_time_t *end) {
     return (end->tv_sec - start->tv_sec) * 1000000L + (end->tv_nsec - start->tv_nsec) / 1000L;
 }
 
-static double elapsed_seconds(const struct timespec *start, const struct timespec *end) {
+static double elapsed_seconds(const platform_time_t *start, const platform_time_t *end) {
     return (double)(end->tv_sec - start->tv_sec) + (double)(end->tv_nsec - start->tv_nsec) / 1e9;
 }
 
@@ -3581,7 +3557,9 @@ static int run_cast_recording(void) {
 
     bird_t *birds = calloc((size_t)config.birds, sizeof(*birds));
     bird_t *snapshot = malloc(sizeof(*snapshot) * (size_t)config.birds);
-    FILE *out = birds != NULL && snapshot != NULL ? fopen(record_path, "w") : NULL;
+    /* "wb" because a cast is text with \n line ends: on Windows "w" would write
+     * \r\n, and a recording must be the same bytes everywhere. */
+    FILE *out = birds != NULL && snapshot != NULL ? fopen(record_path, "wb") : NULL;
     if (out == NULL) {
         if (birds != NULL && snapshot != NULL)
             fprintf(stderr, "%s: %s: %s\n", program_name, record_path, strerror(errno));
@@ -3784,7 +3762,7 @@ static int run_recording(void) {
 static int run_benchmark(void) {
     kitty_graphics_t graphics;
     spatial_grid_t grid;
-    struct timespec start, finish;
+    platform_time_t start, finish;
 
     settle_the_palette_without_a_terminal();
     apply_screen_size(200, 50, 1600, 800);
@@ -3808,7 +3786,7 @@ static int run_benchmark(void) {
     place_hawks();
 
     double bytes = 0;
-    clock_gettime(CLOCK_MONOTONIC, &start);
+    platform_now(&start);
     for (int frame = 0; frame < bench_frames; frame++) {
         memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
         spatial_grid_build(&grid, config.birds, read_bird_position, snapshot);
@@ -3817,7 +3795,7 @@ static int run_benchmark(void) {
         render_frame(&graphics, birds, snapshot, &grid);
         bytes += (double)graphics.length;
     }
-    clock_gettime(CLOCK_MONOTONIC, &finish);
+    platform_now(&finish);
 
     double seconds =
         (double)(finish.tv_sec - start.tv_sec) + (double)(finish.tv_nsec - start.tv_nsec) / 1e9;
@@ -3843,19 +3821,20 @@ static int run_benchmark(void) {
 int main(int argc, char **argv) {
     kitty_graphics_t graphics;
     spatial_grid_t grid;
-    struct timespec frame_start, frame_end;
+    platform_time_t frame_start, frame_end;
+    platform_init();
     read_options(argc, argv);
     trig_lookup_init();
     if (bench_frames > 0) return run_benchmark();
     if (record_path != NULL) return run_recording();
-    install_signal_handlers();
+    platform_install_exit_handlers(restore_terminal);
     atexit(restore_terminal);
 
     /* The terminal is asked its questions before anything is built for it: can
      * you draw this at all, and what colours do you use? The sprites are then
      * built once, in the answers. */
     if (enter_terminal() < 0) {
-        perror("Can't enable raw mode");
+        platform_report_no_terminal();
         exit(EXIT_FAILURE);
     }
     /* Braille in every terminal, and the sprites when --render kitty asks: there
@@ -3924,9 +3903,9 @@ int main(int argc, char **argv) {
         }
     }
 
-    struct timespec started;
-    clock_gettime(CLOCK_MONOTONIC, &started);
-    struct timespec previous_frame = started;
+    platform_time_t started;
+    platform_now(&started);
+    platform_time_t previous_frame = started;
     int live_birds = config.birds;
     int running = 1;
     double leaving = 0; /* Seconds left of the flight out. */
@@ -3938,7 +3917,7 @@ int main(int argc, char **argv) {
             formation_clear();
         }
 
-        clock_gettime(CLOCK_MONOTONIC, &frame_start);
+        platform_now(&frame_start);
         set_frame_seconds(elapsed_seconds(&previous_frame, &frame_start));
         previous_frame = frame_start;
         if (leaving > 0) {
@@ -3993,7 +3972,7 @@ int main(int argc, char **argv) {
         while (running && graphics.length > 0) {
             graphics_status = kitty_graphics_flush_nonblocking(&graphics);
             if (graphics_status == KITTY_GRAPHICS_AGAIN) {
-                if (wait_for_terminal_io() < 0) {
+                if (platform_wait_terminal_io() < 0) {
                     perror("Cannot wait for terminal output");
                     exit(EXIT_FAILURE);
                 }
@@ -4014,7 +3993,7 @@ int main(int argc, char **argv) {
         }
         if (!running) break;
         if (frame_limit > 0 && clock_state.frame >= frame_limit) break;
-        clock_gettime(CLOCK_MONOTONIC, &frame_end);
+        platform_now(&frame_end);
         /* Averaged over a second, because a number that changes sixty times a
          * second is decoration rather than information. */
         stats.window_ms += (double)elapsed_microseconds(&frame_start, &frame_end) / 1000.0;
@@ -4031,8 +4010,7 @@ int main(int argc, char **argv) {
         }
         long remaining = frame_delay_after(elapsed_microseconds(&frame_start, &frame_end));
         if (remaining > 0) {
-            struct timespec delay = {remaining / 1000000L, (remaining % 1000000L) * 1000L};
-            nanosleep(&delay, NULL);
+            platform_sleep_microseconds(remaining);
         }
     }
     /* A snapshot asked for and not written is a failed run, so a script that

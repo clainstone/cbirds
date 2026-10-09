@@ -3,8 +3,26 @@
 #undef main
 
 #include <assert.h>
+
+#ifdef _WIN32
+#include <direct.h>
+#include <fcntl.h>
+#include <io.h>
+#include <process.h>
+/* Where the POSIX tests say /dev/null and dup. */
+#define NULL_DEVICE "NUL"
+#define rmdir _rmdir
+#define dup _dup
+#define dup2 _dup2
+#define close_descriptor _close
+#else
 #include <fcntl.h>
 #include <sys/wait.h>
+#include <termios.h>
+#include <unistd.h>
+#define NULL_DEVICE "/dev/null"
+#define close_descriptor close
+#endif
 
 /* A directory of the run's own for the files it writes: a fixed name in /tmp
  * collides with a second run, and may already be something else, a symlink
@@ -12,10 +30,18 @@
 static char scratch[512];
 
 static void make_scratch(void) {
+#ifdef _WIN32
+    /* The process id is the run's own; _mkdir fails if the name is taken. */
+    const char *base = getenv("TEMP");
+    snprintf(scratch, sizeof(scratch), "%s/cbirds_boids_test.%d",
+             base != NULL && *base != '\0' ? base : ".", (int)_getpid());
+    assert(_mkdir(scratch) == 0);
+#else
     const char *base = getenv("TMPDIR");
     snprintf(scratch, sizeof(scratch), "%s/cbirds_boids_test.XXXXXX",
              base != NULL && *base != '\0' ? base : "/tmp");
     assert(mkdtemp(scratch) != NULL);
+#endif
 }
 
 static void scratch_file(char *path, size_t size, const char *name) {
@@ -506,6 +532,13 @@ static void test_a_grown_flock_starts_its_new_birds_clean(void) {
  * used to kill it there and leave the shell raw, with no echo. The whole program
  * runs in a child on a terminal of its own, writing into a pipe that is closed
  * under it. */
+#ifdef _WIN32
+/* Not on Windows: there is no pseudo terminal to give a child and no fork. The
+ * same ground is covered there by tests/console_test.c, which runs the real
+ * program in a pseudo console and checks it leaves the console's modes as it
+ * found them, and by tests/platform_test.c, where a write into a pipe whose
+ * reader has gone says EPIPE instead of killing the program. */
+#else
 static void test_a_closed_pipe_leaves_the_terminal_as_it_was(void) {
     int master = posix_openpt(O_RDWR | O_NOCTTY);
     assert(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0);
@@ -548,7 +581,15 @@ static void test_a_closed_pipe_leaves_the_terminal_as_it_was(void) {
     close(terminal);
     close(master);
 }
+#endif
 
+#ifdef _WIN32
+/* The bytes go straight to the reader of them. The read from a console is
+ * platform.c's and is tested through a pseudo console. */
+static int feed_input(const char *keys) {
+    return handle_input_bytes(keys, (ssize_t)strlen(keys));
+}
+#else
 static int feed_input(const char *keys) {
     int descriptors[2];
     assert(pipe(descriptors) == 0);
@@ -564,6 +605,7 @@ static int feed_input(const char *keys) {
     close(saved_stdin);
     return result;
 }
+#endif
 
 /* Counts the filled cells of one slider row as it is actually drawn, which is
  * what the eye sees and therefore what the requirement is about. */
@@ -2116,7 +2158,14 @@ static void test_a_text_terminal_gets_the_flock_in_braille(void) {
     scratch_file(path, sizeof(path), "text_snapshot.png");
     assert(write_snapshot(path, birds));
     /* And a disk that is full says so, even when it only says it on close. */
+#ifndef _WIN32
     if (access("/dev/full", W_OK) == 0) assert(!write_snapshot("/dev/full", birds));
+#endif
+    /* On every system a place that cannot be written says so: Windows has no
+     * /dev/full, and a directory that does not exist is the same refusal. */
+    char missing[700];
+    snprintf(missing, sizeof(missing), "%s/no/such/directory/snapshot.png", scratch);
+    assert(!write_snapshot(missing, birds));
     FILE *file = fopen(path, "rb");
     assert(file != NULL);
     static uint8_t bytes[1 << 20];
@@ -2155,11 +2204,11 @@ static void test_a_text_renderer_records_its_cells(void) {
     record_rows = 20;
     fflush(stdout);
     int saved = dup(STDOUT_FILENO);
-    assert(freopen("/dev/null", "w", stdout) != NULL);
+    assert(freopen(NULL_DEVICE, "w", stdout) != NULL);
     int status = run_recording();
     fflush(stdout);
     dup2(saved, STDOUT_FILENO);
-    close(saved);
+    close_descriptor(saved);
     clearerr(stdout);
     assert(status == EXIT_SUCCESS);
 
@@ -2200,15 +2249,16 @@ static void test_a_cast_is_the_flock_as_text(void) {
     record_rows = 20;
     fflush(stdout);
     int saved = dup(STDOUT_FILENO);
-    assert(freopen("/dev/null", "w", stdout) != NULL);
+    assert(freopen(NULL_DEVICE, "w", stdout) != NULL);
     int status = run_recording();
     fflush(stdout);
     dup2(saved, STDOUT_FILENO);
-    close(saved);
+    close_descriptor(saved);
     clearerr(stdout);
     assert(status == EXIT_SUCCESS);
 
-    FILE *file = fopen(path, "r");
+    /* Read as bytes: a text mode would hide the \r a Windows "w" writes. */
+    FILE *file = fopen(path, "rb");
     assert(file != NULL);
     static char line[1 << 16];
     /* The header names the version and the size of the terminal it was made for. */
@@ -2218,6 +2268,7 @@ static void test_a_cast_is_the_flock_as_text(void) {
     while (fgets(line, sizeof(line), file) != NULL) {
         events++;
         assert(line[0] == '[');
+        assert(strchr(line, '\r') == NULL); /* The same bytes on every system. */
         assert(strstr(line, ", \"o\", \"") != NULL);
         /* Escape characters are spelled out for JSON; the braille is left as the
          * UTF-8 it is, which is what keeps the file readable and small. */
@@ -2465,12 +2516,12 @@ static void test_recording_gives_the_whole_frame_to_the_flock(void) {
     /* It reports what it wrote on stdout, which in a test run is noise. */
     fflush(stdout);
     int saved = dup(STDOUT_FILENO);
-    FILE *quiet = freopen("/dev/null", "w", stdout);
+    FILE *quiet = freopen(NULL_DEVICE, "w", stdout);
     assert(quiet != NULL);
     int status = run_recording();
     fflush(stdout);
     dup2(saved, STDOUT_FILENO);
-    close(saved);
+    close_descriptor(saved);
     clearerr(stdout);
     assert(status == EXIT_SUCCESS);
     /* Black birds on a black ground was what `cbirds --record flock.gif` wrote:
@@ -3278,7 +3329,9 @@ int main(void) {
     make_scratch();
     trig_lookup_init();
     /* First, while every global is as a fresh process has it. */
+#ifndef _WIN32
     test_a_closed_pipe_leaves_the_terminal_as_it_was();
+#endif
     test_the_trig_lookup_covers_the_circle();
     test_the_frame_rate_can_be_unlocked();
     test_engine_matches_brute_force();

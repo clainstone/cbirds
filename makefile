@@ -6,15 +6,15 @@ CFLAGS   ?= -O3 -g
 BUILD     = -std=c99 -Wall -Wextra $(CPPFLAGS) $(CFLAGS)
 LDLIBS    = -lm
 TARGET    = cbirds
-SRC       = boids.c cells.c font.c gif.c kitty_graphics.c options.c png.c spatial_grid.c
-HDR       = cells.h font.h gif.h kitty_graphics.h options.h png.h spatial_grid.h sprite_png.h
+SRC       = boids.c cells.c font.c gif.c kitty_graphics.c options.c platform.c png.c spatial_grid.c
+HDR       = cells.h font.h gif.h kitty_graphics.h options.h platform.h png.h spatial_grid.h sprite_png.h
 ASSET     = sprite_png.h
 ASSET_SRC = matrix.png
 MKASSET   = mkasset
 TESTDIR   = tests
 TESTS     = $(TESTDIR)/kitty_graphics_test $(TESTDIR)/options_test $(TESTDIR)/png_test \
             $(TESTDIR)/gif_test $(TESTDIR)/cells_test $(TESTDIR)/spatial_grid_test \
-            $(TESTDIR)/boids_test
+            $(TESTDIR)/platform_test $(TESTDIR)/console_test $(TESTDIR)/boids_test
 
 PREFIX   ?= /usr/local
 BINDIR    = $(DESTDIR)$(PREFIX)/bin
@@ -67,8 +67,16 @@ $(TESTDIR)/cells_test: $(TESTDIR)/cells_test.c cells.c cells.h png.c png.h
 $(TESTDIR)/spatial_grid_test: $(TESTDIR)/spatial_grid_test.c spatial_grid.c spatial_grid.h
 	$(CC) $(BUILD) $@.c spatial_grid.c -o $@ $(LDFLAGS) $(LDLIBS)
 
+$(TESTDIR)/platform_test: $(TESTDIR)/platform_test.c platform.c platform.h
+	$(CC) $(BUILD) $@.c platform.c -o $@ $(LDFLAGS)
+
+# Drives the real program through a Windows pseudo console; elsewhere it builds
+# and says it is skipped. It starts ./cbirds, which is built first.
+$(TESTDIR)/console_test: $(TESTDIR)/console_test.c $(TARGET)
+	$(CC) $(BUILD) $@.c -o $@ $(LDFLAGS)
+
 $(TESTDIR)/boids_test: $(TESTDIR)/boids_test.c $(SRC) $(HDR)
-	$(CC) $(BUILD) $@.c cells.c font.c gif.c kitty_graphics.c options.c png.c spatial_grid.c -o $@ $(LDFLAGS) $(LDLIBS)
+	$(CC) $(BUILD) $@.c cells.c font.c gif.c kitty_graphics.c options.c platform.c png.c spatial_grid.c -o $@ $(LDFLAGS) $(LDLIBS)
 
 clean:
-	rm -f $(TARGET) $(MKASSET) $(TESTS) *.o *~
+	rm -f $(TARGET) $(MKASSET) $(TESTS) *.o *~ *.exe $(TESTDIR)/*.exe

@@ -1,13 +1,26 @@
 #include "kitty_graphics.h"
 
 #include <errno.h>
-#include <fcntl.h>
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <io.h>
+#include <sys/types.h>
+#include <windows.h>
+#else
+#include <fcntl.h>
 #include <unistd.h>
+#endif
 
 enum {
     KITTY_PNG_FORMAT = 100,
@@ -217,6 +230,38 @@ kitty_graphics_status_t kitty_graphics_end_synchronized_update(kitty_graphics_t 
     return append_bytes(graphics, "\033[?2026l", sizeof("\033[?2026l") - 1);
 }
 
+#ifdef _WIN32
+/* WriteFile on the handle behind the descriptor, as platform.c does: the C
+ * runtime's text mode has no business with escape sequences, and a console
+ * takes it in pieces. Standalone, so the module stays free of the platform
+ * layer. A console write blocks until it is taken, so there is no would-block
+ * to report, and a closed pipe says EPIPE as write would. */
+static ssize_t write_descriptor(int fd, const char *data, size_t length) {
+    enum { PIECE = 32768 };
+    HANDLE handle = (HANDLE)_get_osfhandle(fd);
+    DWORD wrote = 0;
+    size_t piece = length > PIECE ? PIECE : length;
+    if (handle == INVALID_HANDLE_VALUE) {
+        errno = EBADF;
+        return -1;
+    }
+    /* Never cut inside a UTF-8 sequence, whose halves a console may not join. */
+    while (piece < length && piece > 1 && ((unsigned char)data[piece] & 0xC0) == 0x80) piece--;
+    if (!WriteFile(handle, data, (DWORD)piece, &wrote, NULL)) {
+        DWORD error = GetLastError();
+        errno = (error == ERROR_BROKEN_PIPE || error == ERROR_NO_DATA) ? EPIPE : EIO;
+        return -1;
+    }
+    return (ssize_t)wrote;
+}
+#define would_block(error) 0
+#else
+static ssize_t write_descriptor(int fd, const char *data, size_t length) {
+    return write(fd, data, length);
+}
+#define would_block(error) ((error) == EAGAIN || (error) == EWOULDBLOCK)
+#endif
+
 static void discard_written_prefix(kitty_graphics_t *graphics, size_t written) {
     if (written == 0) return;
     graphics->length -= written;
@@ -229,13 +274,12 @@ static kitty_graphics_status_t flush_buffer(kitty_graphics_t *graphics, int nonb
 
     size_t written = 0;
     while (written < graphics->length) {
-        ssize_t result =
-            write(graphics->output_fd, graphics->buffer + written, graphics->length - written);
+        ssize_t result = write_descriptor(graphics->output_fd, graphics->buffer + written,
+                                          graphics->length - written);
         if (result < 0) {
             if (errno == EINTR) continue;
             discard_written_prefix(graphics, written);
-            if (nonblocking && (errno == EAGAIN || errno == EWOULDBLOCK))
-                return KITTY_GRAPHICS_AGAIN;
+            if (nonblocking && would_block(errno)) return KITTY_GRAPHICS_AGAIN;
             return KITTY_GRAPHICS_ERR_IO;
         }
         if (result == 0) {
@@ -256,7 +300,11 @@ kitty_graphics_status_t kitty_graphics_flush(kitty_graphics_t *graphics) {
 
 kitty_graphics_status_t kitty_graphics_flush_nonblocking(kitty_graphics_t *graphics) {
     if (graphics == NULL || graphics->output_fd < 0) return KITTY_GRAPHICS_ERR_ARGUMENT;
-
+#ifdef _WIN32
+    /* No O_NONBLOCK on a Windows console or pipe handle; a console takes what it
+     * is given as fast as it can be drawn, and the flush simply waits for it. */
+    return flush_buffer(graphics, 0);
+#else
     int flags = fcntl(graphics->output_fd, F_GETFL);
     if (flags < 0) return KITTY_GRAPHICS_ERR_IO;
     int changed_flags = !(flags & O_NONBLOCK);
@@ -269,6 +317,7 @@ kitty_graphics_status_t kitty_graphics_flush_nonblocking(kitty_graphics_t *graph
         return KITTY_GRAPHICS_ERR_IO;
     errno = write_errno;
     return status;
+#endif
 }
 
 const char *kitty_graphics_status_string(kitty_graphics_status_t status) {

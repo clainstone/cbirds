@@ -9,6 +9,9 @@ png_test
 gif_test
 cells_test
 sixel_test
+platform_test
+console_test
+*.exe
 *.o
 *.dSYM/
 *~

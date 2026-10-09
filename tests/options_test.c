@@ -1,11 +1,44 @@
+#ifndef _WIN32
 #define _POSIX_C_SOURCE 200809L /* fmemopen. */
+#endif
 
 #include "../options.h"
 
 #include <assert.h>
 #include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* A FILE that lands in a buffer, which is what the usage and completion writers
+ * are tested through. POSIX has fmemopen; Windows does not, so there it is a
+ * file in the working directory that is read back into the buffer on close, with
+ * the same truncation and the same terminating NUL. */
+#ifdef _WIN32
+static char *memory_buffer;
+static size_t memory_size;
+static const char MEMORY_PATH[] = "options_test.capture";
+
+static FILE *memory_open(char *buffer, size_t size) {
+    memory_buffer = buffer;
+    memory_size = size;
+    return fopen(MEMORY_PATH, "wb");
+}
+
+static int memory_close(FILE *file) {
+    int closed = fclose(file);
+    FILE *back = fopen(MEMORY_PATH, "rb");
+    assert(back != NULL);
+    size_t length = fread(memory_buffer, 1, memory_size - 1, back);
+    memory_buffer[length] = '\0';
+    fclose(back);
+    remove(MEMORY_PATH);
+    return closed;
+}
+#else
+#define memory_open(buffer, size) fmemopen(buffer, size, "w")
+#define memory_close(file) fclose(file)
+#endif
 
 static int birds, quiet, mono, palette;
 static double weight;
@@ -180,10 +213,10 @@ static void test_usage_is_aligned(void) {
     static const option_example_t EXAMPLES[] = {
         {"cbirds -n 1500", "a bigger flock"}, {"cbirds", "the default"}, {NULL, NULL}};
     char buffer[4096] = {0};
-    FILE *out = fmemopen(buffer, sizeof(buffer), "w");
+    FILE *out = memory_open(buffer, sizeof(buffer));
     assert(out != NULL);
     options_usage(out, "cbirds", "A flock in your terminal.", EXAMPLES, TABLE, COUNT, 1);
-    fclose(out);
+    memory_close(out);
 
     assert(strstr(buffer, "A flock in your terminal.") == buffer);
     assert(strstr(buffer, "Usage: cbirds [OPTIONS]") != NULL);
@@ -228,12 +261,12 @@ static void test_aliases_and_the_short_help(void) {
 
     /* -h shows only the essential rows, --help shows them all. */
     char brief[2048] = {0}, full[4096] = {0};
-    FILE *out = fmemopen(brief, sizeof(brief), "w");
+    FILE *out = memory_open(brief, sizeof(brief));
     options_usage(out, "cbirds", NULL, NULL, TABLE, COUNT, 0);
-    fclose(out);
-    out = fmemopen(full, sizeof(full), "w");
+    memory_close(out);
+    out = memory_open(full, sizeof(full));
     options_usage(out, "cbirds", NULL, NULL, TABLE, COUNT, 1);
-    fclose(out);
+    memory_close(out);
     assert(strstr(brief, "--birds") != NULL);  /* Essential. */
     assert(strstr(brief, "--weight") == NULL); /* Not. */
     assert(strstr(full, "--weight") != NULL);
@@ -247,9 +280,9 @@ static void test_completions(void) {
     for (const char *const *shell = (const char *const[]){"bash", "zsh", "fish", NULL};
          *shell != NULL; shell++) {
         memset(buffer, 0, sizeof(buffer));
-        FILE *out = fmemopen(buffer, sizeof(buffer), "w");
+        FILE *out = memory_open(buffer, sizeof(buffer));
         assert(options_completion(out, *shell, "cbirds", TABLE, COUNT));
-        fclose(out);
+        memory_close(out);
         /* Every long name reaches the shell, or the completion is a lie. */
         for (size_t i = 0; i < COUNT; i++) assert(strstr(buffer, TABLE[i].name) != NULL);
         /* And so does every short one, and the switches the table does not hold. */
@@ -267,9 +300,9 @@ static void test_completions(void) {
                                         "-l version", "-s V", NULL};
         for (; *expected != NULL; expected++) assert(strstr(buffer, *expected) != NULL);
     }
-    FILE *out = fmemopen(buffer, sizeof(buffer), "w");
+    FILE *out = memory_open(buffer, sizeof(buffer));
     assert(!options_completion(out, "tcsh", "cbirds", TABLE, COUNT));
-    fclose(out);
+    memory_close(out);
 
     /* Help is free text, and a quote in it once ended zsh's quoted spec half way
      * through: the whole file failed to load. */
@@ -277,14 +310,14 @@ static void test_completions(void) {
     static const option_t QUOTED[] = {{0, "shy", NULL, OPTION_FLAG, &flag, 0, 0, NULL, NULL,
                                        "keeps out of each other's [way] \"$HOME\"", "Flock", 1}};
     memset(buffer, 0, sizeof(buffer));
-    out = fmemopen(buffer, sizeof(buffer), "w");
+    out = memory_open(buffer, sizeof(buffer));
     assert(options_completion(out, "zsh", "cbirds", QUOTED, 1));
-    fclose(out);
+    memory_close(out);
     assert(strstr(buffer, "'--shy[keeps out of each other'\\''s \\[way\\] \"$HOME\"]'") != NULL);
     memset(buffer, 0, sizeof(buffer));
-    out = fmemopen(buffer, sizeof(buffer), "w");
+    out = memory_open(buffer, sizeof(buffer));
     assert(options_completion(out, "fish", "cbirds", QUOTED, 1));
-    fclose(out);
+    memory_close(out);
     assert(strstr(buffer, "-d \"keeps out of each other's [way] \\\"\\$HOME\\\"\"") != NULL);
 }
 

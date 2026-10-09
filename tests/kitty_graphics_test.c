@@ -2,10 +2,23 @@
 
 #include <assert.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#define STDOUT_FILENO 1
+#define make_pipe(descriptors) _pipe(descriptors, 1 << 16, _O_BINARY)
+#define read_descriptor(fd, buffer, size) _read(fd, buffer, (unsigned)(size))
+#define close_descriptor _close
+#else
+#include <fcntl.h>
 #include <unistd.h>
+#define make_pipe(descriptors) pipe(descriptors)
+#define read_descriptor(fd, buffer, size) read(fd, buffer, size)
+#define close_descriptor close
+#endif
 
 static void test_small_upload(void) {
     static const uint8_t png[] = {0x00, 0xff, 0x10};
@@ -110,18 +123,43 @@ static void test_flush(void) {
     char output[128];
     kitty_graphics_t graphics;
 
-    assert(pipe(descriptors) == 0);
+    assert(make_pipe(descriptors) == 0);
     assert(kitty_graphics_init(&graphics, descriptors[1]) == KITTY_GRAPHICS_OK);
     assert(kitty_graphics_upload_png(&graphics, 1, png, sizeof(png)) == KITTY_GRAPHICS_OK);
     size_t expected_length = graphics.length;
     assert(kitty_graphics_flush(&graphics) == KITTY_GRAPHICS_OK);
     assert(graphics.length == 0);
-    assert((size_t)read(descriptors[0], output, sizeof(output)) == expected_length);
+    assert((size_t)read_descriptor(descriptors[0], output, sizeof(output)) == expected_length);
 
     kitty_graphics_destroy(&graphics);
-    close(descriptors[0]);
-    close(descriptors[1]);
+    close_descriptor(descriptors[0]);
+    close_descriptor(descriptors[1]);
 }
+
+#ifdef _WIN32
+/* A Windows pipe or console has no O_NONBLOCK to set: the nonblocking flush is
+ * the blocking one there (a console write is taken as fast as it can be drawn),
+ * and the one thing worth proving is that it still delivers every byte. The
+ * backpressure test below is POSIX only; tests/console_test.c covers a real
+ * frame loop through a pseudo console. */
+static void test_nonblocking_flush_delivers_everything(void) {
+    int descriptors[2];
+    char output[128];
+    static const uint8_t png[] = {0};
+    kitty_graphics_t graphics;
+
+    assert(make_pipe(descriptors) == 0);
+    assert(kitty_graphics_init(&graphics, descriptors[1]) == KITTY_GRAPHICS_OK);
+    assert(kitty_graphics_upload_png(&graphics, 1, png, sizeof(png)) == KITTY_GRAPHICS_OK);
+    size_t expected_length = graphics.length;
+    assert(kitty_graphics_flush_nonblocking(&graphics) == KITTY_GRAPHICS_OK);
+    assert(graphics.length == 0);
+    assert((size_t)read_descriptor(descriptors[0], output, sizeof(output)) == expected_length);
+    kitty_graphics_destroy(&graphics);
+    close_descriptor(descriptors[0]);
+    close_descriptor(descriptors[1]);
+}
+#else
 
 static void test_nonblocking_flush_backpressure(void) {
     int descriptors[2];
@@ -163,6 +201,8 @@ static void test_nonblocking_flush_backpressure(void) {
     close(descriptors[1]);
 }
 
+#endif
+
 static void test_invalid_arguments(void) {
     kitty_graphics_t graphics;
     kitty_graphics_placement_t placement = {0};
@@ -186,7 +226,11 @@ int main(void) {
     test_synchronized_update();
     test_write_text();
     test_flush();
+#ifdef _WIN32
+    test_nonblocking_flush_delivers_everything();
+#else
     test_nonblocking_flush_backpressure();
+#endif
     test_invalid_arguments();
     return 0;
 }

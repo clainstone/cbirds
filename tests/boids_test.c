@@ -1696,6 +1696,8 @@ static void reset_sign_state(void) {
     paused = 0;
     step_once = 0;
     legend_enabled = 0;
+    input_state = INPUT_NORMAL;
+    input_escape_at.tv_sec = -1;
 }
 
 static void ask_for_a_sign(const char *text) {
@@ -2723,11 +2725,95 @@ static void test_a_screensaver_quits_at_the_first_sign_of_anybody(void) {
     assert(feed_input("\033[<0;10;5M") == 0);  /* A click. */
     assert(feed_input("\033[<35;11;5M") == 0); /* Just moving. */
     assert(feed_input("\033[A") == 0);
-    assert(feed_input("\033") == 0);
+    assert(feed_input("\033OA") == 0); /* An arrow, as an application mode sends it. */
+    assert(feed_input("\033x") == 0);  /* Alt with a key. */
+    /* The Escape key is an escape and nothing after it: it goes when nothing has
+     * come after it for a moment. */
+    assert(feed_input("\033") == 1);
+    assert(feed_input("") == 1);
+    input_escape_at.tv_sec -= 5;
+    assert(feed_input("") == 0);
     clock_state.seconds = 3600;
     assert(feed_input("z") == 0);
     /* Nothing at all is not a reason to leave. */
     assert(feed_input("") == 1);
+    screensaver_mode = 0;
+    reset_sign_state();
+}
+
+/* A lock screen that asks its terminal for colours is answered with strings, and
+ * a late answer is read after the grace. It is the terminal and not somebody: the
+ * strings are swallowed whole, and what is left is the key that wakes it. */
+static void test_a_screensaver_does_not_quit_for_a_late_reply_and_does_for_a_key(void) {
+    reset_sign_state();
+    apply_screen_size(80, 24, 640, 384);
+    screensaver_mode = 1;
+    clock_state.seconds = SCREENSAVER_GRACE + 2;
+    static const char *const REPLIES[] = {
+        "\033]11;rgb:bbbb/bbbb/bbbb\033\\", /* ST. */
+        "\033]10;rgb:eeee/aaaa/0000\007",   /* A bell. */
+        "\033]4;3;rgb:cccc/0000/0000\033\\",
+        "\033P>|terminal 1.2\007still\033\\", /* A DCS: only ST ends it. */
+    };
+    for (size_t i = 0; i < sizeof(REPLIES) / sizeof(*REPLIES); i++) {
+        assert(feed_input(REPLIES[i]) == 1 && input_state == INPUT_NORMAL);
+        /* The reply is no key, and the key after it, or before it, is. */
+        char with_a_key[80];
+        snprintf(with_a_key, sizeof(with_a_key), "%sx", REPLIES[i]);
+        assert(feed_input(with_a_key) == 0);
+        snprintf(with_a_key, sizeof(with_a_key), "x%s", REPLIES[i]);
+        assert(feed_input(with_a_key) == 0);
+        /* Two of them, the way a terminal answers two questions. */
+        snprintf(with_a_key, sizeof(with_a_key), "%s%s", REPLIES[i], REPLIES[i]);
+        assert(feed_input(with_a_key) == 1);
+    }
+    /* In pieces, cut anywhere: between the escape and what follows it, in the
+     * body, between the escape that ends it and the backslash. Not one of the
+     * pieces is somebody, and the key after the last of them is. */
+    static const char REPLY[] = "\033]11;rgb:bbbb/bbbb/bbbb\033\\";
+    for (size_t cut = 1; cut < sizeof(REPLY) - 1; cut++) {
+        char head[40], tail[40];
+        memcpy(head, REPLY, cut);
+        head[cut] = '\0';
+        strcpy(tail, REPLY + cut);
+        assert(feed_input(head) == 1);
+        /* The escape that is waited on is waited on for a moment and not for ever. */
+        assert(feed_input(tail) == 1);
+        assert(input_state == INPUT_NORMAL);
+        assert(feed_input("x") == 0);
+    }
+    /* None of it reaches the flock: b moves the boundary slider, and the reply is
+     * full of them. */
+    reset_test_config();
+    config.boundary_notch = 4;
+    apply_notches();
+    assert(feed_input("\033]11;rgb:bbbb/bbbb/bbbb\033\\") == 1);
+    assert(config.boundary_notch == 4);
+    /* A pointer report is somebody all the same, whatever its body says. */
+    assert(feed_input("\033[<35;10;5M") == 0);
+    assert(config.boundary_notch == 4 && !mouse.present);
+
+    /* A reply that begins in the grace and goes on past it is swallowed whole. */
+    clock_state.seconds = SCREENSAVER_GRACE - 0.2;
+    assert(feed_input("\033]11;rgb:bb") == 1);
+    clock_state.seconds = SCREENSAVER_GRACE + 0.2;
+    assert(feed_input("bb/bbbb/bbbb\033\\") == 1 && input_state == INPUT_NORMAL);
+    assert(feed_input("x") == 0);
+
+    /* An escape that a reply follows, in time, is the start of it. Nobody waits
+     * for ever for the rest of one, as nobody waits for ever for a key. */
+    assert(feed_input("\033") == 1);
+    assert(feed_input("]11;rgb:bbbb/bbbb/bbbb\007") == 1);
+    assert(input_state == INPUT_NORMAL);
+    assert(feed_input("\033") == 1);
+    input_escape_at.tv_sec -= 5;
+    assert(feed_input("]11;rgb:bbbb/bbbb/bbbb\007") == 0);
+
+    /* And a string that never ends is not a lock screen that never wakes. */
+    input_state = INPUT_NORMAL;
+    assert(feed_input("\033]") == 1 && input_state == INPUT_STRING);
+    input_string_at.tv_sec -= 5;
+    assert(feed_input("x") == 0);
     screensaver_mode = 0;
     reset_sign_state();
 }
@@ -5813,6 +5899,7 @@ int main(void) {
     test_a_hawk_over_a_sign_scatters_the_places_it_is_over();
     test_the_intro_birds_are_never_scattered();
     test_a_screensaver_quits_at_the_first_sign_of_anybody();
+    test_a_screensaver_does_not_quit_for_a_late_reply_and_does_for_a_key();
     test_the_options_that_make_a_sign();
     test_a_picture_gives_every_bird_a_place_and_a_colour();
     test_a_picture_wears_a_ramp_somebody_chose();

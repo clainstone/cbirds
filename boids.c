@@ -590,6 +590,17 @@ static size_t input_string_length;
 static struct timespec input_string_at;
 static const size_t INPUT_STRING_LONGEST = 256;
 static const double INPUT_STRING_PATIENCE = 0.25;
+/* When the escape that the lock screen is waiting on came, or nothing at all: a
+ * negative second says there is none to wait for. */
+static struct timespec input_escape_at = {-1, 0};
+
+/* A lock screen past its grace waits to see whether an escape is the Escape key. */
+static void wait_on_an_escape(int goes_at_a_key) {
+    if (goes_at_a_key)
+        clock_gettime(CLOCK_MONOTONIC, &input_escape_at);
+    else
+        input_escape_at.tv_sec = -1;
+}
 
 static void begin_a_string(char kind) {
     input_state = INPUT_STRING;
@@ -1531,6 +1542,13 @@ static const double HAWK_SCATTER_SECONDS = 0.2, HAWK_SCATTER_STAGGER = 0.2;
  * over when the start took longer than it. */
 static const double SCREENSAVER_GRACE = 0.5;
 static double launch_lag; /* Seconds from the program's first line to its first frame. */
+/* A lone escape is the Escape key, or the first byte of something that is still on
+ * its way: a terminal's late reply to a colour question begins with one. A lock
+ * screen waits this long for the rest before it takes it for somebody waking it.
+ * A reply written in one piece is read in one piece, so this is only for a reply
+ * that the network or a multiplexer cut in two, and a tenth of a second is slower
+ * than the cut and quicker than a hand. */
+static const double SCREENSAVER_ESCAPE_WAIT = 0.1;
 
 /* What a picture brings: the share of it that is ink, which says how far apart
  * the birds that draw it are, the light and the dark of its colours, which say
@@ -3920,11 +3938,24 @@ static int handle_input(void) {
     ssize_t length = read(STDIN_FILENO, input, sizeof(input));
     if (length > 0) last_key_at = clock_state.seconds;
     /* A screensaver goes at the first sign of anybody: a key, a click, a pointer
-     * that moves, all of which arrive here as bytes. Whatever arrives in its first
-     * moments is what started it, or the terminal answering something, and is read
-     * and thrown away. */
-    if (screensaver_mode && length > 0)
-        return clock_state.seconds < SCREENSAVER_GRACE && launch_lag <= SCREENSAVER_GRACE;
+     * that moves, an arrow. Whatever arrives in its first moments is what started
+     * it, or the terminal answering something, and is read and thrown away. After
+     * them it is the same reader as any other that sorts the bytes, so that a
+     * terminal's late reply to a question, an OSC or a DCS string, is not somebody:
+     * it is swallowed whole, and what is left is. */
+    int goes_at_a_key = screensaver_mode && !(clock_state.seconds < SCREENSAVER_GRACE &&
+                                              launch_lag <= SCREENSAVER_GRACE);
+    if (screensaver_mode && input_state == INPUT_ESCAPE && input_escape_at.tv_sec >= 0) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double waited = (double)(now.tv_sec - input_escape_at.tv_sec) +
+                        (double)(now.tv_nsec - input_escape_at.tv_nsec) / 1e9;
+        /* The Escape key: nothing came after it. */
+        if (waited > SCREENSAVER_ESCAPE_WAIT) {
+            input_state = INPUT_NORMAL;
+            if (goes_at_a_key) return 0;
+        }
+    }
     if (length > 0 && (input_state == INPUT_STRING || input_state == INPUT_STRING_ESCAPE)) {
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
@@ -3956,12 +3987,21 @@ static int handle_input(void) {
         }
         if (input_state == INPUT_ESCAPE) {
             if (key == '[' || key == 'O') {
+                /* An arrow, a click, a pointer on the move: somebody, and no need
+                 * to wait for the end of it. */
+                if (goes_at_a_key) {
+                    input_state = INPUT_NORMAL;
+                    return 0;
+                }
                 input_state = INPUT_SEQUENCE;
                 sequence_length = 0;
             } else if (key == ']' || key == 'P') {
                 begin_a_string((char)key);
-            } else if (key != '\033') {
+            } else if (key == '\033') {
+                wait_on_an_escape(goes_at_a_key);
+            } else {
                 input_state = INPUT_NORMAL;
+                if (goes_at_a_key) return 0; /* Alt with a key. */
             }
             continue;
         }
@@ -3970,6 +4010,7 @@ static int handle_input(void) {
              * Anything longer than the buffer is not a report we know. */
             if (key >= 0x40 && key <= 0x7e) {
                 input_state = INPUT_NORMAL;
+                if (screensaver_mode) continue; /* Nothing it says is for the flock. */
                 sequence[sequence_length] = '\0';
                 if (key == 'M' || key == 'm')
                     read_mouse_report(sequence);
@@ -3982,7 +4023,12 @@ static int handle_input(void) {
         }
         if (key == '\033') {
             input_state = INPUT_ESCAPE;
+            wait_on_an_escape(goes_at_a_key);
             continue;
+        }
+        if (screensaver_mode) {
+            if (goes_at_a_key) return 0;
+            continue; /* Not even q: it is not a key for anything yet. */
         }
 
         if (key == 'b' || key == 'a') konami_note((char)key);

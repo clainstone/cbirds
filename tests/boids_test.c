@@ -11346,6 +11346,53 @@ static void test_a_shared_sky_cannot_be_benchmarked_or_recorded(void) {
     assert(message[0] == '\0');
 }
 
+/* The arrays of a shared sky are MAX_BIRDS long and a window can be sent more than
+ * it has room for, by neighbours that have not yet heard that it is full: what does
+ * not fit is let go, and not one bird is written past the end. The array here is
+ * exactly that long, on the heap, for the sanitizers to look at. */
+static void test_no_bird_or_hawk_lands_past_the_arrays(void) {
+    link_traveller_t t;
+    link_traveller_t post[LINK_BATCH];
+
+    reset_test_config();
+    set_test_screen(800, 480);
+    render_mode = RENDER_UNSET;
+    formation_clear();
+    share_the_sky = 1;
+    bird_t *birds = calloc((size_t)bird_room(10), sizeof(*birds));
+    assert(birds != NULL);
+    join_the_sky(0);
+    config.birds = MAX_BIRDS - 3;
+    config.hawks = MAX_HAWKS - 1;
+    link_set_room(&the_row, 1, 1); /* The neighbour has not heard that it is full. */
+    while (link_receive(&beside, &t)) {
+    }
+    for (int i = 0; i < LINK_BATCH; i++)
+        post[i] = (link_traveller_t){.kind = i % 4 == 3 ? LINK_HAWK : LINK_BIRD,
+                                     .height = 0.1 * i,
+                                     .reach = 5,
+                                     .direction = 1};
+    int posted = 0;
+    for (int batch = 0; batch < 9; batch++)
+        posted += link_send(&beside, LINK_RIGHT, post, LINK_BATCH);
+    assert(posted > 40);
+    int live = config.birds;
+    sky_take_in(birds, &live);
+    assert(config.birds == MAX_BIRDS && live == MAX_BIRDS && config.hawks == MAX_HAWKS);
+    /* The last place is the flock's, and what was written there is a bird. */
+    assert(birds[MAX_BIRDS - 1].direction == 1);
+    /* Nothing is left in the post to land when there is room again. */
+    config.birds = 100;
+    live = 100;
+    sky_take_in(birds, &live);
+    assert(config.birds == 100);
+
+    free(birds);
+    share_the_sky = 0;
+    leave_the_sky();
+    reset_test_config();
+}
+
 /* ------------------------------------------------------------------------ */
 /* Birds that leave and land: what is kept for a bird outside bird_t            */
 /* ------------------------------------------------------------------------ */
@@ -12078,6 +12125,7 @@ int main(void) {
     test_the_link_option_is_in_the_table_and_off_by_default();
     test_a_shared_sky_cannot_be_benchmarked_or_recorded();
     test_a_shared_sky_is_refused_with_a_space_a_night_and_a_text();
+    test_no_bird_or_hawk_lands_past_the_arrays();
     test_everything_kept_for_a_bird_goes_with_it_and_a_bird_that_lands_has_none();
     test_nothing_crosses_while_the_intro_is_written();
     test_a_sign_is_held_while_birds_cross();

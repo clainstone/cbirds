@@ -66,10 +66,11 @@ typedef struct {
 } option_example_t;
 
 /*
- * Groups in table order, columns aligned to the widest option. With everything
- * false only the rows marked essential are shown, which is what -h is for: one
- * screen a newcomer can read, against the full list for someone looking for a
- * particular switch.
+ * Groups in table order, columns aligned to the widest option shown. With
+ * everything false only the rows marked essential are shown, which is what -h is
+ * for: one screen a newcomer can read, against the full list for someone looking
+ * for a particular switch. Its columns are aligned to the rows it shows, so it is
+ * narrower than the full list.
  */
 void options_usage(FILE *out, const char *program, const char *tagline,
                    const option_example_t *examples, const option_t *table, size_t count,

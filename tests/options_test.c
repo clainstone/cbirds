@@ -238,6 +238,18 @@ static void test_aliases_and_the_short_help(void) {
     assert(strstr(brief, "--weight") == NULL); /* Not. */
     assert(strstr(full, "--weight") != NULL);
     assert(strlen(brief) < strlen(full));
+    /* The short help is aligned to the rows it shows: its text starts where the
+     * widest of those rows ends, and so earlier than the full help's, whose widest
+     * row (--palette NAME) is not essential. Both rows of it start there. */
+    const char *birds_row = strstr(brief, "how many boids"), *quiet_row = strstr(brief, "say less");
+    assert(birds_row != NULL && quiet_row != NULL);
+    size_t birds_at = (size_t)(birds_row - (strstr(brief, "-n, --birds") - 2));
+    size_t quiet_at = (size_t)(quiet_row - (strstr(brief, "-q, --quiet") - 2));
+    assert(birds_at == quiet_at);
+    const char *full_row = strstr(full, "how many boids");
+    size_t full_at = (size_t)(full_row - (strstr(full, "-n, --birds") - 2));
+    assert(birds_at < full_at);
+    assert(birds_at == strlen("  -n, --birds COUNT") + 2); /* Two clear of the widest shown. */
     /* The old name is advertised in neither: accepted, never shown. */
     assert(strstr(brief, "--boids") == NULL && strstr(full, "--boids") == NULL);
 }

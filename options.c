@@ -260,8 +260,12 @@ static void render_option(FILE *out, size_t column, char shorthand, const char *
 void options_usage(FILE *out, const char *program, const char *tagline,
                    const option_example_t *examples, const option_t *table, size_t count,
                    int everything) {
+    /* Aligned to the widest of the rows that are shown, which -h makes narrower: on
+     * an 80 column terminal a line of its text that fits, and a line that does not
+     * is two rows of the one screen it is meant to be. */
     size_t column = strlen("  -V, --version");
     for (size_t i = 0; i < count; i++) {
+        if (!everything && !table[i].essential) continue;
         size_t width = option_width(&table[i]);
         if (width > column) column = width;
     }

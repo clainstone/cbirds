@@ -4312,6 +4312,33 @@ static void test_a_pointer_reported_beyond_the_screen_is_at_its_edge(void) {
     mouse.present = 0;
 }
 
+/* -h is one screen: with the lines that wrap on an 80 column terminal counted as
+ * two, it fits the 24 rows of an 80 by 24 terminal. */
+static void test_the_short_help_is_one_screen_at_eighty_columns(void) {
+    char path[512], text[8192];
+    scratch_file(path, sizeof(path), "short-help.txt");
+    FILE *help = fopen(path, "w+");
+    assert(help != NULL);
+    usage(help, "cbirds", 0);
+    rewind(help);
+    size_t length = fread(text, 1, sizeof(text) - 1, help);
+    text[length] = '\0';
+    fclose(help);
+    assert(unlink(path) == 0);
+
+    int rows = 0, columns = 0;
+    for (const char *c = text; *c != '\0'; c++) {
+        if ((*c & 0xC0) == 0x80) continue; /* Not a column: the rest of a character. */
+        if (*c == '\n') {
+            rows += columns <= 80 ? 1 : (columns + 79) / 80;
+            columns = 0;
+            continue;
+        }
+        columns++;
+    }
+    assert(rows <= 24);
+}
+
 static void test_the_pointer_moves_the_flock(void) {
     reset_test_config();
     legend_enabled = 0;
@@ -5947,6 +5974,7 @@ int main(void) {
     test_presets_set_every_notch();
     test_a_notch_survives_the_round_trip();
     test_the_pointer_moves_the_flock();
+    test_the_short_help_is_one_screen_at_eighty_columns();
     test_a_pointer_reported_beyond_the_screen_is_at_its_edge();
     test_the_shade_follows_the_heading();
     test_the_hawk_is_never_the_colour_of_the_flock();

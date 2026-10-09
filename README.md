@@ -159,11 +159,11 @@ cbirds --picture logo.png           the flock draws a PNG; --shape dot and -n 20
 cbirds --screensaver --clock        a lock screen that tells the time; any key quits
 ```
 
-It opens by writing BOIDS, lets go, and flocks. Move the pointer into the
-flock and it scatters; whip it through and a wave of light runs across the
-flock, as it does when a hawk dives. Press `q` and it flies off the top. Left
-alone for a minute, it starts moving the sliders itself; any key takes them
-back.
+It opens by writing BOIDS, lets go, and flocks; a sign, a night and a text
+open as their sections below say. Move the pointer into the flock and it
+scatters; whip it through and a wave of light runs across the flock, as it does
+when a hawk dives. Press `q` and it flies off the top. Left alone for a minute,
+it starts moving the sliders itself; any key takes them back.
 
 `h` opens a panel of sliders in the corner, and `--panel` opens it from the
 start. Lowercase lowers, uppercase raises, one press is one notch. `speed`
@@ -233,9 +233,10 @@ No wave of light runs through a text, whether a hawk dives or the pointer is
 whipped; the letters have the wave that sends them up. `--birds`, `--flocks`,
 `--depth`, `--matrix`, `--shape`, `--sprite`, `--size` and tails do not apply:
 the text decides how many letters there are, and a letter has no sprite.
-`--fireflies` does not go with text, since the text is the flock, and cbirds
-says so and stops. `--render kitty` draws text too. The panel is laid over the
-text, and the letters under it still land there.
+`--fireflies`, `--say`, `--clock` and `--picture` do not go with text, since the
+text is the flock, and cbirds says so and stops. `--screensaver` does, and quits
+on a key typed at the terminal. `--render kitty` draws text too. The panel is
+laid over the text, and the letters under it still land there.
 
 When standard input is not a terminal, the keys are read from the terminal
 itself. A pipe is read to its end, or until it has been quiet for a second and a
@@ -294,6 +295,17 @@ pick shades of that ramp. A bird keeps its colour while it flies, and the
 picture is held, let go of and drawn again as a sign is. `--shape dot` and more
 birds, `-n 2000`, draw it best. The file is read as `--sprite` reads one: a PNG
 of up to 4 MB, in any of the colour types PNG has.
+
+A hawk dives at a sign as it does at a flock, and the wave of light runs through
+the birds that fly round it. The birds that write are not lit and do not swerve,
+as the letters of BOIDS are not. A bird that a hawk or the pointer has scattered
+is one of the flock until it is home, and is lit with the rest.
+
+A sign is what the flock writes, so it does not go with a flock that is something
+else. `--say`, `--clock` and `--picture` each stop with a usage error beside
+`--fireflies`, since a night has no letters to write with, and beside text, from
+`--text` or piped in, since then the text is the flock. A pipe with nothing in it
+is no text. `--screensaver` goes with all of them.
 
 A sign picks a bird as wide as the distance between the cells of its letters
 unless you give `--size`, so a short text is written with the usual bird and a
@@ -479,11 +491,11 @@ The panel keeps working. `alignment` becomes `coupling`, how far a flash moves a
 clock, and `perception` becomes `sight`, how far a flash is seen; `--alignment`
 and `--perception` set them. A `sync` row reads out how much of the swarm is in
 step, from 0 to 1. Hawks, flocks, presets and tails have nothing to do on a
-night, and the program says so; text is refused, since a night has its own
-flock. A flash is the
-pale yellow of the `firefly` ramp, dying through yellow green to dark green over
-half a second, and between flashes each firefly is a faint dot; `--birds`,
-`--size`, `--shape` and `--color` still work.
+night, and the program says so; text and signs are refused, since a night has its
+own flock and no letters to write with. A flash is the pale yellow of the
+`firefly` ramp, dying through yellow green to dark green over half a second, and
+between flashes each firefly is a faint dot; `--birds`, `--size`, `--shape` and
+`--color` still work.
 
 ## Credits
 

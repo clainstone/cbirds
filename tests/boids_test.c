@@ -5775,6 +5775,33 @@ static void test_the_light_of_a_wave_is_seen_on_the_ground_ink_knows(void) {
     reset_test_config();
 }
 
+/* A firefly's dark body is its ramp's last shade faded towards the ground it is
+ * seen on: the picture's own, dark one, unless ink has asked the terminal, and then
+ * the terminal's, which on paper is white. */
+static void test_a_fireflys_body_fades_into_the_ground_ink_knows(void) {
+    png_image_t body = {0, 0, NULL};
+    uint8_t expected[3];
+
+    reset_test_config();
+    config.palette = palette_named("ink");
+    assert(png_image_alloc(&body, 4, 4) == PNG_OK);
+    build_the_ink(LIGHT_INK.foreground, LIGHT_INK.background, FAR_DIM);
+    memset(body.pixels, 255, (size_t)body.width * (size_t)body.height * 4);
+    tint_body(&body, 0);
+    pulled_towards(ink_tints[4], LIGHT_INK.background, FIREFLY_BODY_FADE, expected);
+    assert(memcmp(body.pixels, expected, 3) == 0 && body.pixels[3] == 255);
+
+    /* Ink that was not asked of the terminal fades towards the picture's ground. */
+    ink_is_known = 0;
+    memset(body.pixels, 255, (size_t)body.width * (size_t)body.height * 4);
+    tint_body(&body, 0);
+    pulled_towards(ink_tints[4], PICTURE_GROUND, FIREFLY_BODY_FADE, expected);
+    assert(memcmp(body.pixels, expected, 3) == 0);
+
+    png_image_free(&body);
+    reset_test_config();
+}
+
 /* The terminal is asked for its background and then its foreground, with the
  * machinery the theme uses, and a terminal that does not answer, or answers half,
  * is not guessed at. The terminal is a pty with the test on the other end of it. */
@@ -10584,6 +10611,7 @@ int main(void) {
     test_ink_is_drawn_as_it_was_built();
     test_a_flock_of_ink_is_seen_on_a_white_ground();
     test_the_light_of_a_wave_is_seen_on_the_ground_ink_knows();
+    test_a_fireflys_body_fades_into_the_ground_ink_knows();
     test_ink_is_asked_of_the_terminal();
     test_ink_without_a_terminal_is_ash();
     test_the_birds_are_rebuilt_when_the_window_settles();

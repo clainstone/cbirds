@@ -5577,8 +5577,7 @@ static void tint_body(png_image_t *image, int unused) {
     }
     const uint8_t *last = chosen->tints[chosen->shades - 1];
     uint8_t rgb[3];
-    for (int c = 0; c < 3; c++)
-        rgb[c] = (uint8_t)(last[c] + (PICTURE_GROUND[c] - last[c]) * FIREFLY_BODY_FADE + 0.5);
+    pulled_towards(last, picture_ground(), FIREFLY_BODY_FADE, rgb);
     png_tint(image, rgb[0], rgb[1], rgb[2], chosen->mode);
 }
 
@@ -6740,7 +6739,7 @@ static void reserve_the_light(gif_writer_t *gif, double seconds) {
     for (int quarter = 0; quarter < 4; quarter++)
         for (int c = 0; c < 3; c++)
             colours[quarter][c] =
-                (uint8_t)(light[c] + (PICTURE_GROUND[c] - light[c]) * quarter / 4.0 + 0.5);
+                (uint8_t)(light[c] + (picture_ground()[c] - light[c]) * quarter / 4.0 + 0.5);
     gif_reserve_colours(gif, (const uint8_t(*)[3])colours, 4);
 }
 

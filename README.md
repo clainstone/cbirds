@@ -150,6 +150,7 @@ cbirds --hawks 2 --color ice        something to watch
 cbirds --flocks 3 --color ember     three flocks that keep to their own
 cbirds --color prism                a turn runs a rainbow through the flock
 cbirds --depth --trails             a second sky behind the first
+cbirds --3d                         a murmuration in three dimensions
 cbirds --matrix                     it is raining birds
 cbirds --fireflies                  a summer night, and they fall into step
 fastfetch | cbirds                  the letters of anything take flight
@@ -339,6 +340,34 @@ TMOUT=300
 TRAPALRM() { cbirds --screensaver --clock }
 ```
 
+## Three dimensions
+
+`--3d` takes the flock off the plane and into a sky: a murmuration over its
+roost, seen from a camera that goes once round it every two minutes, so that
+the depth shows even in a still picture. A nearer bird is bigger and brighter
+than a far one, and a bird flying at the camera is short where one flying
+across it is long.
+
+The three rules are the same, but a bird heeds its seven nearest neighbours
+however far off they are, as starlings do, and not everything within a radius.
+It turns at a limited rate a second, so it banks. A roost calls it home when it
+strays, and the air above the roost moves slowly, which folds the flock into
+sheets and ribbons.
+
+Without `-n`, `-s` or `-c` there are 2000 birds, of 8 pixels, or 5 in text, in
+`ink`: the ramp from your terminal's text colour to its background, asked for
+at startup, so the flock is grey on a dark terminal and near black on a light
+one. A terminal that does not answer, and every recording, gets `ash`.
+`--color ink` asks for it in the flat sky as well.
+
+In the panel `boundary` is the roost and `perception` is how many neighbours a
+bird heeds, from one to thirteen. The pointer is a stick poked into the sky:
+birds near the line from the camera through it get out of the way. `--hawks`
+hunts the flock through the air.
+
+`--3d` replaces `--depth`, draws no tails, and is one flock: `--flocks` and
+`--matrix` are refused.
+
 ## Terminals
 
 cbirds draws in braille by default, in every terminal: no terminal is guessed
@@ -377,11 +406,12 @@ Sliders   0 to 12, as the panel shows them
       --avoidance NOTCH         how much flocks keep out of each other's way (default 4)
 
 Look
-  -c, --color RAMP              theme, ember, ice, acid, matrix, aurora, prism, potion, dusk, ash, firefly
+  -c, --color RAMP              theme, ember, ice, acid, matrix, aurora, prism, potion, dusk, ash, firefly, ink
       --shape NAME              bird, arrow, plane, dot
       --sprite FILE             a PNG you supply, kept in its own colours
   -e, --trails                  faint tails behind the flock
       --depth                   a second sky further off: smaller, slower, dimmer birds
+      --3d                      a murmuration in three dimensions, seen from a slow orbit (2000 birds, in ink)
   -l, --panel                   the sliders in the corner from the start; h toggles them
       --render HOW              braille by default; sextants, blocks, or kitty in Kitty and Ghostty
 
@@ -501,8 +531,12 @@ between flashes each firefly is a faint dot; `--birds`, `--size`, `--shape` and
 
 The model is from Craig Reynolds' *Flocks, Herds, and Schools: A Distributed
 Behavioral Model*, SIGGRAPH 1987; his page on boids is at
-[red3d.com/cwr/boids](https://www.red3d.com/cwr/boids/). The Kitty graphics
-protocol is documented at
+[red3d.com/cwr/boids](https://www.red3d.com/cwr/boids/). `--3d` follows
+Ballerini et al., *Interaction ruling animal collective behavior depends on
+topological rather than metric distance*, PNAS 2008, for whom a bird heeds, and
+Hildenbrandt, Carere and Hemelrijk, *Self-organized aerial displays of thousands
+of starlings: a model*, Behavioral Ecology 2010, for the roost and the banking.
+The Kitty graphics protocol is documented at
 [sw.kovidgoyal.net/kitty/graphics-protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/).
 The escape waves are after what is seen in starling flocks attacked by falcons:
 Procaccini and others, *Propagating waves in starling, Sturnus vulgaris, flocks

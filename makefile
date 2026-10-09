@@ -7,9 +7,9 @@ BUILD     = -std=c99 -Wall -Wextra $(CPPFLAGS) $(CFLAGS)
 LDLIBS    = -lm
 TARGET    = cbirds
 SRC       = boids.c cells.c fireflies.c font.c gif.c kitty_graphics.c letters.c options.c \
-            picture.c png.c sign.c spatial_grid.c vt.c waves.c
+            picture.c png.c sign.c sky3d.c spatial_grid.c vt.c waves.c
 HDR       = cells.h fireflies.h font.h gif.h kitty_graphics.h letters.h options.h picture.h \
-            png.h sign.h spatial_grid.h sprite_png.h vt.h waves.h
+            png.h sign.h sky3d.h spatial_grid.h sprite_png.h vt.h waves.h
 ASSET     = sprite_png.h
 ASSET_SRC = matrix.png
 MKASSET   = mkasset
@@ -18,7 +18,7 @@ TESTS     = $(TESTDIR)/kitty_graphics_test $(TESTDIR)/options_test $(TESTDIR)/pn
             $(TESTDIR)/gif_test $(TESTDIR)/cells_test $(TESTDIR)/spatial_grid_test \
             $(TESTDIR)/fireflies_test $(TESTDIR)/waves_test $(TESTDIR)/vt_test \
             $(TESTDIR)/letters_test $(TESTDIR)/sign_test $(TESTDIR)/picture_test \
-            $(TESTDIR)/boids_test
+            $(TESTDIR)/sky3d_test $(TESTDIR)/boids_test
 
 PREFIX   ?= /usr/local
 BINDIR    = $(DESTDIR)$(PREFIX)/bin
@@ -90,8 +90,11 @@ $(TESTDIR)/sign_test: $(TESTDIR)/sign_test.c sign.c sign.h font.c font.h
 $(TESTDIR)/picture_test: $(TESTDIR)/picture_test.c picture.c picture.h png.c png.h
 	$(CC) $(BUILD) $@.c picture.c png.c -o $@ $(LDFLAGS) $(LDLIBS)
 
+$(TESTDIR)/sky3d_test: $(TESTDIR)/sky3d_test.c sky3d.c sky3d.h
+	$(CC) $(BUILD) $@.c sky3d.c -o $@ $(LDFLAGS) $(LDLIBS)
+
 $(TESTDIR)/boids_test: $(TESTDIR)/boids_test.c $(SRC) $(HDR)
-	$(CC) $(BUILD) $@.c cells.c fireflies.c font.c gif.c kitty_graphics.c letters.c options.c picture.c png.c sign.c spatial_grid.c vt.c waves.c -o $@ $(LDFLAGS) $(LDLIBS)
+	$(CC) $(BUILD) $@.c cells.c fireflies.c font.c gif.c kitty_graphics.c letters.c options.c picture.c png.c sign.c sky3d.c spatial_grid.c vt.c waves.c -o $@ $(LDFLAGS) $(LDLIBS)
 
 clean:
 	rm -f $(TARGET) $(MKASSET) $(TESTS) *.o *~

@@ -5634,9 +5634,11 @@ static void leave_the_defaults_open(void) {
 
 /* A night's, or the shipped ones, for whatever was left open. What was asked for
  * wins, even when it is the very thing the flock ships with: the name of the
- * default ramp, given, is a ramp given, and a picture then wears it. */
+ * default ramp, given, is a ramp given, and a picture then wears it. --matrix names
+ * a ramp too, the green one, and a picture beside it is drawn in that: the rain is
+ * green, and a picture in its own colours would be the one thing in it that is not. */
 static void settle_the_defaults(void) {
-    palette_was_asked_for = config.palette >= 0;
+    palette_was_asked_for = config.palette >= 0 || matrix_mode;
     if (config.birds == 0) config.birds = fireflies_mode ? FIREFLY_COUNT : shipped.birds;
     if (config.shape < 0) config.shape = fireflies_mode ? shape_named("dot") : shipped.shape;
     if (config.palette < 0)

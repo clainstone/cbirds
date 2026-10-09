@@ -8422,6 +8422,15 @@ static void test_what_was_not_asked_for_is_settled_together(void) {
     read_the_line(line);
     assert(!picture_colours_in_use && palette_was_asked_for && config.palette == 0);
 
+    /* --matrix names the green ramp, so a picture beside it is drawn in that; and
+     * with no picture, it is what it was. */
+    snprintf(line, sizeof(line), "--picture %s --matrix", picture);
+    read_the_line(line);
+    assert(!picture_colours_in_use && palette_was_asked_for);
+    assert(config.palette == palette_named("matrix") && the_rain_is_falling);
+    read_the_line("--matrix");
+    assert(config.palette == palette_named("matrix") && the_rain_is_falling);
+
     assert(unlink(picture) == 0);
     forget_the_options();
 }

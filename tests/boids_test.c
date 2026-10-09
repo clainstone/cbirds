@@ -10402,7 +10402,13 @@ static void test_a_colour_reply_is_whole_at_its_terminator_and_not_at_a_letter_i
     for (size_t i = 0; i < sizeof(SPLIT) / sizeof(*SPLIT); i++) {
         rgb[0] = rgb[1] = rgb[2] = 7;
         pid_t terminal = answer_in_pieces(keys[1], SPLIT[i], WAITS, 2);
-        assert(ask_colour("\033]4;1;?\033\\", rgb));
+        /* Asked as ask_colour asks, with more than its sixty milliseconds to wait:
+         * the joining of the pieces is what is tested, and a Mac running the
+         * address sanitizer took longer than that between them. */
+        char reply[128];
+        const char *question = "\033]4;1;?\033\\";
+        assert(terminal_query(question, strlen(question), reply, sizeof(reply), 2000) > 0);
+        assert(parse_osc_colour(reply, rgb));
         wait_for_the_answerer(terminal);
         assert(rgb[0] == 0xcc && rgb[1] == 0 && rgb[2] == 0);
     }

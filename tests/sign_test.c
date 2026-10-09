@@ -26,7 +26,9 @@ static void test_the_text_is_cleaned_down_to_what_the_font_can_draw(void) {
      * it is the control characters and the bytes past ASCII that it lacks. */
     assert(sign_clean("a~b", out, sizeof(out)) == 3);
     assert(strcmp(out, "A~B") == 0);
-    assert(sign_clean("a\x01\x7f" "b", out, sizeof(out)) == 2);
+    assert(sign_clean("a\x01\x7f"
+                      "b",
+                      out, sizeof(out)) == 2);
     assert(strcmp(out, "AB") == 0);
 
     /* Spaces: one between words, none at the ends, and a new line or a tab is a

@@ -6122,11 +6122,29 @@ static const char *the_sign_option(void) {
 
 /* Things that each want to be the whole flock. A night is the flock, the text is
  * the flock, and a sign is what the flock writes: a night has no letters to write
- * with, and text that is the flock leaves nobody to write a sign. The one or the
- * other, said in one line and with the status of the other usage errors, before
- * anything is read or opened. Text on a pipe is said when it is found. */
+ * with, and text that is the flock leaves nobody to write a sign. A space is the
+ * flock in another sky altogether: a night, a text and a sign are all made on the
+ * flat one, with its screen to lay them out on, and a space has no screen, only a
+ * camera. The one or the other, said in one line and with the status of the other
+ * usage errors, before anything is read or opened. Text on a pipe is said when it
+ * is found. */
 static void refuse_what_does_not_go_together(void) {
     const char *sign = the_sign_option();
+    if (sky_mode && fireflies_mode) {
+        fprintf(stderr, "%s: --3d does not go with --fireflies: a night is on the flat sky\n",
+                program_name);
+        exit(EXIT_USAGE);
+    }
+    if (sky_mode && text_path != NULL) {
+        fprintf(stderr, "%s: --3d does not go with --text: a text is laid out on the flat sky\n",
+                program_name);
+        exit(EXIT_USAGE);
+    }
+    if (sky_mode && sign != NULL) {
+        fprintf(stderr, "%s: --3d does not go with %s: a sign is drawn on the flat sky\n",
+                program_name, sign);
+        exit(EXIT_USAGE);
+    }
     if (sky_mode && (config.flocks > 1 || matrix_mode)) {
         fprintf(stderr, "%s: --3d is one flock over one roost; %s is for the flat sky\n",
                 program_name, matrix_mode ? "--matrix" : "--flocks");
@@ -6405,6 +6423,13 @@ static int take_the_text(int cols, int rows, int pipes) {
     if (fireflies_mode) {
         fprintf(stderr,
                 "%s: --fireflies does not go with text on standard input: the text is the flock\n",
+                program_name);
+        exit(EXIT_USAGE);
+    }
+    if (sky_mode) {
+        fprintf(stderr,
+                "%s: --3d does not go with text on standard input: a text is laid out on the flat "
+                "sky\n",
                 program_name);
         exit(EXIT_USAGE);
     }

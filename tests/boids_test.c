@@ -9832,6 +9832,91 @@ static void test_a_sign_is_refused_with_a_night_and_with_text(void) {
     forget_the_options();
 }
 
+/* A space is the flock in another sky, and a night, a text and a sign are all made
+ * on the flat one, with its screen to lay them out on: said in one line, naming the
+ * two, with the status of every other usage error, in either order on the line,
+ * before anything is opened. A text on a pipe is said when it is found. What does
+ * go with it goes: the lock screen, hawks, and the notes about what it replaces. */
+static void test_a_space_is_refused_with_a_night_a_text_and_a_sign(void) {
+    char text[600], empty[600], picture[600], said[512], line[1200];
+    scratch_file(text, sizeof(text), "space_refuse.txt");
+    scratch_file(empty, sizeof(empty), "space_refuse_empty.txt");
+    world_write(text, "hello, world\n");
+    world_write(empty, "");
+    write_a_picture("space_refuse.png", 1, 255);
+    scratch_file(picture, sizeof(picture), "space_refuse.png");
+
+    const char *asked[][2] = {
+        {"--fireflies", "--fireflies"},
+        {"--say hi", "--say"},
+        {"--clock", "--clock"},
+        {"--clock-at 10:00", "--clock-at"},
+        {"--picture /nowhere/at/all.png", "--picture"}, /* Never opened. */
+    };
+    for (size_t a = 0; a < sizeof(asked) / sizeof(*asked); a++) {
+        char expected[128];
+        snprintf(expected, sizeof(expected), "--3d does not go with %s:", asked[a][1]);
+        snprintf(line, sizeof(line), "--3d %s", asked[a][0]);
+        assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, line, said, sizeof(said)) ==
+               EXIT_USAGE);
+        assert(strstr(said, expected) != NULL);
+        assert(strchr(said, '\n') == said + strlen(said) - 1);
+        snprintf(line, sizeof(line), "%s --3d", asked[a][0]);
+        assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, line, said, sizeof(said)) ==
+               EXIT_USAGE);
+        assert(strstr(said, expected) != NULL && strchr(said, '\n') == said + strlen(said) - 1);
+    }
+
+    /* A text file, either way round, and the text of standard input, named. */
+    snprintf(line, sizeof(line), "--3d --text %s", text);
+    assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, line, said, sizeof(said)) ==
+           EXIT_USAGE);
+    assert(strstr(said, "--3d does not go with --text:") != NULL);
+    assert(strchr(said, '\n') == said + strlen(said) - 1);
+    snprintf(line, sizeof(line), "--text %s --3d", text);
+    assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, line, said, sizeof(said)) ==
+           EXIT_USAGE);
+    assert(strstr(said, "--3d does not go with --text:") != NULL);
+    assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, "--3d --text -", said,
+                                         sizeof(said)) == EXIT_USAGE);
+    assert(strstr(said, "--3d does not go with --text:") != NULL);
+
+    /* Text on a pipe is said when it is found, and a pipe with nothing in it is no
+     * text, so the space goes on. */
+    piped_line_t piped = {"--3d", text};
+    assert(status_of_a_run_that_may_exit(take_the_text_piped_in_on_a_line, &piped, said,
+                                         sizeof(said)) == EXIT_USAGE);
+    assert(strstr(said, "--3d does not go with text on standard input:") != NULL);
+    assert(strchr(said, '\n') == said + strlen(said) - 1);
+    piped.text_file = empty;
+    assert(status_of_a_run_that_may_exit(take_the_text_piped_in_on_a_line, &piped, said,
+                                         sizeof(said)) == 3);
+    assert(said[0] == '\0');
+
+    /* The refusals the space had before stand, and say the same. */
+    assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, "--3d --flocks 2", said,
+                                         sizeof(said)) == EXIT_USAGE);
+    assert(strstr(said, "--3d is one flock over one roost; --flocks is for the flat sky") != NULL);
+    assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, "--3d --matrix", said,
+                                         sizeof(said)) == EXIT_USAGE);
+    assert(strstr(said, "--matrix is for the flat sky") != NULL);
+
+    /* What does go with it goes, and what it replaces is said once. */
+    const char *fine[] = {"--3d --screensaver", "--3d --hawks 2", "--3d --hawks 1 --color ember",
+                          "--3d -n 800 --render braille"};
+    for (size_t f = 0; f < sizeof(fine) / sizeof(*fine); f++) {
+        assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, (void *)fine[f], said,
+                                             sizeof(said)) == 0);
+        assert(said[0] == '\0');
+    }
+    assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, "--3d --depth", said,
+                                         sizeof(said)) == 0);
+    assert(strstr(said, "--3d replaces --depth") != NULL);
+
+    assert(unlink(text) == 0 && unlink(empty) == 0 && unlink(picture) == 0);
+    forget_the_options();
+}
+
 /* A writer has somewhere to be: in a sign as in the intro it is never caught by an
  * alarm, never lit and never turns. A writer that a hawk or the pointer has
  * scattered is a bird of the sky until it is home, and is caught like one. */
@@ -10441,6 +10526,7 @@ int main(void) {
     test_a_whip_is_read_from_the_descriptor_that_was_chosen();
     test_what_was_not_asked_for_is_settled_together();
     test_a_sign_is_refused_with_a_night_and_with_text();
+    test_a_space_is_refused_with_a_night_a_text_and_a_sign();
     test_a_writer_is_never_alarmed_and_a_scattered_one_is();
     test_a_bird_sent_to_write_forgets_the_alarm_it_was_given();
     test_hawks_over_a_sign_light_the_free_birds_and_not_the_writers();

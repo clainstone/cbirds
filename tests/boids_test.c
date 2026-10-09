@@ -3117,6 +3117,181 @@ static void test_a_colour_given_is_told_from_the_default(void) {
     reset_sign_state();
 }
 
+/* A sign laid out as the program lays it out on a screen of this many cells: the
+ * bird it would pick, the pace of this frame rate, and the writers it would send. */
+static void lay_out_a_sign_on(world_t *world, int columns, int rows, int fps, const char *text,
+                              int birds, int seed) {
+    reset_sign_state();
+    config.pace_notch = DEFAULT_PACE_NOTCH;
+    apply_notches();
+    apply_screen_size(columns, rows, columns * 8, rows * 16);
+    frame_seconds = 1.0 / fps;
+    update_speed();
+    ask_for_a_sign(text);
+    config.bird_size = 0;
+    settle_the_bird_size();
+    begin_the_intro();
+    open_the_world(world, birds, seed);
+    clock_state.seconds = 0;
+    sign_advance(world->birds);
+    assert(the_sign.up);
+}
+
+static void test_a_small_screen_leaves_the_flock_sky_and_a_roomy_one_is_as_it_was(void) {
+    world_t world;
+
+    /* How small a screen is, by its shorter side: the 96 by 26 of a recording is as
+     * small as it gets, 160 by 45 is roomy, and between them it is a straight line. */
+    reset_sign_state();
+    double previous = 2;
+    for (int rows = 20; rows <= 50; rows += 2) {
+        apply_screen_size(rows * 3, rows, rows * 3 * 8, rows * 16);
+        double small = sign_smallness();
+        assert(small >= 0 && small <= 1 && small <= previous + 1e-12);
+        previous = small;
+        if (rows * 16 <= 416) assert(small == 1);
+        if (rows * 16 >= 720) assert(small == 0);
+    }
+    apply_screen_size(120, 34, 120 * 8, 34 * 16);
+    assert(sign_smallness() > 0.3 && sign_smallness() < 0.8);
+
+    /* A roomy screen is laid out as it always was: the roomy shares of the room, the
+     * writers a sixth of a flock short of three fifths, the band four steps of flight. */
+    lay_out_a_sign_on(&world, 200, 50, 25, "HELLO WORLD", 800, 5);
+    {
+        double pad = config.bird_size * 2.0;
+        sign_lines_t lines;
+        double cell;
+        assert(sign_fit("HELLO WORLD", 0, (1600 - 2 * pad) * SIGN_WIDTH_SHARE,
+                        (800 - 2 * pad) * SIGN_HEIGHT_SHARE, SIGN_LARGEST_CELL * config.bird_size,
+                        &lines, &cell) > 0);
+        assert(fabs(formation.cell - cell) < 1e-9);
+        assert(the_sign.per_cell == (int)(800 * SIGN_WRITER_SHARE) / formation.count);
+        assert(fabs(sign_band() - SIGN_KEEP_OUT_STEPS * config.speed) < 1e-9);
+    }
+    close_the_world(&world);
+
+    /* A small one gives the sign less of it, in cells that are still letters, and
+     * the band is a fifth of the screen at the most, at the pace of a recording and
+     * as it was at the pace of a terminal. */
+    lay_out_a_sign_on(&world, 96, 26, 25, "HELLO WORLD", 800, 5);
+    {
+        double pad = config.bird_size * 2.0;
+        sign_lines_t lines;
+        double roomy_cell;
+        assert(sign_fit("HELLO WORLD", 0, (768 - 2 * pad) * SIGN_WIDTH_SHARE,
+                        (416 - 2 * pad) * SIGN_HEIGHT_SHARE, SIGN_LARGEST_CELL * config.bird_size,
+                        &lines, &roomy_cell) > 0);
+        assert(formation.cell < roomy_cell && formation.cell >= SIGN_SMALLEST_CELL);
+        assert((formation.box.right - formation.box.left) < 0.5 * 768);
+        assert((formation.box.bottom - formation.box.top) < 0.5 * 416);
+        assert(sign_band() <= SIGN_KEEP_OUT_MOST * 416 + 1e-9);
+        assert(sign_band() >= formation.band);
+        assert(SIGN_KEEP_OUT_STEPS * config.speed > SIGN_KEEP_OUT_MOST * 416); /* It did bite. */
+        frame_seconds = 1.0 / 60;
+        update_speed();
+        assert(fabs(sign_band() - SIGN_KEEP_OUT_STEPS * config.speed) < 1e-9);
+    }
+    close_the_world(&world);
+    /* A word that is as wide as a line gets, which is bound by the width. */
+    lay_out_a_sign_on(&world, 96, 26, 25, "HELLO", 800, 5);
+    assert(formation.box.right - formation.box.left < 0.55 * 768);
+    close_the_world(&world);
+
+    /* More of the flock writes on a small screen, which is what makes a long text
+     * strokes and not dots: three lines are two birds to a cell there and one on a
+     * roomy screen, and a short text is three to a cell on both. */
+    int per_cell[2][2];
+    const char *texts[2] = {"HELLO WORLD", "BACK IN FIVE MINUTES"};
+    for (int t = 0; t < 2; t++) {
+        lay_out_a_sign_on(&world, 96, 26, 25, texts[t], 800, 5);
+        per_cell[0][t] = the_sign.per_cell;
+        close_the_world(&world);
+        lay_out_a_sign_on(&world, 200, 50, 25, texts[t], 800, 5);
+        per_cell[1][t] = the_sign.per_cell;
+        close_the_world(&world);
+    }
+    assert(per_cell[0][0] == 3 && per_cell[1][0] == 3);
+    assert(per_cell[0][1] == 2 && per_cell[1][1] == 1);
+
+    /* A long text on a small screen is not made smaller than its letters can be: at
+     * 80 by 24 its cell is the floor, or the roomy cell if that is less. */
+    reset_sign_state();
+    apply_screen_size(80, 24, 640, 384);
+    config.bird_size = 12;
+    {
+        sign_lines_t lines, roomy;
+        double cell, roomy_cell, width, height;
+        double room_width = 640 - 2 * 24.0, room_height = 384 - 2 * 24.0;
+        assert(sign_fit_in("BACK IN FIVE MINUTES", 0, room_width, room_height, 1e9, &lines, &cell,
+                           &width, &height) == 3);
+        assert(sign_fit("BACK IN FIVE MINUTES", 0, room_width * SIGN_WIDTH_SHARE,
+                        room_height * SIGN_HEIGHT_SHARE, 1e9, &roomy, &roomy_cell) == 3);
+        /* Eight pixels: under that a letter stops being one. */
+        assert(roomy_cell > 8);
+        assert(cell >= 8 - 1e-9 && cell <= roomy_cell + 1e-9);
+    }
+
+    /* And the free flock has sky: on 96 by 26 at 25 frames a second, with 800 birds,
+     * from six seconds on, few of the free birds are hugging the sign or an edge, and
+     * the sky is used. Before the shares and the band were as they were on a roomy
+     * screen, 23% hugged and 1% of the sky held a bird. */
+    double hugging = 0, used = 0, inside = 0;
+    int samples = 0;
+    for (int seed = 1; seed <= 2; seed++) {
+        lay_out_a_sign_on(&world, 96, 26, 25, "HELLO WORLD", 800, seed);
+        for (double at = 0.04; at < 14; at += 0.04) {
+            step_the_world(&world, at);
+            if (at < 6 || ((int)(at * 25 + 0.5)) % 12 != 0) continue;
+            double band = sign_band();
+            sign_box_t big = {formation.box.left - band, formation.box.top - band,
+                              formation.box.right + band, formation.box.bottom + band};
+            int free_birds = 0, near = 0, in_the_box = 0, sky_cells = 0, used_cells = 0;
+            static char held[64 * 64];
+            memset(held, 0, sizeof(held));
+            for (int i = 0; i < config.birds; i++) {
+                if (formation.slot[i] >= 0) continue;
+                free_birds++;
+                double x = world.birds[i].x, y = world.birds[i].y;
+                double dx = x < formation.box.left
+                                ? formation.box.left - x
+                                : (x > formation.box.right ? x - formation.box.right : 0);
+                double dy = y < formation.box.top
+                                ? formation.box.top - y
+                                : (y > formation.box.bottom ? y - formation.box.bottom : 0);
+                double clear = hypot(dx, dy);
+                if (screen.width - x < clear) clear = screen.width - x;
+                if (x < clear) clear = x;
+                if (y < clear) clear = y;
+                if (screen.height - y < clear) clear = screen.height - y;
+                near += clear < config.bird_size;
+                in_the_box += dx == 0 && dy == 0;
+                int cx = (int)(x / 32), cy = (int)(y / 32);
+                if (cx >= 0 && cx < 64 && cy >= 0 && cy < 64) held[cy * 64 + cx] = 1;
+            }
+            for (int cy = 0; cy * 32 < screen.height; cy++)
+                for (int cx = 0; cx * 32 < screen.width; cx++) {
+                    double mx = cx * 32 + 16, my = cy * 32 + 16;
+                    if (mx > big.left && mx < big.right && my > big.top && my < big.bottom)
+                        continue;
+                    sky_cells++;
+                    used_cells += held[cy * 64 + cx];
+                }
+            assert(free_birds > 0 && sky_cells > 0);
+            hugging += (double)near / free_birds;
+            inside += (double)in_the_box / free_birds;
+            used += (double)used_cells / sky_cells;
+            samples++;
+        }
+        close_the_world(&world);
+    }
+    assert(samples > 10);
+    assert(hugging / samples < 0.12);
+    assert(used / samples > 0.15);
+    assert(inside / samples < 0.02);
+    reset_sign_state();
+}
+
 static void test_a_sign_has_a_bird_as_wide_as_its_cells_unless_it_is_told(void) {
     reset_sign_state();
     /* The usual thirty on a roomy screen, and smaller on a small one, where a bird
@@ -4945,6 +5120,7 @@ int main(void) {
     test_a_large_picture_is_kept_small();
     test_a_picture_that_cannot_be_drawn_says_so();
     test_a_colour_given_is_told_from_the_default();
+    test_a_small_screen_leaves_the_flock_sky_and_a_roomy_one_is_as_it_was();
     test_a_sign_has_a_bird_as_wide_as_its_cells_unless_it_is_told();
     test_a_sign_records_in_a_gif_and_a_cast();
     test_a_sign_survives_the_flock_growing_under_it();

@@ -203,7 +203,9 @@ then the flock lets go for eight to twelve, flies as a murmuration, and writes
 it again. The birds that write do not stand still: each hovers round its place
 in a small loop of its own, so the strokes shimmer and stay sharp. The colour
 runs along the text, from one end of the ramp to the other. The rest of the
-flock flies round the sign, not through it. Lower case is written in
+flock flies round the sign, not through it. On a small terminal the sign takes
+less of it, down to half the width and half the height at 96 by 26 cells, and
+more of the flock writes, so that the birds that are left have sky to fly in. Lower case is written in
 capitals and characters the font lacks are left out. Text too long for one line
 wraps at its spaces onto two or three, as large as fits, and a text the flock
 has too few birds to write is said so on stderr and left unwritten. A key does

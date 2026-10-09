@@ -1331,18 +1331,44 @@ static int screensaver_mode;
 
 /* Two thirds of the free width, centred, which is sky on either side for the
  * flock; and three fifths of the height, so that two or three lines of a long
- * text are still lines of a sign and not the whole screen. */
-static const double SIGN_WIDTH_SHARE = 2.0 / 3.0;
-static const double SIGN_HEIGHT_SHARE = 0.6;
+ * text are still lines of a sign and not the whole screen. That is for a roomy
+ * screen, 160 by 45 cells and up, where it leaves half the screen outside the
+ * band the rest of the flock is kept out of. On a small one it left a thin ring:
+ * the band is as wide in pixels there as anywhere, and the free flock streamed
+ * round the sign along the edges. So the sign takes less of a small screen, down
+ * to half the width and half the height, and the writers more of the flock:
+ * measured on 800 birds saying HELLO WORLD at 96 by 26 cells and 25 frames a
+ * second, the sky outside the band went from 7% of the screen to 42%, the free
+ * birds within a bird of the sign or an edge from 23% to 6%, and the share of the
+ * sky with a bird in it from 1% to 26%. Half and half were the smallest that
+ * kept the letters as large as 11 pixels a cell; a width share alone left the
+ * height, which is what binds two lines, as it was. */
+static const double SIGN_WIDTH_SHARE = 2.0 / 3.0, SIGN_WIDTH_SHARE_SMALL = 0.5;
+static const double SIGN_HEIGHT_SHARE = 0.6, SIGN_HEIGHT_SHARE_SMALL = 0.5;
 /* The largest a cell grows, in bird sizes: past two and a half the cells of a
  * short word are further apart than a bird is wide, and the letters fall apart
  * into dots. */
 static const double SIGN_LARGEST_CELL = 2.5;
 /* At most this share of the flock writes, whatever the text, so that there is
  * always a flock for it to be a sign in front of; and at most this many to a lit
- * cell, because past four a cell is a smudge. */
-static const double SIGN_WRITER_SHARE = 0.6;
+ * cell, because past four a cell is a smudge. A small screen lets more of the
+ * flock write, which is the other way round from what it sounds: the sky there
+ * is small, and every bird that is not writing is one more in it. With half the
+ * flock writing, a text of three lines was one bird to a cell and dim, and the
+ * free birds were a cloud round it; at seven tenths it is two to a cell, the
+ * letters are strokes, and there are fewer birds in the sky. HELLO WORLD is three
+ * to a cell at either. */
+static const double SIGN_WRITER_SHARE = 0.6, SIGN_WRITER_SHARE_SMALL = 0.7;
 enum { SIGN_PER_CELL_MAX = 4, PICTURE_KEPT_MAX = 1024 };
+/* A screen is small by its shorter side, in pixels: at or under SMALL_SIDE, which
+ * is the 96 by 26 of a recording, it is as small as it gets, and at or over
+ * ROOMY_SIDE, which is 160 by 45, it is as roomy as it needs to be, and between
+ * the two the shares above go from one end to the other in a straight line. */
+static const double SIGN_SMALL_SIDE = 416, SIGN_ROOMY_SIDE = 720;
+/* A sign does not give up size for sky below this cell, or what the roomy shares
+ * give it if that is less: at 64 by 18 with a long text the letters are already
+ * nine pixels, and at seven they stopped being letters. */
+static const double SIGN_SMALLEST_CELL = 8;
 /* The loop is a seventh of a bird across, and never more than a fifth of the
  * distance between two cells, or the strokes blur into each other; a pixel and a
  * half at least, or there is nothing to see, and six at most. */
@@ -1353,6 +1379,13 @@ static const double SIGN_HOVER_MIN = 1.5, SIGN_HOVER_MAX = 6.0;
 static const double SIGN_KEEP_OUT_WEIGHT = 5.0;
 static const double SIGN_KEEP_OUT_BAND = 3.0;
 static const double SIGN_KEEP_OUT_STEPS = 4.0;
+/* The band is never wider than this share of the screen's shorter side. At the
+ * pace of a 25 frame recording four steps of flight are 150 pixels whatever the
+ * screen, which on 96 by 26 cells is all the sky there is: a fifth of the shorter
+ * side is 83. Measured at 25 frames, 800 birds, the free birds inside the text
+ * were 0.1%, as against none, and at 60 frames the band is four steps and
+ * under a fifth, as it was. On 200 by 50 cells it is as it was at either. */
+static const double SIGN_KEEP_OUT_MOST = 0.2;
 /* The room kept clear past the panel's own edge, when there is one: a frame of
  * flight at the shipped pace, which with the pad is more than a frame of flight at
  * any pace short of the top two or three notches, and so a letter does not land in
@@ -1457,6 +1490,56 @@ static void sign_begin_layout(void) {
     the_sign.key_size = config.bird_size;
 }
 
+/* 1 on a small screen and 0 on a roomy one, and between them in a straight line. */
+static double sign_smallness(void) {
+    double shorter = screen.width < screen.height ? screen.width : screen.height;
+    double small = (SIGN_ROOMY_SIDE - shorter) / (SIGN_ROOMY_SIDE - SIGN_SMALL_SIDE);
+    return small < 0 ? 0 : (small > 1 ? 1 : small);
+}
+
+static double sign_share(double roomy, double small) {
+    return roomy + sign_smallness() * (small - roomy);
+}
+
+/* How far from the text the rest of the flock is turned away: felt some steps of
+ * flight before the box and not at a fixed distance, but never more than a share
+ * of the screen, and never less than three birds. */
+static double sign_band(void) {
+    double shorter = screen.width < screen.height ? screen.width : screen.height;
+    double band = SIGN_KEEP_OUT_STEPS * config.speed;
+    if (band > SIGN_KEEP_OUT_MOST * shorter) band = SIGN_KEEP_OUT_MOST * shorter;
+    return band < formation.band ? formation.band : band;
+}
+
+/* The sign that fits in a room: the cleaned text wrapped onto the lines that make
+ * its cell largest, in the share of the room the screen allows, which is less of
+ * it the smaller the screen is. The cell is not taken below SMALLEST_CELL, or
+ * below what the roomy shares give if that is less, so that a long text on a small
+ * screen is as large as it was and not smaller still. Returns the lines (0 if it
+ * does not fit), and the width and height of the share that was used. */
+static int sign_fit_in(const char *clean, int reference_columns, double room_width,
+                       double room_height, double largest, sign_lines_t *lines, double *cell,
+                       double *width, double *height) {
+    double roomy_width = room_width * SIGN_WIDTH_SHARE,
+           roomy_height = room_height * SIGN_HEIGHT_SHARE;
+    *width = room_width * sign_share(SIGN_WIDTH_SHARE, SIGN_WIDTH_SHARE_SMALL);
+    *height = room_height * sign_share(SIGN_HEIGHT_SHARE, SIGN_HEIGHT_SHARE_SMALL);
+    int count = sign_fit(clean, reference_columns, *width, *height, largest, lines, cell);
+    if (count > 0 && *cell >= SIGN_SMALLEST_CELL) return count;
+    sign_lines_t roomy;
+    double roomy_cell;
+    int roomy_count =
+        sign_fit(clean, reference_columns, roomy_width, roomy_height, largest, &roomy, &roomy_cell);
+    if (roomy_count == 0) return count;
+    double wanted = roomy_cell < SIGN_SMALLEST_CELL ? roomy_cell : SIGN_SMALLEST_CELL;
+    if (count > 0 && *cell >= wanted) return count;
+    *lines = roomy;
+    *cell = wanted;
+    *width = roomy_width;
+    *height = roomy_height;
+    return roomy_count;
+}
+
 /* How far a bird loops, for targets this far apart. */
 static double sign_hover_for(double cell) {
     double hover = SIGN_HOVER_SIZE * config.bird_size;
@@ -1498,12 +1581,12 @@ static int sign_place(const char *clean, int reference_columns, int lift_the_col
     double left = 0, top = 0, free_width = 0, free_height = 0, width = 0, height = 0;
     for (int r = 0; r < room_count; r++) {
         sign_lines_t tried;
-        double tried_cell;
+        double tried_cell, tried_width, tried_height;
         double room_width = rooms[r].right - rooms[r].left;
         double room_height = rooms[r].bottom - rooms[r].top;
-        int tried_count = sign_fit(clean, reference_columns, room_width * SIGN_WIDTH_SHARE,
-                                   room_height * SIGN_HEIGHT_SHARE,
-                                   SIGN_LARGEST_CELL * config.bird_size, &tried, &tried_cell);
+        int tried_count = sign_fit_in(clean, reference_columns, room_width, room_height,
+                                      SIGN_LARGEST_CELL * config.bird_size, &tried, &tried_cell,
+                                      &tried_width, &tried_height);
         if (tried_count == 0 || tried_cell <= cell) continue;
         lines = tried;
         cell = tried_cell;
@@ -1512,8 +1595,8 @@ static int sign_place(const char *clean, int reference_columns, int lift_the_col
         top = rooms[r].top;
         free_width = room_width;
         free_height = room_height;
-        width = room_width * SIGN_WIDTH_SHARE;
-        height = room_height * SIGN_HEIGHT_SHARE;
+        width = tried_width;
+        height = tried_height;
     }
     sign_begin_layout();
     if (line_count == 0) return 0;
@@ -1555,7 +1638,8 @@ static int sign_place(const char *clean, int reference_columns, int lift_the_col
             if (font_text_cells(time_text) > budget) budget = font_text_cells(time_text);
         }
     }
-    int per_cell = (int)(near_birds * SIGN_WRITER_SHARE) / budget;
+    int per_cell =
+        (int)(near_birds * sign_share(SIGN_WRITER_SHARE, SIGN_WRITER_SHARE_SMALL)) / budget;
     if (per_cell > SIGN_PER_CELL_MAX) per_cell = SIGN_PER_CELL_MAX;
     if (per_cell < 1) per_cell = 1;
     the_sign.per_cell = per_cell;
@@ -1889,9 +1973,7 @@ static vector_t sign_keep_out_vector(const bird_t *bird) {
      * moment at 25 frames a second on 96 by 26 cells, and a five hundredth at 60
      * on 200 by 50; with the band at four steps of flight, none and a three
      * thousandth. */
-    double band = SIGN_KEEP_OUT_STEPS * config.speed;
-    if (band < formation.band) band = formation.band;
-    sign_box_push(&formation.box, band, bird->x, bird->y, &push.x, &push.y);
+    sign_box_push(&formation.box, sign_band(), bird->x, bird->y, &push.x, &push.y);
     return push;
 }
 
@@ -3990,8 +4072,9 @@ static int sign_bird_size(void) {
         sign_clean("00:00", clean, sizeof(clean));
     else
         snprintf(clean, sizeof(clean), "%s", sign_words);
-    if (sign_fit(clean, 0, (screen.width - 2 * margin) * SIGN_WIDTH_SHARE,
-                 (screen.height - 2 * margin) * SIGN_HEIGHT_SHARE, 1e9, &lines, &cell) == 0)
+    double used_width, used_height;
+    if (sign_fit_in(clean, 0, screen.width - 2 * margin, screen.height - 2 * margin, 1e9, &lines,
+                    &cell, &used_width, &used_height) == 0)
         return DEFAULT_BIRD_SIZE;
     int size = (int)(cell + 0.5);
     return size < MIN_BIRD_SIZE ? MIN_BIRD_SIZE

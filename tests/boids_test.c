@@ -7598,6 +7598,21 @@ static void test_a_screensaver_is_a_lock_screen_for_every_mode(void) {
  * no look at all. The leader compares the modes from before and after and says so
  * in its status. The released 1.5 said "Can't enable raw mode: Inappropriate
  * ioctl for device" here, from tcgetattr on the pipe. */
+/* Whether a row of the screen has these words on it. */
+static int vt_shows(const vt_t *shown, const char *words) {
+    for (int row = 0; row < shown->rows; row++) {
+        char line[512];
+        int cols = shown->cols < 511 ? shown->cols : 511;
+        for (int col = 0; col < cols; col++) {
+            uint32_t glyph = vt_cell(shown, col, row)->glyph;
+            line[col] = glyph >= 32 && glyph < 127 ? (char)glyph : ' ';
+        }
+        line[cols] = '\0';
+        if (strstr(line, words) != NULL) return 1;
+    }
+    return 0;
+}
+
 enum { LEADER_RAN_WELL = 0, LEADER_MODES_CHANGED = 50, LEADER_NO_TERMINAL = 90 };
 
 static void test_text_on_a_pipe_flies_on_a_terminal_and_gives_it_back(void) {
@@ -7664,8 +7679,15 @@ static void test_text_on_a_pipe_flies_on_a_terminal_and_gives_it_back(void) {
         close(text[1]);
 
         static char output[1 << 21];
-        size_t length = 0, drawn = 0;
+        size_t length = 0, drawn = 0, fed = 0;
         int status = 0, typed = 0, resized = 0;
+        double drawn_at = 0;
+        const char *taken = NULL;
+        /* What a terminal shows, fed everything from the moment the screen is taken:
+         * the words, at home, before any key. A slow machine takes longer to get
+         * there, so it is watched for rather than looked at once at a set time. */
+        vt_t shown;
+        assert(vt_init(&shown, 80, 24) == 0);
         struct timespec began, now;
         clock_gettime(CLOCK_MONOTONIC, &began);
         for (;;) {
@@ -7677,7 +7699,16 @@ static void test_text_on_a_pipe_flies_on_a_terminal_and_gives_it_back(void) {
             }
             clock_gettime(CLOCK_MONOTONIC, &now);
             double since = elapsed_seconds(&began, &now);
-            if (!drawn && since > 1.0 && strstr(output, ALT_SCREEN_ON) != NULL) drawn = length;
+            if (taken == NULL) taken = strstr(output, ALT_SCREEN_ON);
+            if (!drawn && taken != NULL) {
+                if (fed < (size_t)(taken - output)) fed = (size_t)(taken - output);
+                vt_feed(&shown, output + fed, length - fed);
+                fed = length;
+                if (vt_shows(&shown, "hello from a pipe")) {
+                    drawn = length;
+                    drawn_at = since;
+                }
+            }
             /* Drawn, and then a bigger window, which it lays the text out again for. */
             if (resize && !resized && drawn) {
                 struct winsize bigger = {
@@ -7685,7 +7716,7 @@ static void test_text_on_a_pipe_flies_on_a_terminal_and_gives_it_back(void) {
                 assert(ioctl(master, TIOCSWINSZ, &bigger) == 0);
                 resized = 1;
             }
-            if (!typed && drawn && since > (resize ? 2.0 : 1.2)) {
+            if (!typed && drawn && since > drawn_at + (resize ? 1.0 : 0.2)) {
                 assert(write(master, "q", 1) == 1);
                 typed = 1;
             }
@@ -7695,6 +7726,7 @@ static void test_text_on_a_pipe_flies_on_a_terminal_and_gives_it_back(void) {
             }
             assert(since < 30); /* It ends, and does not hang. */
         }
+        vt_destroy(&shown);
         while (readable_within(master, 100) > 0) {
             ssize_t got = read(master, output + length, sizeof(output) - 1 - length);
             if (got <= 0) break;
@@ -7702,29 +7734,13 @@ static void test_text_on_a_pipe_flies_on_a_terminal_and_gives_it_back(void) {
             output[length] = '\0';
         }
         if (leader > 0) assert(waitpid(leader, &status, 0) == leader);
-        assert(typed);
+        /* The words were on the screen, and only then was q typed. */
+        assert(drawn && typed);
         /* The program went well, and the terminal is as it was. */
         assert(WIFEXITED(status) && WEXITSTATUS(status) == LEADER_RAN_WELL);
         /* It took the screen, drew the words, and gave the screen back, and nothing
          * about the terminal went wrong on the way. */
-        const char *taken = strstr(output, ALT_SCREEN_ON);
         assert(taken != NULL && drawn > (size_t)(taken - output));
-        /* What a terminal fed it all shows a second in: the words, at home. */
-        vt_t shown;
-        assert(vt_init(&shown, 80, 24) == 0);
-        vt_feed(&shown, taken, drawn - (size_t)(taken - output));
-        int found = 0;
-        for (int row = 0; row < 24 && !found; row++) {
-            char line[81];
-            for (int col = 0; col < 80; col++) {
-                uint32_t glyph = vt_cell(&shown, col, row)->glyph;
-                line[col] = glyph >= 32 && glyph < 127 ? (char)glyph : ' ';
-            }
-            line[80] = '\0';
-            found = strstr(line, "hello from a pipe") != NULL;
-        }
-        vt_destroy(&shown);
-        assert(found);
         const char *given_back = NULL;
         for (const char *at = strstr(output, ALT_SCREEN_OFF); at != NULL;
              at = strstr(at + 1, ALT_SCREEN_OFF))
@@ -8241,13 +8257,7 @@ static void test_text_from_a_named_pipe_is_opened_once(void) {
         vt_t shown;
         assert(vt_init(&shown, 80, 24) == 0);
         vt_feed(&shown, taken, length - (size_t)(taken - output));
-        char line[81];
-        for (int col = 0; col < 80; col++) {
-            uint32_t glyph = vt_cell(&shown, col, 0)->glyph;
-            line[col] = glyph >= 32 && glyph < 127 ? (char)glyph : ' ';
-        }
-        line[80] = '\0';
-        assert(strstr(line, "hello from a named pipe") != NULL);
+        assert(vt_shows(&shown, "hello from a named pipe"));
         vt_destroy(&shown);
         close(sizing);
         close(master);

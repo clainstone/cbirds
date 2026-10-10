@@ -1,7 +1,8 @@
 name: tests
 
 # Builds cbirds and runs its tests on every push and pull request: on Linux and
-# macOS, on x86_64 and arm64, and once more under the address and
+# macOS, on x86_64 and arm64, in the container the apt packages are built in,
+# and once more under the address and
 # undefined-behaviour sanitizers, with the check for a float that is turned into
 # an integer too big for it, which clang and gcc leave out of the undefined group.
 on:
@@ -40,6 +41,24 @@ jobs:
           ./cbirds --bench 60 --render braille | tail -3
           ./cbirds --record ci.gif --record-seconds 1
           ./cbirds --record ci.cast --record-seconds 1
+
+  # The apt packages are built from the release tarball in this container, as
+  # root, with its compiler and the default flags, and the build runs the tests:
+  # a test that holds on the runners has to hold there too, before a tag.
+  package:
+    name: package build (debian:bookworm, ${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    container: debian:bookworm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - run: apt-get update && apt-get install -y --no-install-recommends build-essential
+      - name: Test, as the apt build does
+        run: make test
 
   sanitizers:
     name: sanitizers (${{ matrix.os }}, ${{ matrix.cc }})

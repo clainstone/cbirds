@@ -7590,50 +7590,72 @@ static void test_a_screensaver_is_a_lock_screen_for_every_mode(void) {
 /* The whole program with text on a pipe, on a terminal of its own that is its
  * controlling one, as `fastfetch | cbirds` has it: the text is read from the pipe,
  * the keys from /dev/tty, the size from the terminal, and the terminal is given
- * back as it was found. Made a controlling terminal the portable way, setsid and
- * then TIOCSCTTY, which macOS needs and Linux takes, so that the run is the same
- * on both. The released 1.5 said "Can't enable raw mode: Inappropriate ioctl for
- * device" here, from tcgetattr on the pipe. */
+ * back as it was found. The terminal is made a controlling one the portable way,
+ * setsid and then TIOCSCTTY, which macOS needs and Linux takes, by a session
+ * leader that starts the program and outlives it: macOS revokes a controlling
+ * terminal when its session leader exits, and a look at its modes after that is
+ * no look at all. The leader compares the modes from before and after and says so
+ * in its status. The released 1.5 said "Can't enable raw mode: Inappropriate
+ * ioctl for device" here, from tcgetattr on the pipe. */
+enum { LEADER_RAN_WELL = 0, LEADER_MODES_CHANGED = 50, LEADER_NO_TERMINAL = 90 };
+
 static void test_text_on_a_pipe_flies_on_a_terminal_and_gives_it_back(void) {
     for (int resize = 0; resize < 2; resize++) {
         int master = posix_openpt(O_RDWR | O_NOCTTY);
         assert(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0);
         const char *name = ptsname(master);
         assert(name != NULL);
-        int watch = open(name, O_RDWR | O_NOCTTY); /* The parent's look at the terminal. */
-        assert(watch >= 0);
+        int sizing = open(name, O_RDWR | O_NOCTTY);
+        assert(sizing >= 0);
         struct winsize size = {.ws_row = 24, .ws_col = 80, .ws_xpixel = 0, .ws_ypixel = 0};
-        assert(ioctl(watch, TIOCSWINSZ, &size) == 0);
-        struct termios before;
-        assert(tcgetattr(watch, &before) == 0);
+        assert(ioctl(sizing, TIOCSWINSZ, &size) == 0);
+        /* Held open, so that the terminal has a side to it until the leader opens
+         * its own: a pseudo terminal with none says EIO to a read. */
         int text[2];
         assert(pipe(text) == 0);
         fflush(NULL);
-        pid_t child = fork();
-        assert(child >= 0);
-        if (child == 0) {
+        pid_t leader = fork();
+        assert(leader >= 0);
+        if (leader == 0) {
             alarm(60);
             close(text[1]);
             close(master);
-            close(watch);
-            if (setsid() < 0) _exit(90);
+            close(sizing);
+            if (setsid() < 0) _exit(LEADER_NO_TERMINAL);
             int terminal = open(name, O_RDWR);
-            if (terminal < 0 || ioctl(terminal, TIOCSCTTY, 0) < 0) _exit(91);
-            if (dup2(text[0], STDIN_FILENO) < 0 || dup2(terminal, STDOUT_FILENO) < 0 ||
-                dup2(terminal, STDERR_FILENO) < 0)
-                _exit(92);
+            if (terminal < 0 || ioctl(terminal, TIOCSCTTY, 0) < 0) _exit(LEADER_NO_TERMINAL + 1);
+            struct termios before, after;
+            if (tcgetattr(terminal, &before) < 0) _exit(LEADER_NO_TERMINAL + 2);
+            pid_t run = fork();
+            if (run < 0) _exit(LEADER_NO_TERMINAL + 3);
+            if (run == 0) {
+                if (dup2(text[0], STDIN_FILENO) < 0 || dup2(terminal, STDOUT_FILENO) < 0 ||
+                    dup2(terminal, STDERR_FILENO) < 0)
+                    _exit(92);
+                close(text[0]);
+                close(terminal);
+                /* A run as from the shell: nothing the tests before this one left. */
+                reset_sign_state();
+                render_mode = RENDER_UNSET;
+                letters_mode = 0;
+                text_path = NULL;
+                forget_the_text();
+                input_fd = STDIN_FILENO;
+                terminal_is_raw = terminal_restored = alt_screen_is_on = sprites_uploaded = 0;
+                char *argv[] = {"cbirds", "--seed", "3", NULL};
+                exit(cbirds_application_main(3, argv)); /* exit: the terminal is put back. */
+            }
             close(text[0]);
-            close(terminal);
-            /* A run as from the shell: nothing the tests before this one left. */
-            reset_sign_state();
-            render_mode = RENDER_UNSET;
-            letters_mode = 0;
-            text_path = NULL;
-            forget_the_text();
-            input_fd = STDIN_FILENO;
-            terminal_is_raw = terminal_restored = alt_screen_is_on = sprites_uploaded = 0;
-            char *argv[] = {"cbirds", "--seed", "3", NULL};
-            exit(cbirds_application_main(3, argv)); /* exit: the terminal is put back. */
+            int status = 0;
+            if (waitpid(run, &status, 0) != run) _exit(LEADER_NO_TERMINAL + 4);
+            if (!WIFEXITED(status) || WEXITSTATUS(status) != EXIT_SUCCESS)
+                _exit(WIFEXITED(status) ? 10 + WEXITSTATUS(status) : 40);
+            /* Echo and lines, the same characters: the terminal as it was found. */
+            if (tcgetattr(terminal, &after) < 0) _exit(LEADER_NO_TERMINAL + 5);
+            int same = after.c_lflag == before.c_lflag && after.c_iflag == before.c_iflag &&
+                       after.c_oflag == before.c_oflag &&
+                       memcmp(after.c_cc, before.c_cc, sizeof(before.c_cc)) == 0;
+            _exit(same ? LEADER_RAN_WELL : LEADER_MODES_CHANGED);
         }
         close(text[0]);
         const char *words = "hello from a pipe\nand a second line\n";
@@ -7646,11 +7668,7 @@ static void test_text_on_a_pipe_flies_on_a_terminal_and_gives_it_back(void) {
         struct timespec began, now;
         clock_gettime(CLOCK_MONOTONIC, &began);
         for (;;) {
-            fd_set readable;
-            FD_ZERO(&readable);
-            FD_SET(master, &readable);
-            struct timeval tick = {0, 50000};
-            if (select(master + 1, &readable, NULL, NULL, &tick) > 0) {
+            if (readable_within(master, 50) > 0) {
                 ssize_t got = read(master, output + length, sizeof(output) - 1 - length);
                 if (got <= 0) break;
                 length += (size_t)got;
@@ -7660,25 +7678,32 @@ static void test_text_on_a_pipe_flies_on_a_terminal_and_gives_it_back(void) {
             double since = elapsed_seconds(&began, &now);
             if (!drawn && since > 1.0 && strstr(output, ALT_SCREEN_ON) != NULL) drawn = length;
             /* Drawn, and then a bigger window, which it lays the text out again for. */
-            if (resize && !resized && since > 1.0 && strstr(output, ALT_SCREEN_ON) != NULL) {
+            if (resize && !resized && drawn) {
                 struct winsize bigger = {
                     .ws_row = 30, .ws_col = 100, .ws_xpixel = 0, .ws_ypixel = 0};
                 assert(ioctl(master, TIOCSWINSZ, &bigger) == 0);
                 resized = 1;
             }
-            if (!typed && since > (resize ? 2.0 : 1.0) && strstr(output, ALT_SCREEN_ON) != NULL) {
+            if (!typed && drawn && since > (resize ? 2.0 : 1.2)) {
                 assert(write(master, "q", 1) == 1);
                 typed = 1;
             }
-            if (waitpid(child, &status, WNOHANG) == child) {
-                child = -1;
+            if (waitpid(leader, &status, WNOHANG) == leader) {
+                leader = -1;
                 break;
             }
             assert(since < 30); /* It ends, and does not hang. */
         }
-        if (child > 0) assert(waitpid(child, &status, 0) == child);
+        while (readable_within(master, 100) > 0) {
+            ssize_t got = read(master, output + length, sizeof(output) - 1 - length);
+            if (got <= 0) break;
+            length += (size_t)got;
+            output[length] = '\0';
+        }
+        if (leader > 0) assert(waitpid(leader, &status, 0) == leader);
         assert(typed);
-        assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS);
+        /* The program went well, and the terminal is as it was. */
+        assert(WIFEXITED(status) && WEXITSTATUS(status) == LEADER_RAN_WELL);
         /* It took the screen, drew the words, and gave the screen back, and nothing
          * about the terminal went wrong on the way. */
         const char *taken = strstr(output, ALT_SCREEN_ON);
@@ -7705,13 +7730,7 @@ static void test_text_on_a_pipe_flies_on_a_terminal_and_gives_it_back(void) {
             given_back = at;
         assert(given_back != NULL && given_back > taken);
         assert(strstr(output, "ioctl") == NULL && strstr(output, "raw mode") == NULL);
-        /* And the terminal is as it was: echo and lines, and the same characters. */
-        struct termios after;
-        assert(tcgetattr(watch, &after) == 0);
-        assert(after.c_lflag == before.c_lflag && after.c_iflag == before.c_iflag);
-        assert(after.c_oflag == before.c_oflag);
-        assert(memcmp(after.c_cc, before.c_cc, sizeof(before.c_cc)) == 0);
-        close(watch);
+        close(sizing);
         close(master);
     }
 }

@@ -3808,6 +3808,9 @@ static int terminal_has_truecolor(void) {
 static int prepare_text_renderer(void) {
     /* Letters are drawn as themselves: there is nothing to rasterise. */
     if (!letters_mode && rasterise_sprites(text_sprites) != PNG_OK) return 0;
+    /* Whatever an earlier run left in them is let go of first: cells_init starts
+     * from nothing and would lose it. */
+    cells_destroy(&text_cells);
     if (cells_init(&text_cells, terminal_has_truecolor()) != CELLS_OK) return 0;
     return 1;
 }
@@ -5782,6 +5785,9 @@ static int run_benchmark(void) {
 
     kitty_graphics_destroy(&graphics);
     spatial_grid_destroy(&grid);
+    /* The text renderer's cells and canvas, which the frames grew to the screen. */
+    cells_destroy(&text_cells);
+    png_image_free(&text_canvas);
     letters_destroy(&the_letters);
     forget_the_text();
     free(snapshot);

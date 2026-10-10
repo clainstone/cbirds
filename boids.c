@@ -4050,6 +4050,8 @@ static void apply_notches(void) {
 /* Left alone for this long, the sliders start wandering by themselves. */
 enum { IDLE_SECONDS = 60 };
 static int matrix_mode;
+/* What --matrix had in its place, for when there is text: text is not rain. */
+static int palette_before_the_rain, alignment_before_the_rain;
 static int unlock_fps;
 static int requested_perception = DEFAULT_VISION_RADIUS;
 static int requested_seed = -1;
@@ -5168,12 +5170,25 @@ static void read_options(int argc, char **argv) {
     /* It is raining birds: green, falling, wrapping, with tails. Every part of it
      * is a switch that already existed, which is the whole joke. */
     if (matrix_mode) {
+        palette_before_the_rain = config.palette;
+        alignment_before_the_rain = config.alignment_notch;
         config.palette = palette_named("matrix");
         config.trails = 1;
         config.alignment_notch = LEGEND_BAR_CELLS;
         the_rain_is_falling = 1;
         apply_notches();
     }
+}
+
+/* The rain, stopped, and everything it changed put back as it was asked for. */
+static void stop_the_rain(void) {
+    if (!matrix_mode) return;
+    matrix_mode = 0;
+    config.palette = palette_before_the_rain;
+    config.alignment_notch = alignment_before_the_rain;
+    config.trails = 0;
+    the_rain_is_falling = 0;
+    apply_notches();
 }
 
 static void forget_the_text(void) {
@@ -5203,7 +5218,12 @@ static void open_the_keys(void) {
     input_fd = fd;
 }
 
-/* The file --text names, opened, or the reason it cannot be and an end to the run. */
+/* The file --text names, opened, or the reason it cannot be and an end to the run.
+ * main opens it first, so that a name that is wrong is the first thing said, and
+ * the reading takes that same descriptor: a second open of a named pipe would lose
+ * what the first was sent, and wait for ever for a writer that has gone. */
+static int text_fd = -1;
+
 static int open_the_text_file(void) {
     int fd = open(text_path, O_RDONLY);
     if (fd < 0) {
@@ -5230,7 +5250,8 @@ static const letters_reading_t PIPE_READING = {3.0, 1.5, 8.0, 1 << 20};
 static int take_the_text(int cols, int rows, int pipes) {
     int fd = -1, opened = 0;
     if (text_path != NULL && strcmp(text_path, "-") != 0) {
-        fd = open_the_text_file();
+        fd = text_fd >= 0 ? text_fd : open_the_text_file();
+        text_fd = -1;
         opened = 1;
     } else if (text_path != NULL) {
         if (isatty(STDIN_FILENO)) {
@@ -5252,11 +5273,16 @@ static int take_the_text(int cols, int rows, int pipes) {
     size_t bytes = 0;
     free(the_text);
     the_text = NULL;
+    errno = 0;
     letters_read_end_t end = letters_read(&vt, fd, &PIPE_READING, &bytes, &the_text);
+    int why = errno;
     the_text_length = bytes;
     if (opened) close(fd);
     if (end == LETTERS_READ_ERROR && text_path != NULL) {
-        fprintf(stderr, "%s: cannot read %s\n", program_name, text_path);
+        if (why != 0)
+            fprintf(stderr, "%s: cannot read %s: %s\n", program_name, text_path, strerror(why));
+        else
+            fprintf(stderr, "%s: cannot read %s\n", program_name, text_path);
         exit(EXIT_FAILURE);
     }
     int count = end == LETTERS_READ_ERROR
@@ -5283,6 +5309,10 @@ static int take_the_text(int cols, int rows, int pipes) {
     }
     letters_mode = 1;
     config.birds = count;
+    /* --matrix and --sprite are for birds: the rain's ramp and alignment go back to
+     * what was asked for, and a letter, which has no sprite, flies in the ramp. */
+    stop_the_rain();
+    sprite_path = NULL;
     /* A cell is eight pixels across, a quarter of the sprite the pace was tuned for:
      * at the default a letter crosses two cells a frame and the eye sees it skip,
      * and at the slowest it is a cell a frame, which is a flight a letter can be
@@ -5431,6 +5461,18 @@ static void settle_the_recording_length(void) {
         record_seconds = letters_mode ? TEXT_RECORD_SECONDS : FLOCK_RECORD_SECONDS;
 }
 
+/* A recording does not start a wave it has no time to finish. A short flight lands
+ * the letters well before the clip ends, and the rest after it is shorter than
+ * what is left: the clip would end with them in the air again, and a GIF, which
+ * loops, would jump from there to the text at rest. The first wave always goes;
+ * after a cycle the text rests to the end unless a whole cycle more fits. */
+static void hold_the_last_rest(double seconds_left) {
+    if (!letters_mode || the_letters.phase != LETTERS_AT_REST || the_letters.cycles == 0) return;
+    if (seconds_left > LETTERS_WAVE_DEADLINE + LETTERS_FLIGHT_MOST + LETTERS_HOMING_DEADLINE + 1)
+        return;
+    if (the_letters.rest_left < seconds_left + 1) the_letters.rest_left = seconds_left + 1;
+}
+
 /* JSON needs its control characters spelled out, and an escape sequence is
  * nothing but control characters and text. Everything else, braille included,
  * goes through as the UTF-8 it already is. */
@@ -5511,6 +5553,7 @@ static int run_cast_recording(void) {
             formation_clear();
         sign_advance(birds);
         maybe_drift();
+        hold_the_last_rest((double)(total - frame) / record_fps);
 
         memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
         spatial_grid_build(&grid, config.birds, read_bird_position, snapshot);
@@ -5658,6 +5701,7 @@ static int run_recording(void) {
             formation_clear();
         sign_advance(birds);
         maybe_drift();
+        hold_the_last_rest((double)(total - frame) / actual_fps);
 
         memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
         spatial_grid_build(&grid, config.birds, read_bird_position, snapshot);
@@ -5817,7 +5861,7 @@ int main(int argc, char **argv) {
     /* The keys, and then the text, before the terminal is taken: the text is laid
      * out on a screen of the size this one is, and reading it may take a moment. */
     /* A file that is not there is said first: it is the mistake, and the keys are not. */
-    if (text_path != NULL && strcmp(text_path, "-") != 0) close(open_the_text_file());
+    if (text_path != NULL && strcmp(text_path, "-") != 0) text_fd = open_the_text_file();
     open_the_keys();
     update_screen_dimensions();
     take_the_text(screen.cols, screen.rows, 1);

@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <termios.h>
 
@@ -6938,7 +6939,7 @@ static void test_a_text_recording_is_the_text_flying(void) {
     assert(strstr(line, "\"width\": 60, \"height\": 12") != NULL);
     assert(fgets(line, sizeof(line), file) != NULL); /* The opening. */
     assert(fgets(line, sizeof(line), file) != NULL); /* The first frame: the text. */
-    assert(strstr(line, "user") != NULL || strstr(line, "u") != NULL);
+    assert(strstr(line, "user") != NULL);
     assert(strstr(line, "\\u001b[1m\\u001b[31m") != NULL || strstr(line, "\\u001b[1;31m") != NULL ||
            strstr(line, "\\u001b[31m") != NULL);
     assert(strstr(line, "\xE4\xB8\xAD") != NULL);
@@ -7860,6 +7861,484 @@ static void test_keys_and_colour_questions_use_the_descriptor_that_was_chosen(vo
     close(keys[1]);
 }
 
+/* --- --text, and the runs that take text without a terminal ---------------------- */
+
+/* What a child wrote to the descriptor it was given, to its end. */
+static void read_to_the_end(int fd, char *out, size_t size) {
+    size_t length = 0;
+    ssize_t got;
+    while (length + 1 < size && (got = read(fd, out + length, size - 1 - length)) > 0)
+        length += (size_t)got;
+    out[length] = '\0';
+}
+
+/* A child about to run as a shell starts one: nothing the tests before it left. */
+static void as_a_fresh_run(void) {
+    reset_sign_state();
+    render_mode = RENDER_UNSET;
+    letters_mode = 0;
+    text_path = NULL;
+    record_path = NULL;
+    record_seconds = 0;
+    bench_frames = 0;
+    forget_the_text();
+    input_fd = STDIN_FILENO;
+    terminal_is_raw = terminal_restored = alt_screen_is_on = sprites_uploaded = 0;
+}
+
+/* --text - names standard input: what is there is the text even where a pipe on
+ * its own would not count, as in a benchmark. A terminal there has no text in it,
+ * and is a usage error. */
+static void test_text_dash_is_standard_input_by_name(void) {
+    reset_sign_state();
+    const char *words = "hello from standard input\n";
+    int saved = dup(STDIN_FILENO), text[2];
+    assert(saved >= 0 && pipe(text) == 0);
+    assert(write(text[1], words, strlen(words)) == (ssize_t)strlen(words));
+    close(text[1]);
+    assert(dup2(text[0], STDIN_FILENO) == STDIN_FILENO);
+    close(text[0]);
+    text_path = "-";
+    int taken = take_the_text(60, 12, 0);
+    assert(dup2(saved, STDIN_FILENO) == STDIN_FILENO);
+    close(saved);
+    assert(taken == 1 && letters_mode);
+    assert(the_letters.count == 22); /* Every letter of it, and no blank. */
+    assert(the_text_length == strlen(words) && memcmp(the_text, words, strlen(words)) == 0);
+    letters_destroy(&the_letters);
+    letters_mode = 0;
+    text_path = NULL;
+    forget_the_text();
+    reset_test_config();
+
+    int master = posix_openpt(O_RDWR | O_NOCTTY);
+    assert(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0);
+    const char *name = ptsname(master);
+    assert(name != NULL);
+    int said[2];
+    assert(pipe(said) == 0);
+    fflush(NULL);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        alarm(20);
+        close(said[0]);
+        int terminal = open(name, O_RDWR | O_NOCTTY);
+        if (terminal < 0 || dup2(terminal, STDIN_FILENO) < 0 || dup2(said[1], STDERR_FILENO) < 0)
+            _exit(92);
+        char *argv[] = {"cbirds", "--text", "-", NULL};
+        read_options(3, argv);
+        take_the_text(60, 12, 1);
+        _exit(0);
+    }
+    close(said[1]);
+    char message[512];
+    read_to_the_end(said[0], message, sizeof(message));
+    close(said[0]);
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_USAGE);
+    assert(strstr(message, "--text -") != NULL && strstr(message, "terminal") != NULL);
+    close(master);
+}
+
+/* A file --text cannot open is the mistake, and is said before anything else is
+ * looked for, the terminal included; one that opens and cannot be read, as a
+ * directory, is said as well. Neither is a flock of birds instead. */
+static void test_a_text_file_that_cannot_be_had_is_said_and_is_not_birds(void) {
+    char missing[600], folder[600];
+    scratch_file(missing, sizeof(missing), "not_there.txt");
+    scratch_file(folder, sizeof(folder), "a_folder");
+    assert(mkdir(folder, 0700) == 0);
+    for (int k = 0; k < 2; k++) {
+        const char *path = k == 0 ? missing : folder;
+        int said[2];
+        assert(pipe(said) == 0);
+        fflush(NULL);
+        pid_t child = fork();
+        assert(child >= 0);
+        if (child == 0) {
+            alarm(20);
+            close(said[0]);
+            int none = open("/dev/null", O_RDWR);
+            if (none < 0 || dup2(none, STDIN_FILENO) < 0 || dup2(none, STDOUT_FILENO) < 0 ||
+                dup2(said[1], STDERR_FILENO) < 0)
+                _exit(92);
+            as_a_fresh_run();
+            char *argv[] = {"cbirds", "--text", (char *)path, NULL};
+            if (k == 0) {
+                /* With no terminal at all: the file is still what is said. */
+                if (setsid() < 0) _exit(90);
+                exit(cbirds_application_main(3, argv));
+            }
+            read_options(3, argv);
+            exit(take_the_text(60, 12, 1) ? 0 : 3);
+        }
+        close(said[1]);
+        char message[1024];
+        read_to_the_end(said[0], message, sizeof(message));
+        close(said[0]);
+        int status = 0;
+        assert(waitpid(child, &status, 0) == child);
+        assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_FAILURE);
+        assert(strstr(message, k == 0 ? "cannot open" : "cannot read") != NULL);
+        assert(strstr(message, path) != NULL && strstr(message, "terminal") == NULL);
+    }
+    assert(rmdir(folder) == 0);
+}
+
+/* A benchmark measures the flock it is told to, and a pipe it happens to be in is
+ * not asked for: what is in it is left there, for nobody, and the run is of birds.
+ * Through main, as a script runs `cbirds --bench`. */
+static void test_a_benchmark_never_reads_a_pipe_it_is_in(void) {
+    int text[2], said[2];
+    assert(pipe(text) == 0 && pipe(said) == 0);
+    const char *words = "hello\n";
+    assert(write(text[1], words, strlen(words)) == (ssize_t)strlen(words));
+    fflush(NULL);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        alarm(20);
+        close(text[1]);
+        close(said[0]);
+        int quiet = open("/dev/null", O_WRONLY);
+        if (quiet < 0 || dup2(text[0], STDIN_FILENO) < 0 || dup2(said[1], STDOUT_FILENO) < 0 ||
+            dup2(quiet, STDERR_FILENO) < 0)
+            _exit(92);
+        as_a_fresh_run();
+        char *argv[] = {"cbirds", "--bench", "10", NULL};
+        exit(cbirds_application_main(3, argv));
+    }
+    close(said[1]);
+    static char out[4096];
+    read_to_the_end(said[0], out, sizeof(out));
+    close(said[0]);
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS);
+    assert(strstr(out, "birds ") != NULL && strstr(out, "letters ") == NULL);
+    char left[16];
+    assert(fcntl(text[0], F_SETFL, O_NONBLOCK) == 0);
+    assert(read(text[0], left, sizeof(left)) == (ssize_t)strlen(words)); /* Still there. */
+    close(text[0]);
+    close(text[1]);
+}
+
+/* The bytes of a JSON string as a cast writes one, `from` at its opening quote, out
+ * of their quotes and escapes. Returns how many. */
+static size_t json_string_bytes(const char *from, char *out, size_t size) {
+    size_t length = 0;
+    assert(*from == '"');
+    for (const char *at = from + 1; *at != '"' && *at != '\0'; at++) {
+        char c = *at;
+        if (c == '\\') {
+            at++;
+            if (*at == 'u') {
+                unsigned value = 0;
+                assert(sscanf(at + 1, "%4x", &value) == 1 && value < 0x80);
+                c = (char)value;
+                at += 4;
+            } else {
+                c = *at; /* \" and \\, the only others a cast of ours has. */
+            }
+        }
+        assert(length + 1 < size);
+        out[length++] = c;
+    }
+    return length;
+}
+
+/* Whether what a terminal shows is the text as the command printed it: every glyph,
+ * its width, its colours and attributes, and every background. */
+static int the_screen_is_the_text(const vt_t *shown, const char *text) {
+    vt_t original;
+    assert(vt_init(&original, shown->cols, shown->rows) == 0);
+    vt_feed(&original, text, strlen(text));
+    vt_finish(&original);
+    int same = 1;
+    for (int row = 0; row < shown->rows; row++)
+        for (int col = 0; col < shown->cols; col++) {
+            const vt_cell_t *a = vt_cell(&original, col, row), *b = vt_cell(shown, col, row);
+            if ((a->glyph == 0 ? ' ' : a->glyph) != (b->glyph == 0 ? ' ' : b->glyph) ||
+                a->width != b->width ||
+                (!vt_cell_is_blank(a) && memcmp(&a->style, &b->style, sizeof(vt_style_t)) != 0) ||
+                memcmp(&a->style.bg, &b->style.bg, sizeof(vt_colour_t)) != 0)
+                same = 0;
+        }
+    vt_destroy(&original);
+    return same;
+}
+
+/* Runs main as the shell would for `TEXT | cbirds --seed SEED --record PATH`, at ten
+ * frames a second, which is enough to see where every letter is. */
+static void record_text_from_a_pipe(const char *text, const char *seed, const char *path) {
+    int pipe_in[2];
+    assert(pipe(pipe_in) == 0);
+    fflush(NULL);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        alarm(120);
+        close(pipe_in[1]);
+        int quiet = open("/dev/null", O_WRONLY);
+        if (quiet < 0 || dup2(pipe_in[0], STDIN_FILENO) < 0 || dup2(quiet, STDOUT_FILENO) < 0 ||
+            dup2(quiet, STDERR_FILENO) < 0)
+            _exit(92);
+        as_a_fresh_run();
+        char *argv[] = {"cbirds",        "--seed", (char *)seed,   "--record", (char *)path,
+                        "--record-size", "60x14",  "--record-fps", "10",       NULL};
+        exit(cbirds_application_main(9, argv));
+    }
+    close(pipe_in[0]);
+    assert(write(pipe_in[1], text, strlen(text)) == (ssize_t)strlen(text));
+    close(pipe_in[1]);
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS);
+}
+
+/* A recording of the flock is six seconds unless told, and one of text a whole
+ * cycle, the longest there can be: the first rest, a wave cut short at its
+ * deadline, the longest flight and the slowest homing. A shorter cycle lands
+ * sooner, and a recording does not start a wave it has no time to finish, so it
+ * opens and it ends on the text as the command printed it, and a GIF of it loops
+ * without a jump. Through main, with the text on a pipe, as `fastfetch | cbirds
+ * --record fetch.cast` runs, for texts and seeds that land early and late. */
+static void test_a_recording_of_text_is_a_whole_cycle_unless_told(void) {
+    assert(TEXT_RECORD_SECONDS >= LETTERS_FIRST_REST + LETTERS_WAVE_DEADLINE + LETTERS_FLIGHT_MOST +
+                                      LETTERS_HOMING_DEADLINE);
+    int was = record_seconds;
+    record_seconds = 0;
+    letters_mode = 0;
+    settle_the_recording_length();
+    assert(record_seconds == FLOCK_RECORD_SECONDS);
+    record_seconds = 0;
+    letters_mode = 1;
+    settle_the_recording_length();
+    assert(record_seconds == TEXT_RECORD_SECONDS);
+    record_seconds = 3;
+    settle_the_recording_length();
+    assert(record_seconds == 3); /* Told. */
+    letters_mode = 0;
+    record_seconds = was;
+
+    static const char *const TEXTS[] = {NEOFETCH_LIKE, "hello world\nsecond line\n"};
+    static const char *const SEEDS[] = {"1", "2", "3", "4"};
+    char path[600];
+    scratch_file(path, sizeof(path), "whole_cycle.cast");
+    static char line[1 << 18], bytes[1 << 18];
+    for (size_t t = 0; t < sizeof(TEXTS) / sizeof(*TEXTS); t++)
+        for (size_t s = 0; s < sizeof(SEEDS) / sizeof(*SEEDS); s++) {
+            record_text_from_a_pipe(TEXTS[t], SEEDS[s], path);
+            FILE *file = fopen(path, "r");
+            assert(file != NULL);
+            assert(fgets(line, sizeof(line), file) != NULL);
+            assert(strstr(line, "\"width\": 60, \"height\": 14") != NULL);
+            vt_t shown;
+            assert(vt_init(&shown, 60, 14) == 0);
+            double last = 0;
+            int events = 0, flew = 0;
+            while (fgets(line, sizeof(line), file) != NULL) {
+                assert(strchr(line, '\n') != NULL); /* Each event whole. */
+                last = strtod(line + 1, NULL);
+                const char *output = strstr(line, "\"o\", ");
+                assert(output != NULL);
+                vt_feed(&shown, bytes, json_string_bytes(output + 5, bytes, sizeof(bytes)));
+                /* The opening, and then the first frame: the text at rest. */
+                if (++events == 2) assert(the_screen_is_the_text(&shown, TEXTS[t]));
+                /* Ten seconds in, it is flying: the first rest is never held. */
+                if (last > 9.95 && last < 10.05) flew = !the_screen_is_the_text(&shown, TEXTS[t]);
+            }
+            fclose(file);
+            assert(remove(path) == 0);
+            assert(flew);
+            assert(events == 10 * TEXT_RECORD_SECONDS + 2);
+            assert(last >= TEXT_RECORD_SECONDS - 0.05);
+            assert(the_screen_is_the_text(&shown, TEXTS[t]));
+            vt_destroy(&shown);
+        }
+}
+
+/* What the README says of a pipe: three seconds for something to come, a second and
+ * a half of quiet, eight seconds in all, a megabyte. letters_test tries the reading
+ * with shorter numbers; these are the ones a run uses. */
+static void test_a_pipe_is_read_for_as_long_as_the_readme_says(void) {
+    assert(PIPE_READING.first_byte_wait == 3.0);
+    assert(PIPE_READING.quiet == 1.5);
+    assert(PIPE_READING.patience == 8.0);
+    assert(PIPE_READING.limit == 1 << 20);
+}
+
+/* --text with a named pipe, as from a command's output given a name: it is opened
+ * once, by main, and read from that descriptor. A second open would find the
+ * writer gone, what it wrote lost with it, and wait for ever for another. On a
+ * terminal of its own, with a writer that writes once and closes at once, the run
+ * takes the text and ends, every time. */
+static void test_text_from_a_named_pipe_is_opened_once(void) {
+    char fifo[600];
+    scratch_file(fifo, sizeof(fifo), "text.fifo");
+    assert(mkfifo(fifo, 0600) == 0);
+    for (int run_number = 0; run_number < 3; run_number++) {
+        int master = posix_openpt(O_RDWR | O_NOCTTY);
+        assert(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0);
+        const char *name = ptsname(master);
+        assert(name != NULL);
+        int sizing = open(name, O_RDWR | O_NOCTTY);
+        assert(sizing >= 0);
+        struct winsize size = {.ws_row = 24, .ws_col = 80, .ws_xpixel = 0, .ws_ypixel = 0};
+        assert(ioctl(sizing, TIOCSWINSZ, &size) == 0);
+        fflush(NULL);
+        pid_t run = fork();
+        assert(run >= 0);
+        if (run == 0) {
+            alarm(10);
+            close(master);
+            close(sizing);
+            if (setsid() < 0) _exit(90);
+            int terminal = open(name, O_RDWR);
+            if (terminal < 0 || ioctl(terminal, TIOCSCTTY, 0) < 0) _exit(91);
+            if (dup2(terminal, STDIN_FILENO) < 0 || dup2(terminal, STDOUT_FILENO) < 0 ||
+                dup2(terminal, STDERR_FILENO) < 0)
+                _exit(92);
+            close(terminal);
+            as_a_fresh_run();
+            char *argv[] = {"cbirds", "--text", fifo, "--frames", "2", NULL};
+            exit(cbirds_application_main(5, argv));
+        }
+        pid_t writer = fork();
+        assert(writer >= 0);
+        if (writer == 0) {
+            alarm(10);
+            signal(SIGPIPE, SIG_DFL);
+            int fd = open(fifo, O_WRONLY);
+            if (fd < 0) _exit(93);
+            const char *words = "hello from a named pipe\n";
+            int wrote = write(fd, words, strlen(words)) == (ssize_t)strlen(words);
+            close(fd);
+            _exit(wrote ? 0 : 94);
+        }
+        static char output[1 << 20];
+        size_t length = 0;
+        int status = 0;
+        for (;;) {
+            if (readable_within(master, 50) > 0) {
+                ssize_t got = read(master, output + length, sizeof(output) - 1 - length);
+                if (got > 0) length += (size_t)got;
+            }
+            if (waitpid(run, &status, WNOHANG) == run) break;
+        }
+        output[length] = '\0';
+        int wrote = 0;
+        assert(waitpid(writer, &wrote, 0) == writer);
+        /* The writer was read, and the run ended, and not by the alarm a second open
+         * waiting for ever would meet. */
+        assert(WIFEXITED(wrote) && WEXITSTATUS(wrote) == 0);
+        assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS);
+        /* And it was the text that flew, not the birds that nothing to read gives. */
+        const char *taken = strstr(output, ALT_SCREEN_ON);
+        assert(taken != NULL);
+        vt_t shown;
+        assert(vt_init(&shown, 80, 24) == 0);
+        vt_feed(&shown, taken, length - (size_t)(taken - output));
+        char line[81];
+        for (int col = 0; col < 80; col++) {
+            uint32_t glyph = vt_cell(&shown, col, 0)->glyph;
+            line[col] = glyph >= 32 && glyph < 127 ? (char)glyph : ' ';
+        }
+        line[80] = '\0';
+        assert(strstr(line, "hello from a named pipe") != NULL);
+        vt_destroy(&shown);
+        close(sizing);
+        close(master);
+    }
+    assert(unlink(fifo) == 0);
+
+    /* The reading takes the descriptor main opened and not the name again: with the
+     * name gone in between, the text is read all the same. */
+    char gone[600];
+    scratch_file(gone, sizeof(gone), "gone.txt");
+    world_write(gone, "still here\n");
+    reset_sign_state();
+    text_path = gone;
+    text_fd = open_the_text_file();
+    assert(unlink(gone) == 0);
+    assert(take_the_text(40, 10, 0) == 1 && text_fd == -1);
+    assert(the_letters.count == 9);
+    letters_destroy(&the_letters);
+    letters_mode = 0;
+    text_path = NULL;
+    forget_the_text();
+    reset_test_config();
+}
+
+/* What is for birds is not for text: the rain of --matrix, with its green ramp and
+ * its alignment; a sprite of somebody's own; more flocks, a second sky and tails;
+ * kitty's sprites. The letters fly in the ramp that was asked for, as text. */
+static void test_what_is_for_birds_does_not_apply_to_text(void) {
+    char path[600], sprite[600];
+    scratch_file(path, sizeof(path), "for_birds.txt");
+    world_write(path, "hello\n");
+    write_a_picture("for_birds.png", 1, 255);
+    scratch_file(sprite, sizeof(sprite), "for_birds.png");
+    reset_sign_state();
+    int alignment = config.alignment_notch;
+    char *argv[] = {"cbirds", "--color",  "ice",   "--matrix", "--sprite", sprite, "--depth",
+                    "-e",     "--render", "kitty", "--text",   path,       NULL};
+    read_options(12, argv);
+    config.flocks = 3;
+    assert(config.palette == palette_named("matrix") && the_rain_is_falling);
+    assert(take_the_text(40, 10, 0) == 1);
+    assert(config.palette == palette_named("ice") && config.alignment_notch == alignment);
+    assert(!the_rain_is_falling && !config.trails && config.flocks == 1 && !deep_look);
+    assert(sprite_path == NULL && palette_shades() == palette()->shades);
+    assert(live_render_mode() == RENDER_BRAILLE);
+    letters_destroy(&the_letters);
+    letters_mode = 0;
+    text_path = NULL;
+    forget_the_text();
+    render_mode = RENDER_KITTY;
+    assert(remove(path) == 0 && remove(sprite) == 0);
+    reset_sign_state();
+}
+
+/* More letters than there can be birds: a screenful of a large terminal is more
+ * than the flock's own limit, and the letters' limit is the one that holds. With
+ * hawks and the panel over them, they go and every one comes home. */
+static void test_more_letters_than_birds_go_and_come_home(void) {
+    enum { COLS = 100, ROWS = 50 };
+    static char text[(COLS + 1) * ROWS + 1];
+    size_t at = 0;
+    for (int row = 0; row < ROWS; row++) {
+        for (int col = 0; col < COLS; col++) text[at++] = (char)('a' + (row + col) % 26);
+        if (row + 1 < ROWS) text[at++] = '\n';
+    }
+    text[at] = '\0';
+    world_t world;
+    world_open(&world, text, COLS, ROWS);
+    assert(config.birds == COLS * ROWS && config.birds > MAX_BIRDS);
+    config.hawks = 2;
+    place_hawks();
+    legend_enabled = 1;
+    measure_legend();
+    update_turn_distances();
+    feed_input("\r");
+    assert(world_run_until(&world, LETTERS_IN_FLIGHT, 60 * 6) > 0);
+    for (int frame = 0; frame < 30; frame++) world_step(&world);
+    feed_input("\r");
+    int frames = 0;
+    while (the_letters.phase != LETTERS_AT_REST && frames < 60 * 8) {
+        world_step(&world);
+        frames++;
+    }
+    assert(the_letters.phase == LETTERS_AT_REST);
+    config.hawks = 0; /* A hawk over a letter at home lifts it: counted without them. */
+    assert(world_all_home(&world));
+    int count;
+    free(world_picture(&world, &count));
+    world_close(&world);
+}
+
 int main(void) {
     make_scratch();
     trig_lookup_init();
@@ -8015,6 +8494,14 @@ int main(void) {
     test_text_on_a_pipe_with_no_terminal_says_so();
     test_a_sign_is_refused_with_text();
     test_keys_and_colour_questions_use_the_descriptor_that_was_chosen();
+    test_text_dash_is_standard_input_by_name();
+    test_a_text_file_that_cannot_be_had_is_said_and_is_not_birds();
+    test_a_benchmark_never_reads_a_pipe_it_is_in();
+    test_a_recording_of_text_is_a_whole_cycle_unless_told();
+    test_a_pipe_is_read_for_as_long_as_the_readme_says();
+    test_text_from_a_named_pipe_is_opened_once();
+    test_what_is_for_birds_does_not_apply_to_text();
+    test_more_letters_than_birds_go_and_come_home();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);
     return 0;

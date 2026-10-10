@@ -250,7 +250,9 @@ writes, and text is the flock, so `--say`, `--clock`, `--seconds` and `--picture
 stop with a usage error beside `--text` or beside text on a pipe.
 
 Recordings take text too, and then run a whole cycle, 34 seconds, unless
-`--record-seconds` says otherwise:
+`--record-seconds` says otherwise. A recording never starts a wave it has no time
+to finish, so a whole cycle ends on the text as it was printed, and a GIF of it
+loops without a jump:
 
 ```
 fastfetch | cbirds --record fetch.cast

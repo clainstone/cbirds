@@ -749,6 +749,102 @@ static void test_painted_blocks_boxes_and_braille_fill_the_cell(void) {
     cells_destroy(&cells);
 }
 
+/* The 256 past the sixteen are xterm's: a cube of six levels, 0, 95, 135, 175, 215
+ * and 255, and greys from 8 in steps of ten; by index, the first sixteen are the
+ * sixteen. A full block is the colour itself, to the pixel. */
+static void test_painted_256_colours_are_the_cube_and_the_greys(void) {
+    static const uint8_t ground[3] = {1, 2, 3};
+    static const struct {
+        uint8_t index, rgb[3];
+    } CASES[] = {
+        {196, {255, 0, 0}},     {21, {0, 0, 255}},      {208, {255, 135, 0}},
+        {67, {95, 135, 175}},   {231, {255, 255, 255}}, {16, {0, 0, 0}},
+        {244, {128, 128, 128}}, {255, {238, 238, 238}}, {9, {241, 76, 76}},
+    };
+    enum { COUNT = sizeof(CASES) / sizeof(*CASES) };
+    cells_t cells;
+    assert(cells_init(&cells, 1) == CELLS_OK);
+    assert(cells_resize(&cells, COUNT, 1) == CELLS_OK);
+    for (int i = 0; i < COUNT; i++)
+        colour(put(&cells, i, 0, 0x2588), 0, CELLS_COLOUR_INDEXED, CASES[i].index, 0, 0);
+    png_image_t picture = {0, 0, NULL};
+    emit_and_paint(&cells, &picture, ground);
+    for (int i = 0; i < COUNT; i++)
+        assert(memcmp(pixel(&picture, 12 * i + 6, 10), CASES[i].rgb, 3) == 0);
+    png_image_free(&picture);
+    cells_destroy(&cells);
+}
+
+/* Every block element covers the part of the cell its name says, so a logo drawn in
+ * eighths and quadrants is whole in a GIF as it is in a terminal. In a cell twelve
+ * by twenty an eighth across is one column and an eighth down two rows. */
+static void test_painted_eighths_quadrants_and_diagonals_cover_what_their_names_say(void) {
+    static const uint8_t ground[3] = {0, 0, 0};
+    static const struct {
+        uint32_t glyph;
+        int x, y, width, height;
+    } PARTS[] = {
+        {0x2581, 0, 18, 12, 2},  /* Lower one eighth. */
+        {0x2584, 0, 10, 12, 10}, /* Lower half. */
+        {0x2587, 0, 3, 12, 17},  /* Lower seven eighths. */
+        {0x2589, 0, 0, 10, 20},  /* Left seven eighths. */
+        {0x258C, 0, 0, 6, 20},   /* Left half. */
+        {0x258F, 0, 0, 1, 20},   /* Left one eighth. */
+        {0x2590, 6, 0, 6, 20},   /* Right half. */
+        {0x2594, 0, 0, 12, 2},   /* Upper one eighth. */
+        {0x2595, 11, 0, 1, 20},  /* Right one eighth. */
+    };
+    /* Upper left 1, upper right 2, lower left 4, lower right 8, as the names have it. */
+    static const struct {
+        uint32_t glyph;
+        int quarters;
+    } QUADRANTS[] = {
+        {0x2596, 4},     {0x2597, 8},         {0x2598, 1},         {0x2599, 1 | 4 | 8},
+        {0x259A, 1 | 8}, {0x259B, 1 | 2 | 4}, {0x259C, 1 | 2 | 8}, {0x259D, 2},
+        {0x259E, 2 | 4}, {0x259F, 2 | 4 | 8},
+    };
+    enum {
+        PART_COUNT = sizeof(PARTS) / sizeof(*PARTS),
+        QUADRANT_COUNT = sizeof(QUADRANTS) / sizeof(*QUADRANTS),
+        COUNT = PART_COUNT + QUADRANT_COUNT + 3
+    };
+    cells_t cells;
+    assert(cells_init(&cells, 1) == CELLS_OK);
+    assert(cells_resize(&cells, COUNT, 1) == CELLS_OK);
+    for (int i = 0; i < PART_COUNT; i++) put(&cells, i, 0, PARTS[i].glyph);
+    for (int i = 0; i < QUADRANT_COUNT; i++) put(&cells, PART_COUNT + i, 0, QUADRANTS[i].glyph);
+    for (int i = 0; i < 3; i++)
+        put(&cells, PART_COUNT + QUADRANT_COUNT + i, 0, 0x2571 + (uint32_t)i);
+    png_image_t picture = {0, 0, NULL};
+    emit_and_paint(&cells, &picture, ground);
+    for (int i = 0; i < PART_COUNT; i++) {
+        int x = 12 * i + PARTS[i].x, area = PARTS[i].width * PARTS[i].height;
+        assert(lit_pixels(&picture, x, PARTS[i].y, PARTS[i].width, PARTS[i].height, ground) ==
+               area);
+        assert(lit_pixels(&picture, 12 * i, 0, 12, 20, ground) == area); /* And nothing else. */
+    }
+    for (int i = 0; i < QUADRANT_COUNT; i++) {
+        int x = 12 * (PART_COUNT + i);
+        for (int quarter = 0; quarter < 4; quarter++) {
+            int lit =
+                lit_pixels(&picture, x + (quarter & 1) * 6, (quarter >> 1) * 10, 6, 10, ground);
+            assert(lit == ((QUADRANTS[i].quarters >> quarter) & 1 ? 60 : 0));
+        }
+    }
+    /* A diagonal has ink in the two corners it runs between and not in the others;
+     * the cross in all four. */
+    for (int i = 0; i < 3; i++) {
+        int x = 12 * (PART_COUNT + QUADRANT_COUNT + i);
+        int rising = i != 1, falling = i != 0;
+        assert((memcmp(pixel(&picture, x, 19), ground, 3) != 0) == rising);
+        assert((memcmp(pixel(&picture, x + 11, 0), ground, 3) != 0) == rising);
+        assert((memcmp(pixel(&picture, x, 0), ground, 3) != 0) == falling);
+        assert((memcmp(pixel(&picture, x + 11, 19), ground, 3) != 0) == falling);
+    }
+    png_image_free(&picture);
+    cells_destroy(&cells);
+}
+
 static int ink_columns(const png_image_t *picture, int x0, int y0, int width, int rows,
                        const uint8_t ground[3]) {
     int first = -1, last = -1;
@@ -835,6 +931,8 @@ int main(void) {
     test_painted_attributes();
     test_painted_palette_colours_are_the_pictures_own();
     test_painted_blocks_boxes_and_braille_fill_the_cell();
+    test_painted_256_colours_are_the_cube_and_the_greys();
+    test_painted_eighths_quadrants_and_diagonals_cover_what_their_names_say();
     test_painted_arrows_have_their_head_at_the_end_they_point_to();
     test_painted_accents_fall_back_and_the_unknown_is_a_box();
     return 0;

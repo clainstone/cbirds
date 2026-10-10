@@ -846,6 +846,36 @@ static void test_a_letter_with_no_colour_of_its_own_takes_the_flocks_in_the_air(
     vt_destroy(&vt);
 }
 
+/* A colour of the 256 is the command's own, kept as its index at rest and in the
+ * air, before and behind: a ramp is for letters that have none. */
+static void test_a_256_colour_is_kept_as_its_index_at_rest_and_in_the_air(void) {
+    letters_t letters;
+    vt_t vt;
+    build(&letters, &vt, "\033[38;5;196mR\033[48;5;21mB\033[0m", 10, 2);
+    cells_t cells;
+    assert(cells_init(&cells, 1) == CELLS_OK && cells_resize(&cells, 10, 2) == CELLS_OK);
+    static poses_t poses;
+    rest_at_home(&letters, &poses);
+    static const uint8_t ramp[1][3] = {{0, 255, 0}};
+    letters_look_t look = {ramp, 1};
+    snapshot_t s;
+    paint_now(&letters, &cells, &poses, &look, &s);
+    assert(snap(&s, 0, 0)->has_fg && snap(&s, 0, 0)->fg_kind == CELLS_COLOUR_INDEXED &&
+           snap(&s, 0, 0)->fg[0] == 196);
+    assert(snap(&s, 1, 0)->has_bg && snap(&s, 1, 0)->bg_kind == CELLS_COLOUR_INDEXED &&
+           snap(&s, 1, 0)->bg[0] == 21);
+    letters.letter[0].state = LETTER_FLYING;
+    letters.perched--;
+    poses.x[0] = 5.5 * CW;
+    poses.y[0] = 1.5 * CH;
+    paint_now(&letters, &cells, &poses, &look, &s);
+    assert(snap(&s, 5, 1)->glyph == 'R');
+    assert(snap(&s, 5, 1)->fg_kind == CELLS_COLOUR_INDEXED && snap(&s, 5, 1)->fg[0] == 196);
+    cells_destroy(&cells);
+    letters_destroy(&letters);
+    vt_destroy(&vt);
+}
+
 static void test_two_in_one_cell_show_the_one_nearer_home_and_the_lower_on_a_tie(void) {
     letters_t letters;
     vt_t vt;
@@ -1222,6 +1252,7 @@ int main(void) {
     test_a_background_stays_when_the_letter_on_it_leaves();
     test_attributes_belong_to_the_letter_wherever_it_is();
     test_a_letter_with_no_colour_of_its_own_takes_the_flocks_in_the_air();
+    test_a_256_colour_is_kept_as_its_index_at_rest_and_in_the_air();
     test_two_in_one_cell_show_the_one_nearer_home_and_the_lower_on_a_tie();
     test_a_wide_letter_in_the_air_covers_two_cells_and_never_half_of_another();
     test_a_paint_into_cells_of_another_size_is_clipped();

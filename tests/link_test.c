@@ -839,9 +839,12 @@ static void test_a_socket_that_was_taken_away_is_made_again(void) {
     assert(link_open(&a, sky, 0) == LINK_OK);
     assert(link_open(&b, sky, 0) == LINK_OK);
     settle(both, 2);
+    int before = b.fd;
     assert(unlink(b.path) == 0); /* A tidy up of the temporary directory. */
     settle(both, 2);             /* b makes its socket again... */
     assert(access(b.path, F_OK) == 0);
+    /* ...on a descriptor of its own, the old one closed rather than kept. */
+    assert(b.fd != before && fcntl(before, F_GETFD) < 0 && errno == EBADF);
     settle(both, 2); /* ...and a finds it where it was. */
     assert(link_edge_open(&a, LINK_RIGHT, LINK_BIRD));
     link_traveller_t bird = example(LINK_BIRD, 2), got;

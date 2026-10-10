@@ -9945,6 +9945,75 @@ static void test_two_windows_of_the_program_share_a_sky_and_leave_it(void) {
     assert(rmdir(sky_path) == 0 && rmdir(home) == 0);
 }
 
+/* At most SKY_PER_FRAME birds leave by one door in a frame, which bounds what a
+ * frame spends on the post however thick the flock is there, and the rest go in the
+ * frames after: all of them, in the end. */
+static void test_a_crowd_at_a_door_goes_through_it_a_frame_at_a_time(void) {
+    static bird_t birds[200];
+    link_traveller_t got;
+    reset_test_config();
+    set_test_screen(800, 480);
+    render_mode = RENDER_UNSET;
+    formation_clear();
+    join_the_sky(1); /* A neighbour on the right, with room. */
+    config.birds = 100;
+    for (int i = 0; i < config.birds; i++)
+        birds[i] = (bird_t){.x = 820, .y = 4.0 * i, .direction = 0.1};
+    int live = config.birds, frames = 0, arrived = 0;
+    while (config.birds > 0 && frames < 10) {
+        int before = config.birds;
+        sky_keep_up();
+        sky_hand_over(birds, &live);
+        assert(before - config.birds <= SKY_PER_FRAME);
+        if (frames == 0) assert(before - config.birds == SKY_PER_FRAME);
+        while (link_receive(&beside, &got)) arrived += got.kind == LINK_BIRD;
+        link_update(&beside, clock_state.seconds);
+        link_set_room(&beside, 1, 1);
+        frames++;
+    }
+    assert(config.birds == 0 && live == 0 && frames == 2 && arrived == 100);
+    leave_the_sky();
+    reset_test_config();
+}
+
+/* A bird that is writing a sign holds its place, even past a door: it is the
+ * sign's, and only the free birds beside it go through. */
+static void test_a_writer_past_a_door_is_not_posted(void) {
+    static bird_t birds[MAX_BIRDS];
+    link_traveller_t got;
+    reset_sign_state();
+    apply_screen_size(120, 40, 960, 640);
+    render_mode = RENDER_UNSET;
+    ask_for_a_sign("HELLO");
+    begin_the_sign();
+    config.birds = 600;
+    seed_random(5);
+    initialize_birds(birds);
+    assert(sign_write(birds));
+    join_the_sky(1);
+    int writer = -1, free_bird = -1;
+    for (int i = config.birds - 1; i >= 0 && (writer < 0 || free_bird < 0); i--) {
+        if (formation.slot[i] >= 0 && writer < 0) writer = i;
+        if (formation.slot[i] < 0 && free_bird < 0) free_bird = i;
+    }
+    assert(writer >= 0 && free_bird >= 0);
+    birds[writer].x = birds[free_bird].x = screen.width + 5;
+    int before = config.birds, live = config.birds;
+    sky_keep_up();
+    sky_hand_over(birds, &live);
+    assert(config.birds == before - 1);
+    int posted = 0;
+    while (link_receive(&beside, &got)) posted += got.kind == LINK_BIRD;
+    assert(posted == 1);
+    /* The writer is still in, still writing, wherever the last bird has moved. */
+    int writers_past = 0;
+    for (int i = 0; i < config.birds; i++)
+        writers_past += formation.slot[i] >= 0 && birds[i].x > screen.width;
+    assert(writers_past == 1);
+    leave_the_sky();
+    reset_sign_state();
+}
+
 /* A window that is told to die leaves no socket behind, whichever way. */
 static void test_a_signal_removes_the_socket(void) {
     static const int SIGNALS[] = {SIGINT,  SIGTERM, SIGHUP, SIGQUIT,
@@ -10196,6 +10265,8 @@ int main(void) {
     test_a_window_with_a_sign_keeps_the_birds_to_write_it();
     test_a_sign_failure_is_said_for_what_it_was();
     test_two_windows_of_the_program_share_a_sky_and_leave_it();
+    test_a_crowd_at_a_door_goes_through_it_a_frame_at_a_time();
+    test_a_writer_past_a_door_is_not_posted();
     test_no_bird_or_hawk_lands_past_the_arrays();
     test_everything_kept_for_a_bird_goes_with_it_and_a_bird_that_lands_has_none();
     test_nothing_crosses_while_the_intro_is_written();

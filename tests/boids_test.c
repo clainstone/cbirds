@@ -8809,6 +8809,16 @@ static void test_a_hawk_crosses_with_what_it_was_doing(void) {
     assert(hawks[1].prey == -1 && hawks[1].commitment == 0 && hawks[1].passing == 0.2);
     assert(hawks[1].wing == 2 && hawks[1].frame == direction_frame(0.5));
 
+    /* In Kitty a hawk is a sprite placed by its corner, so one that comes in at the
+     * very edge comes in wholly, as the walls keep it. */
+    render_mode = RENDER_KITTY;
+    config.hawks = 0;
+    link_traveller_t at_the_edge = {.kind = LINK_HAWK, .height = 0.5, .reach = 0};
+    assert(link_send(&beside, LINK_LEFT, &at_the_edge, 1) == 1);
+    sky_take_in(birds, &live);
+    assert(config.hawks == 1 && hawks[0].x == 800 - 1 - hawk_draw_offset());
+    render_mode = RENDER_UNSET;
+
     leave_the_sky();
     reset_test_config();
 }
@@ -9579,6 +9589,98 @@ static void test_a_shared_sky_is_refused_with_a_text(void) {
     reset_sign_state();
 }
 
+/* What --link says when it cannot join is what a person reads: a directory that
+ * others can write in, a file or a link where the directory should be, a path too
+ * long for a socket. Each ends the run, with a failure, before the screen is taken,
+ * and makes nothing. Through main, on a terminal of its own. */
+static void test_a_sky_that_cannot_be_joined_is_said_before_the_screen_is_taken(void) {
+    char home[64], path[512], deep[256];
+    snprintf(home, sizeof(home), "/tmp/cbs.XXXXXX");
+    assert(mkdtemp(home) != NULL);
+    const char *parents[] = {"open", "file", "linked", "real"};
+    for (size_t k = 0; k < sizeof(parents) / sizeof(*parents); k++) {
+        snprintf(path, sizeof(path), "%s/%s", home, parents[k]);
+        assert(mkdir(path, 0700) == 0);
+    }
+    snprintf(path, sizeof(path), "%s/open/cbirds", home);
+    assert(mkdir(path, 0700) == 0 && chmod(path, 0777) == 0);
+    snprintf(path, sizeof(path), "%s/file/cbirds", home);
+    world_write(path, "");
+    char real[256];
+    snprintf(real, sizeof(real), "%s/real", home);
+    snprintf(path, sizeof(path), "%s/linked/cbirds", home);
+    assert(symlink(real, path) == 0);
+    snprintf(deep, sizeof(deep), "%s/%090d", home, 0);
+    assert(mkdir(deep, 0700) == 0);
+
+    char open_parent[128], file_parent[128], linked_parent[128];
+    snprintf(open_parent, sizeof(open_parent), "%s/open", home);
+    snprintf(file_parent, sizeof(file_parent), "%s/file", home);
+    snprintf(linked_parent, sizeof(linked_parent), "%s/linked", home);
+    const struct {
+        const char *runtime, *says;
+    } cases[] = {{open_parent, "can be written to by others"},
+                 {file_parent, "is not a directory"},
+                 {linked_parent, "is not a directory (a link to one will not do)"},
+                 {deep, "too long a path for a socket"}};
+    for (size_t c = 0; c < sizeof(cases) / sizeof(*cases); c++) {
+        int master = posix_openpt(O_RDWR | O_NOCTTY);
+        assert(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0);
+        const char *name = ptsname(master);
+        assert(name != NULL);
+        int said_pipe[2];
+        assert(pipe(said_pipe) == 0);
+        fflush(NULL);
+        pid_t child = fork();
+        assert(child >= 0);
+        if (child == 0) {
+            alarm(20);
+            close(master);
+            close(said_pipe[0]);
+            if (setsid() < 0) _exit(90);
+            int terminal = open(name, O_RDWR);
+            if (terminal < 0 || ioctl(terminal, TIOCSCTTY, 0) < 0) _exit(91);
+            if (dup2(terminal, STDIN_FILENO) < 0 || dup2(terminal, STDOUT_FILENO) < 0 ||
+                dup2(said_pipe[1], STDERR_FILENO) < 0)
+                _exit(92);
+            as_a_fresh_run();
+            setenv("XDG_RUNTIME_DIR", cases[c].runtime, 1);
+            char *argv[] = {"cbirds", "--link", NULL};
+            exit(cbirds_application_main(2, argv));
+        }
+        close(said_pipe[1]);
+        char said[512];
+        read_to_the_end(said_pipe[0], said, sizeof(said));
+        close(said_pipe[0]);
+        int status = 0;
+        assert(waitpid(child, &status, 0) == child);
+        assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_FAILURE);
+        assert(strstr(said, "--link: ") != NULL && strstr(said, cases[c].says) != NULL);
+        assert(strchr(said, '\n') == said + strlen(said) - 1); /* One line. */
+        /* Nothing was drawn: the screen was never taken. */
+        char shown[4096];
+        ssize_t got = readable_within(master, 100) > 0 ? read(master, shown, sizeof(shown) - 1) : 0;
+        shown[got > 0 ? got : 0] = '\0';
+        assert(strstr(shown, ALT_SCREEN_ON) == NULL);
+        close(master);
+    }
+    /* And nothing was made: no socket and no directory beyond what was there. */
+    snprintf(path, sizeof(path), "%s/cbirds", deep);
+    assert(access(path, F_OK) != 0);
+    assert(rmdir(deep) == 0);
+    snprintf(path, sizeof(path), "%s/linked/cbirds", home);
+    assert(unlink(path) == 0);
+    snprintf(path, sizeof(path), "%s/file/cbirds", home);
+    assert(unlink(path) == 0);
+    snprintf(path, sizeof(path), "%s/open/cbirds", home);
+    assert(rmdir(path) == 0);
+    for (size_t k = 0; k < sizeof(parents) / sizeof(*parents); k++) {
+        snprintf(path, sizeof(path), "%s/%s", home, parents[k]);
+        assert(rmdir(path) == 0);
+    }
+    assert(rmdir(home) == 0);
+}
+
 /* A window that is told to die leaves no socket behind, whichever way. */
 static void test_a_signal_removes_the_socket(void) {
     static const int SIGNALS[] = {SIGINT,  SIGTERM, SIGHUP, SIGQUIT,
@@ -9825,6 +9927,7 @@ int main(void) {
     test_the_link_option_is_in_the_table_and_off_by_default();
     test_a_shared_sky_cannot_be_benchmarked_or_recorded();
     test_a_shared_sky_is_refused_with_a_text();
+    test_a_sky_that_cannot_be_joined_is_said_before_the_screen_is_taken();
     test_no_bird_or_hawk_lands_past_the_arrays();
     test_everything_kept_for_a_bird_goes_with_it_and_a_bird_that_lands_has_none();
     test_nothing_crosses_while_the_intro_is_written();

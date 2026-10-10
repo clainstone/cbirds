@@ -150,6 +150,7 @@ cbirds --hawks 2 --color ice        something to watch
 cbirds --flocks 3 --color ember     three flocks that keep to their own
 cbirds --color prism                a turn runs a rainbow through the flock
 cbirds --depth --trails             a second sky behind the first
+cbirds --link                       one sky across several terminals
 cbirds --matrix                     it is raining birds
 cbirds --say "back in five"         the flock writes it, and holds it as a sign
 cbirds --clock                      the flock tells the time
@@ -384,6 +385,48 @@ and inside tmux the sprites never reach the terminal.
 If braille does not look right in your terminal, open an issue and say which
 terminal it is. That is the report that helps most.
 
+## One sky, several terminals
+
+```
+cbirds --link        # in one terminal
+cbirds --link        # in another
+```
+
+Birds that fly out of the edge of one window fly in through the edge of the
+next, at the same height and in the same direction. Two terminals side by side,
+or two panes of a split, become one sky with a flock flowing across the gap.
+Hawks cross as well.
+
+The windows lie in a row in the order they were started, so start them from
+left to right: the second joins on the right of the first, the third on the
+right of the second. Only an edge that has a window behind it is open. At the
+ends of the row the outer edge is a wall, as it is alone. A window that closes
+leaves the row, and the two beside it become neighbours.
+
+Each window keeps its own settings, its own `--birds` among them, and its birds
+come and go: a window can empty and fill again. A window that holds 4080 birds
+says so, and its neighbours treat that edge as a wall until it has room. A bird
+sees only the birds of its own window, so a flock does not look across the gap;
+it follows its leaders across. While a window is writing BOIDS it has no room
+and takes nobody in, and nobody leaves it.
+
+A sign goes with it, `--say`, `--clock` or `--picture`. The birds that write
+hold their places and never cross, and the rest of the flock crosses as it does
+without one. `--screensaver` goes with it too: any key quits that window, and it
+leaves the sky.
+
+The windows talk through Unix sockets in a directory that is yours alone:
+`$XDG_RUNTIME_DIR/cbirds`, or `$TMPDIR/cbirds-UID`, or `/tmp/cbirds-UID`.
+cbirds refuses to use one that belongs to somebody else or that others can write
+in, and says which. The sockets are removed when a window quits or is
+interrupted, and the one a killed window leaves behind is swept away by the
+others.
+
+A letter has its home in its own window, so `--link` with `--text` or with text
+piped in is refused, and so is `--link` with `--record` or `--bench`: it joins
+the windows that are open now, so it needs a live terminal. No clip of it is on
+this page for the same reason: a recording has one window.
+
 ## Options
 
 ```
@@ -437,6 +480,7 @@ Output
 General
       --unlock-fps              render as fast as the terminal allows
       --screensaver             quit at once on any key, click or movement, for tmux's lock-command
+      --link                    share one sky with other cbirds --link windows
   -h, --help                    the one-screen help
       --completion SHELL        completions for bash, zsh or fish
   -V, --version                 print the version and quit

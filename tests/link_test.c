@@ -737,8 +737,12 @@ static void test_a_full_queue_holds_the_birds_and_loses_none(void) {
     }
     assert(refused && posted > 0);
     /* Busy is not gone: it is still a neighbour, and it will take more once it
-     * has read what it has. */
+     * has read what it has. Nor is a status it had no room for a reason to give
+     * it up, or to let it be. */
     assert(link_has_neighbour(&a, LINK_RIGHT));
+    the_time += 1.1;
+    link_update(&a, the_time);
+    assert(link_has_neighbour(&a, LINK_RIGHT) && a.refused_count == 0);
     while (link_receive(&b, &got)) received++;
     assert(received == posted);
     assert(link_send(&a, LINK_RIGHT, &bird, 1) == 1);
@@ -989,6 +993,131 @@ static void test_an_entry_that_can_never_be_sent_to_is_let_be(void) {
     assert(rmdir(path) == 0); /* The sky is cleared of what can be unlinked. */
 }
 
+/* A pid that is surely nobody's: a child that has been and gone. */
+static pid_t a_dead_pid(void) {
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) _exit(0);
+    assert(waitpid(child, NULL, 0) == child);
+    return child;
+}
+
+/* Only a socket is a window, so only a socket is swept: a file, a link and a pipe
+ * that are named as a window of a process that has gone are not leftovers of
+ * one, and are let be. */
+static void test_only_a_socket_is_swept_whatever_its_name(void) {
+    link_t a;
+    assert(link_open(&a, sky, 0) == LINK_OK);
+    link_close(&a);
+    char names[3][LINK_PATH_SIZE];
+    pid_t gone = a_dead_pid();
+    for (int k = 0; k < 3; k++)
+        snprintf(names[k], sizeof(names[k]), "%s/00000000000000%02x-%lu", sky, k + 1,
+                 (unsigned long)gone);
+    FILE *file = fopen(names[0], "w");
+    assert(file != NULL && fclose(file) == 0);
+    assert(symlink("/nonexistent", names[1]) == 0);
+    assert(mkfifo(names[2], 0600) == 0);
+
+    assert(link_open(&a, sky, 0) == LINK_OK); /* Which lists the sky, and sweeps it. */
+    the_time += 1.1;
+    link_update(&a, the_time);
+    struct stat info;
+    for (int k = 0; k < 3; k++) assert(lstat(names[k], &info) == 0);
+    assert(!link_has_neighbour(&a, LINK_LEFT) && !link_has_neighbour(&a, LINK_RIGHT));
+    link_close(&a);
+    for (int k = 0; k < 3; k++) assert(unlink(names[k]) == 0);
+}
+
+/* The sky is the owner's alone whatever the umask: one that takes the owner's own
+ * rights away does not leave a directory nobody can use for every run after, and
+ * one that gives everybody everything does not leave the socket open to them. */
+static void test_the_sky_is_private_whatever_the_umask(void) {
+    static const mode_t MASKS[] = {0277, 0222, 0};
+    for (size_t m = 0; m < sizeof(MASKS) / sizeof(*MASKS); m++) {
+        clear_the_sky();
+        mode_t before = umask(MASKS[m]);
+        link_t a, b;
+        link_t *both[] = {&a, &b};
+        assert(link_open(&a, sky, 0) == LINK_OK);
+        assert(link_open(&b, sky, 0) == LINK_OK);
+        umask(before);
+        struct stat info;
+        assert(lstat(sky, &info) == 0 && (info.st_mode & 07777) == 0700);
+        assert(lstat(a.path, &info) == 0 && S_ISSOCK(info.st_mode));
+        assert((info.st_mode & 0777) == 0600);
+        settle(both, 2);
+        assert(link_has_neighbour(&a, LINK_RIGHT) && link_has_neighbour(&b, LINK_LEFT));
+        link_close(&a);
+        link_close(&b);
+    }
+}
+
+/* The sky taken away from under the windows, by a tidy up of the temporary
+ * directory or a careless rm: it is made again, and the windows find each other
+ * in it again, in the order they had. */
+static void test_a_sky_taken_away_is_made_again_and_joined(void) {
+    link_t a, b;
+    link_t *both[] = {&a, &b};
+    assert(link_open(&a, sky, 0) == LINK_OK);
+    assert(link_open(&b, sky, 0) == LINK_OK);
+    settle(both, 2);
+    assert(link_has_neighbour(&a, LINK_RIGHT));
+    clear_the_sky(); /* Every socket, and the directory. */
+    struct stat info;
+    assert(lstat(sky, &info) < 0);
+    settle(both, 2); /* The first to look makes it, and each binds again; */
+    settle(both, 2); /* and the next look finds the other. */
+    assert(lstat(sky, &info) == 0 && S_ISDIR(info.st_mode) && (info.st_mode & 0777) == 0700);
+    assert(lstat(a.path, &info) == 0 && S_ISSOCK(info.st_mode));
+    assert(lstat(b.path, &info) == 0 && S_ISSOCK(info.st_mode));
+    assert(link_has_neighbour(&a, LINK_RIGHT) && link_has_neighbour(&b, LINK_LEFT));
+    link_traveller_t bird = example(LINK_BIRD, 3), got;
+    assert(link_send(&a, LINK_RIGHT, &bird, 1) == 1);
+    assert(link_receive(&b, &got) == 1);
+    link_close(&a);
+    link_close(&b);
+}
+
+/* The sky made into a link to somewhere else after the windows joined: they do not
+ * follow it. Each is alone, and nothing is listed, bound or swept there; when the
+ * sky is a directory of theirs again, they are back in it. */
+static void test_a_sky_made_into_a_link_is_not_followed(void) {
+    link_t a, b;
+    link_t *both[] = {&a, &b};
+    assert(link_open(&a, sky, 0) == LINK_OK);
+    assert(link_open(&b, sky, 0) == LINK_OK);
+    settle(both, 2);
+    char moved[96], elsewhere[64], decoy[LINK_PATH_SIZE];
+    snprintf(moved, sizeof(moved), "%.40s/moved", scratch);
+    snprintf(elsewhere, sizeof(elsewhere), "%.40s/elsewhere", scratch);
+    assert(rename(sky, moved) == 0);
+    assert(mkdir(elsewhere, 0700) == 0);
+    /* A window's name with a pid that has gone: swept, were it followed. */
+    pid_t gone = a_dead_pid();
+    snprintf(decoy, sizeof(decoy), "%.50s/0000000000000001-%lu", elsewhere, (unsigned long)gone);
+    int fd = socket(AF_UNIX, SOCK_DGRAM, 0);
+    struct sockaddr_un address = {.sun_family = AF_UNIX};
+    snprintf(address.sun_path, sizeof(address.sun_path), "%.90s", decoy);
+    assert(fd >= 0 && bind(fd, (struct sockaddr *)&address, sizeof(address)) == 0);
+    close(fd);
+    assert(symlink(elsewhere, sky) == 0);
+
+    settle(both, 2);
+    assert(!link_has_neighbour(&a, LINK_RIGHT) && !link_has_neighbour(&b, LINK_LEFT));
+    assert(count_entries(elsewhere) == 1); /* The decoy, and nothing of theirs. */
+    struct stat info;
+    assert(lstat(decoy, &info) == 0);
+
+    /* Back as it was: the sky is theirs again, and so are their places in it. */
+    assert(unlink(sky) == 0 && rename(moved, sky) == 0);
+    settle(both, 2);
+    assert(link_has_neighbour(&a, LINK_RIGHT) && link_has_neighbour(&b, LINK_LEFT));
+    link_close(&a);
+    link_close(&b);
+    assert(unlink(decoy) == 0 && rmdir(elsewhere) == 0);
+}
+
 int main(void) {
     make_scratch();
     test_the_wire_format_round_trips();
@@ -1017,6 +1146,10 @@ int main(void) {
         test_files_that_are_not_windows_are_left_alone,
         test_a_window_keeps_its_own_socket_in_a_sky_of_hundreds,
         test_an_entry_that_can_never_be_sent_to_is_let_be,
+        test_only_a_socket_is_swept_whatever_its_name,
+        test_the_sky_is_private_whatever_the_umask,
+        test_a_sky_taken_away_is_made_again_and_joined,
+        test_a_sky_made_into_a_link_is_not_followed,
     };
     for (size_t i = 0; i < sizeof(with_a_sky) / sizeof(*with_a_sky); i++) {
         clear_the_sky();

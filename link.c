@@ -362,11 +362,14 @@ static void read_the_sky(link_t *link, const char *mine, sky_t *sky) {
         if (!parse_name(entry->d_name, &window.who)) continue;
         strcpy(window.name, entry->d_name);
         if (!path_for(link, window.name, path, sizeof(path))) continue;
+        /* A socket first, and then whether its process is there: a file, a link or a
+         * pipe that happens to have a window's name is nobody's leftover, and is let
+         * be whatever its name says. */
+        if (lstat(path, &info) < 0 || !S_ISSOCK(info.st_mode)) continue;
         if (kill((pid_t)window.who.pid, 0) < 0 && errno == ESRCH) {
             unlink(path);
             continue;
         }
-        if (lstat(path, &info) < 0 || !S_ISSOCK(info.st_mode)) continue;
         if (window.who.joined > sky->latest) sky->latest = window.who.joined;
         if (mine == NULL || strcmp(window.name, mine) == 0 || is_refused(link, window.name))
             continue;
@@ -432,8 +435,11 @@ static int configure(int fd) {
 #endif
     /* A larger queue where the system lets us have one, by way of the bytes. It
      * does not lift the count of datagrams Linux allows, which is why they are
-     * posted in batches, but macOS counts bytes and starts at four thousand. */
-    int bytes = 1 << 18;
+     * posted in batches, but macOS counts bytes and starts at four thousand, ten
+     * datagrams. Eighty, a few frames of a busy door from both sides, and no more:
+     * a window that has stopped is posted to until it falls silent, and what is
+     * in its queue when it is killed is lost with it. */
+    int bytes = 80 * LINK_MESSAGE_SIZE;
     setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &bytes, sizeof(bytes));
     return 1;
 }
@@ -518,6 +524,25 @@ static void announce(link_t *link) {
     }
 }
 
+/* The directory, made if it is not there, and fit to hold the sky: a directory that
+ * is ours and that nobody else can write in. Made with the owner's rights whatever
+ * the umask, which may take away the owner's own: a directory the window cannot
+ * write in would be left there for every later run to fail on. */
+static link_status_t sky_status(const char *directory) {
+    if (mkdir(directory, 0700) == 0) {
+        if (chmod(directory, 0700) < 0) return LINK_ERR_DIRECTORY;
+    } else if (errno != EEXIST) {
+        return LINK_ERR_DIRECTORY;
+    }
+    struct stat info;
+    if (lstat(directory, &info) < 0) return LINK_ERR_DIRECTORY;
+    return link_directory_check(&info, geteuid());
+}
+
+static int make_the_sky(const char *directory) {
+    return sky_status(directory) == LINK_OK;
+}
+
 /* Reads the directory and works out who is on either side. If this window's own
  * socket has been taken out from under it (a tidy up of the temporary
  * directory, a careless rm) it is made again, under the same name, so that it
@@ -526,16 +551,26 @@ static void announce(link_t *link) {
 static void scan(link_t *link) {
     sky_t sky;
     struct stat info;
-    read_the_sky(link, link->name, &sky);
+    /* The directory as it is now, and not as it was when the window joined: taken
+     * away, it is made again and the window joins it again; made into something
+     * that will not do, a link or another's, the window is alone, and neither lists
+     * nor binds nor sweeps anything through it. */
     link->scanned = link->now;
     link->scan_wanted = 0;
-    if (lstat(link->path, &info) < 0 || !S_ISSOCK(info.st_mode)) {
+    int fit = make_the_sky(link->directory);
+    /* Its own socket, made again if it has been taken away, and then the windows
+     * beside it, in the same look: it is back in its place at once. */
+    if (fit && (lstat(link->path, &info) < 0 || !S_ISSOCK(info.st_mode))) {
+        int old = link->fd;
+        fit = bind_the_socket(link) == LINK_OK;
+        if (fit && old >= 0) close(old);
+    }
+    if (!fit) {
         adopt(&link->next[LINK_LEFT], NULL);
         adopt(&link->next[LINK_RIGHT], NULL);
-        int old = link->fd;
-        if (bind_the_socket(link) == LINK_OK && old >= 0) close(old);
         return;
     }
+    read_the_sky(link, link->name, &sky);
     adopt(&link->next[LINK_LEFT], sky.has_left ? &sky.left : NULL);
     adopt(&link->next[LINK_RIGHT], sky.has_right ? &sky.right : NULL);
 }
@@ -566,10 +601,7 @@ link_status_t link_open(link_t *link, const char *directory, double now) {
         return LINK_ERR_PATH_TOO_LONG;
     strcpy(link->directory, directory);
 
-    if (mkdir(directory, 0700) < 0 && errno != EEXIST) return LINK_ERR_DIRECTORY;
-    struct stat info;
-    if (lstat(directory, &info) < 0) return LINK_ERR_DIRECTORY;
-    link_status_t status = link_directory_check(&info, geteuid());
+    link_status_t status = sky_status(directory);
     if (status != LINK_OK) return status;
 
     /* After the last to join, even if the clock has been set back since. */
@@ -601,7 +633,11 @@ void link_close(link_t *link) {
 void link_update(link_t *link, double now) {
     if (!link->opened) return;
     link->now = now;
-    if (!link->scan_wanted && now - link->scanned < SCAN_SECONDS) return;
+    double since = now - link->scanned;
+    /* A scan that is wanted, because somebody new has written or a neighbour has
+     * refused, is hurried, but no more often than HURRY_SECONDS whatever asks for
+     * it: a flood of strangers is not a listing of the directory a frame. */
+    if (since < SCAN_SECONDS && !(link->scan_wanted && since >= HURRY_SECONDS)) return;
     scan(link);
     announce(link);
 }

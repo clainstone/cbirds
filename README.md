@@ -87,13 +87,13 @@ Linux and macOS, on x86_64 and aarch64. With Nix and the `nix-command` and
 `flakes` experimental features enabled, run directly from this fork:
 
 ```sh
-nix run github:entropie/cbirds
+nix run github:clainstone/cbirds
 ```
 
 Pass cbirds options after `--`, for example for sprites in Kitty or Ghostty:
 
 ```sh
-nix run github:entropie/cbirds -- --render kitty --hawks 2 --color ice
+nix run github:clainstone/cbirds -- --render kitty --hawks 2 --color ice
 ```
 
 From a local checkout of this fork, use `nix run .`.

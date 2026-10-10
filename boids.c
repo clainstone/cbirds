@@ -1695,6 +1695,13 @@ static struct {
     int needs, has; /* Birds a text takes and the flock has, when that is what failed. */
     int failures, was_up;
     int failed_columns, failed_rows;
+    /* What the last failure was, kept apart from the layouts that came after it,
+     * which say why they fitted and not why that one did not. */
+    sign_failure_t failed_why;
+    int failed_needs, failed_has;
+    /* The most cells any text of this sign lights, and the birds the last picture
+     * was drawn with: what a window in a shared sky keeps for it. */
+    int budget, drawn_with;
     int twelve_hours;
     int seconds;       /* The clock shows them. */
     unsigned seed;     /* --seed, for what a picture picks without the flock's numbers. */
@@ -1938,6 +1945,7 @@ static int sign_place(const char *clean, int reference_columns, int lift_the_col
                 if (font_text_cells(time_text) > budget) budget = font_text_cells(time_text);
             }
     }
+    the_sign.budget = budget;
     int per_cell =
         (int)(near_birds * sign_share(SIGN_WRITER_SHARE, SIGN_WRITER_SHARE_SMALL)) / budget;
     if (per_cell > SIGN_PER_CELL_MAX) per_cell = SIGN_PER_CELL_MAX;
@@ -2211,8 +2219,12 @@ static int sign_write(const bird_t *birds) {
         the_sign.failures++;
         the_sign.failed_columns = screen.cols;
         the_sign.failed_rows = screen.rows;
+        the_sign.failed_why = the_sign.why;
+        the_sign.failed_needs = the_sign.needs;
+        the_sign.failed_has = the_sign.has;
         return 0;
     }
+    if (the_sign.kind == SIGN_PICTURE) the_sign.drawn_with = formation.count;
     snprintf(the_sign.written, sizeof(the_sign.written), "%s", text);
     formation.until = -1; /* A sign lets go when it is time, not when the intro is. */
     the_sign.up = 1;
@@ -2244,10 +2256,10 @@ static void sign_report_failure(void) {
                        : the_sign.kind == SIGN_PICTURE ? "the picture"
                                                        : "the text";
     char reason[160];
-    if (the_sign.why == SIGN_TOO_FEW_BIRDS)
+    if (the_sign.failed_why == SIGN_TOO_FEW_BIRDS)
         snprintf(reason, sizeof(reason),
-                 "it takes %d birds to write and the flock has %d to write with", the_sign.needs,
-                 the_sign.has);
+                 "it takes %d birds to write and the flock has %d to write with",
+                 the_sign.failed_needs, the_sign.failed_has);
     else if (the_sign.kind == SIGN_PICTURE)
         snprintf(reason, sizeof(reason), "there is no room for it");
     else
@@ -4221,39 +4233,92 @@ static int a_bird_is_writing_a_sign(int index) {
            formation.slot[index] >= 0;
 }
 
+/* Travellers that came when there was no place for them. A window that has said it
+ * is full has neighbours that have not heard it yet, two of them may post to it in
+ * the same frame, and a paused window takes nobody in: what comes in the meantime
+ * waits here, at the door, and comes in as places free, in the order it came,
+ * instead of being lost. As many birds as a window holds wait, and as many hawks as
+ * four windows do; past that, which takes a row of windows full at once, a
+ * traveller is let go. */
+enum { SKY_WAITING_HAWKS = 4 * MAX_HAWKS };
+static struct {
+    link_traveller_t birds[MAX_BIRDS];
+    int first_bird, birds_waiting;
+    link_traveller_t hawks[SKY_WAITING_HAWKS];
+    int hawks_waiting;
+} at_the_door;
+
 static void sky_keep_up(void) {
     if (!the_row.opened) return;
     link_update(&the_row, clock_state.seconds);
-    /* A window writing its intro has no room, so that nobody posts to it. */
-    int room = !the_intro_is_being_written();
-    link_set_room(&the_row, room && config.birds < MAX_BIRDS - SKY_HEADROOM,
-                  room && config.hawks < MAX_HAWKS);
+    /* A window writing its intro has no room, and nor has one that is paused, so
+     * that nobody posts to it; and those at its door are as good as in. */
+    int room = !the_intro_is_being_written() && !paused;
+    link_set_room(&the_row,
+                  room && config.birds + at_the_door.birds_waiting < MAX_BIRDS - SKY_HEADROOM,
+                  room && config.hawks + at_the_door.hawks_waiting < MAX_HAWKS);
     sky_look_at_the_doors();
 }
 
-/* Whoever has come in since the last frame, at the end of the flock. A bird for a
- * window that has filled in the meantime is let go: the window said so a frame
- * ago, and a bird that crossed in the dark is one nobody will miss. */
+/* A bird that comes in, at the end of the flock. */
+static void sky_bird_comes_in(bird_t *birds, const link_traveller_t *traveller) {
+    land_a_bird(&birds[config.birds], traveller);
+    forget_what_is_kept_for_a_bird(config.birds);
+    /* A picture colours every bird by its place in the array, flying or home; one
+     * that comes in keeps the colour it came with. */
+    picture_shade[config.birds] = birds[config.birds].shade;
+    config.birds++;
+    the_sign_follows_the_traffic(1);
+}
+
+static void sky_hawk_comes_in(const link_traveller_t *traveller) {
+    land_a_hawk(&hawks[config.hawks], traveller);
+    config.hawks++;
+}
+
+/* Whoever has come in since the last frame, at the end of the flock: first those
+ * that were waiting at the door, as places have freed, and then the new, which
+ * wait too while anybody is waiting before them or there is no place. */
 static void sky_take_in(bird_t *birds, int *live) {
     link_traveller_t traveller;
     if (!the_row.opened || the_intro_is_being_written()) return; /* They wait in the post. */
+    while (!paused && at_the_door.birds_waiting > 0 && config.birds < MAX_BIRDS) {
+        sky_bird_comes_in(birds, &at_the_door.birds[at_the_door.first_bird]);
+        at_the_door.first_bird = (at_the_door.first_bird + 1) % MAX_BIRDS;
+        at_the_door.birds_waiting--;
+    }
+    while (!paused && at_the_door.hawks_waiting > 0 && config.hawks < MAX_HAWKS) {
+        sky_hawk_comes_in(&at_the_door.hawks[0]);
+        at_the_door.hawks_waiting--;
+        memmove(at_the_door.hawks, at_the_door.hawks + 1,
+                sizeof(at_the_door.hawks[0]) * (size_t)at_the_door.hawks_waiting);
+    }
     for (int taken = 0; taken < MAX_BIRDS && link_receive(&the_row, &traveller); taken++) {
         if (traveller.kind == LINK_HAWK) {
-            if (config.hawks >= MAX_HAWKS) continue;
-            land_a_hawk(&hawks[config.hawks], &traveller);
-            config.hawks++;
+            if (!paused && at_the_door.hawks_waiting == 0 && config.hawks < MAX_HAWKS)
+                sky_hawk_comes_in(&traveller);
+            else if (at_the_door.hawks_waiting < SKY_WAITING_HAWKS)
+                at_the_door.hawks[at_the_door.hawks_waiting++] = traveller;
         } else {
-            if (config.birds >= MAX_BIRDS) continue;
-            land_a_bird(&birds[config.birds], &traveller);
-            forget_what_is_kept_for_a_bird(config.birds);
-            /* A picture colours every bird by its place in the array, flying or home;
-             * one that comes in keeps the colour it came with. */
-            picture_shade[config.birds] = birds[config.birds].shade;
-            config.birds++;
-            the_sign_follows_the_traffic(1);
+            if (!paused && at_the_door.birds_waiting == 0 && config.birds < MAX_BIRDS)
+                sky_bird_comes_in(birds, &traveller);
+            else if (at_the_door.birds_waiting < MAX_BIRDS)
+                at_the_door
+                    .birds[(at_the_door.first_bird + at_the_door.birds_waiting++) % MAX_BIRDS] =
+                    traveller;
         }
     }
     *live = config.birds;
+}
+
+/* A window that holds a sign keeps the birds it takes to write it: twice the cells
+ * the longest text of it lights (the clock's, through every minute), or half the
+ * birds its picture was drawn with. Between two holds every bird of it is free, and
+ * a door that took them all would leave a sign with nobody to write it. */
+static int birds_the_sign_keeps(void) {
+    if (!a_sign_is_asked_for()) return 0;
+    if (the_sign.kind == SIGN_PICTURE) return the_sign.drawn_with / 2;
+    return 2 * the_sign.budget;
 }
 
 /* Everything that has flown out through a door since the last frame is posted, the
@@ -4268,9 +4333,11 @@ static void sky_hand_over(bird_t *birds, int *live) {
         int hawk_door = side == LINK_LEFT ? open_edges.hawk_left : open_edges.hawk_right;
         link_traveller_t post[SKY_PER_FRAME];
         int at[SKY_PER_FRAME], count = 0;
+        int may_go = config.birds - birds_the_sign_keeps();
 
         /* From the end, so that taking one out moves nothing still to be sent. */
-        for (int i = config.birds - 1; door && i >= 0 && count < SKY_PER_FRAME; i--) {
+        for (int i = config.birds - 1; door && i >= 0 && count < SKY_PER_FRAME && count < may_go;
+             i--) {
             double middle = birds[i].x + half;
             double reach = side == LINK_RIGHT ? middle - screen.width : -middle;
             if (side == LINK_LEFT ? middle >= 0 : middle < screen.width) continue;
@@ -4296,6 +4363,8 @@ static void sky_hand_over(bird_t *birds, int *live) {
 static void sky_leave(void) {
     link_close(&the_row);
     memset(&open_edges, 0, sizeof(open_edges));
+    /* Those at the door go with the window, as the ones in it do. */
+    at_the_door.birds_waiting = at_the_door.hawks_waiting = at_the_door.first_bird = 0;
 }
 
 /* Joins the row of windows, or says why it cannot and ends the run: before the

@@ -405,22 +405,27 @@ leaves the row, and the two beside it become neighbours.
 
 Each window keeps its own settings, its own `--birds` among them, and its birds
 come and go: a window can empty and fill again. A window that holds 4080 birds
-says so, and its neighbours treat that edge as a wall until it has room. A bird
-sees only the birds of its own window, so a flock does not look across the gap;
-it follows its leaders across. While a window is writing BOIDS it has no room
-and takes nobody in, and nobody leaves it.
+says so, and its neighbours treat that edge as a wall until it has room; the
+few already on their way when it said so wait at its door and come in as places
+free, so no bird is lost between two windows. A bird sees only the birds of its
+own window, so a flock does not look across the gap; it follows its leaders
+across. While a window is writing BOIDS, or is paused, it has no room and takes
+nobody in, and nobody leaves it.
 
 A sign goes with it, `--say`, `--clock` or `--picture`. The birds that write
 hold their places and never cross, and the rest of the flock crosses as it does
-without one. `--screensaver` goes with it too: any key quits that window, and it
-leaves the sky.
+without one, but a window with a sign keeps the birds it takes to write it.
+`--screensaver` goes with it too: any key quits that window, and it leaves the
+sky.
 
 The windows talk through Unix sockets in a directory that is yours alone:
 `$XDG_RUNTIME_DIR/cbirds`, or `$TMPDIR/cbirds-UID`, or `/tmp/cbirds-UID`.
 cbirds refuses to use one that belongs to somebody else or that others can write
-in, and says which. The sockets are removed when a window quits or is
-interrupted, and the one a killed window leaves behind is swept away by the
-others.
+in, and says which, and it looks again every second: a directory that has been
+removed is made again and the windows find each other in it, and one that has
+been made into anything else leaves each window alone. The sockets are removed
+when a window quits or is interrupted, and the one a killed window leaves behind
+is swept away by the others.
 
 A letter has its home in its own window, so `--link` with `--text` or with text
 piped in is refused, and so is `--link` with `--record` or `--bench`: it joins

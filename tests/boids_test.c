@@ -138,6 +138,7 @@ static void reset_test_config(void) {
     apply_notches();
     share_the_sky = 0;
     memset(&open_edges, 0, sizeof(open_edges));
+    at_the_door.birds_waiting = at_the_door.hawks_waiting = at_the_door.first_bird = 0;
 }
 
 /* The panel is drawn with multi byte glyphs, so its width is a count of cells,
@@ -9123,17 +9124,28 @@ static void test_no_bird_or_hawk_lands_past_the_arrays(void) {
     int posted = 0;
     for (int batch = 0; batch < 9; batch++)
         posted += link_send(&beside, LINK_RIGHT, post, LINK_BATCH);
-    assert(posted > 40);
+    assert(posted > 40 && posted % LINK_BATCH == 0);
+    int birds_posted = posted / LINK_BATCH * 6, hawks_posted = posted / LINK_BATCH * 2;
     int live = config.birds;
     sky_take_in(birds, &live);
     assert(config.birds == MAX_BIRDS && live == MAX_BIRDS && config.hawks == MAX_HAWKS);
     /* The last place is the flock's, and what was written there is a bird. */
     assert(birds[MAX_BIRDS - 1].direction == 1);
-    /* Nothing is left in the post to land when there is room again. */
+    /* The rest wait at the door, none lost but a hawk past four windows' worth, and
+     * the window says it is full while they do. */
+    int hawks_kept = hawks_posted - 1 < SKY_WAITING_HAWKS ? hawks_posted - 1 : SKY_WAITING_HAWKS;
+    assert(at_the_door.birds_waiting == birds_posted - 3);
+    assert(at_the_door.hawks_waiting == hawks_kept);
+    sky_keep_up();
+    assert(!the_row.birds_ok && !the_row.hawks_ok);
+    /* Room again, and they come in. */
     config.birds = 100;
+    config.hawks = 0;
     live = 100;
     sky_take_in(birds, &live);
-    assert(config.birds == 100);
+    assert(config.birds == 100 + birds_posted - 3 && live == config.birds);
+    assert(config.hawks == MAX_HAWKS && at_the_door.hawks_waiting == hawks_kept - MAX_HAWKS);
+    assert(at_the_door.birds_waiting == 0);
 
     free(birds);
     share_the_sky = 0;
@@ -9681,6 +9693,258 @@ static void test_a_sky_that_cannot_be_joined_is_said_before_the_screen_is_taken(
     assert(rmdir(home) == 0);
 }
 
+/* A paused window says it has no room, for birds or for hawks, so that it does not
+ * take its neighbour's flock in to stand frozen at its edge. What was posted before
+ * the word went round waits at the door, and comes in when it goes on. */
+static void test_a_paused_window_takes_nobody_in(void) {
+    static bird_t birds[MAX_BIRDS];
+    link_traveller_t got;
+    reset_test_config();
+    set_test_screen(800, 480);
+    render_mode = RENDER_UNSET;
+    formation_clear();
+    join_the_sky(0); /* The neighbour is on the left. */
+    config.birds = 10;
+    for (int i = 0; i < config.birds; i++) birds[i] = (bird_t){.x = 400, .y = 240};
+    link_traveller_t post[3] = {{.kind = LINK_BIRD, .height = 0.5, .reach = 2, .direction = 1},
+                                {.kind = LINK_BIRD, .height = 0.6, .reach = 2, .direction = 1},
+                                {.kind = LINK_HAWK, .height = 0.4, .reach = 2, .direction = 1}};
+    assert(link_send(&beside, LINK_RIGHT, post, 3) == 3); /* Before it has heard. */
+
+    paused = 1;
+    sky_keep_up();
+    int live = config.birds;
+    sky_take_in(birds, &live);
+    assert(config.birds == 10 && config.hawks == 0);
+    assert(at_the_door.birds_waiting == 2 && at_the_door.hawks_waiting == 1);
+    while (link_receive(&beside, &got)) {
+    }
+    assert(!link_edge_open(&beside, LINK_RIGHT, LINK_BIRD));
+    assert(!link_edge_open(&beside, LINK_RIGHT, LINK_HAWK));
+
+    paused = 0;
+    sky_keep_up();
+    sky_take_in(birds, &live);
+    assert(config.birds == 12 && live == 12 && config.hawks == 1);
+    assert(at_the_door.birds_waiting == 0 && at_the_door.hawks_waiting == 0);
+    while (link_receive(&beside, &got)) {
+    }
+    assert(link_edge_open(&beside, LINK_RIGHT, LINK_BIRD));
+    leave_the_sky();
+    reset_test_config();
+}
+
+/* A window with a sign keeps the birds it takes to write it, the longest text of it
+ * twice over: between two holds every bird of it is free and its free birds go out
+ * of its door, but never so many that the sign has nobody to write it next. */
+static void test_a_window_with_a_sign_keeps_the_birds_to_write_it(void) {
+    static bird_t birds[MAX_BIRDS];
+    link_traveller_t got;
+    reset_sign_state();
+    apply_screen_size(120, 40, 960, 640);
+    render_mode = RENDER_UNSET;
+    ask_for_a_sign("HELLO");
+    begin_the_sign();
+    config.birds = 600;
+    seed_random(5);
+    initialize_birds(birds);
+    assert(sign_write(birds) && the_sign.budget > 0);
+    int keeps = birds_the_sign_keeps();
+    assert(keeps == 2 * the_sign.budget && keeps < config.birds);
+    formation_clear(); /* Between two holds: every bird is free. */
+    join_the_sky(1);   /* A neighbour on the right, with all the room there is. */
+    int live = config.birds;
+    for (int frame = 0; frame < 40; frame++) {
+        for (int i = 0; i < config.birds; i++) birds[i].x = screen.width + 5; /* All out. */
+        sky_keep_up();
+        sky_hand_over(birds, &live);
+        while (link_receive(&beside, &got)) {
+        }
+        link_update(&beside, clock_state.seconds);
+        link_set_room(&beside, 1, 1);
+        clock_state.seconds += 1.0 / 60;
+    }
+    assert(config.birds == keeps && live == keeps);
+    leave_the_sky();
+    reset_sign_state();
+}
+
+/* The reason a sign could not be laid out is the reason of that time, said at the end
+ * of the run, even when the layouts after it fitted and said why they did. */
+static void test_a_sign_failure_is_said_for_what_it_was(void) {
+    static bird_t birds[MAX_BIRDS];
+    reset_sign_state();
+    apply_screen_size(120, 40, 960, 640);
+    render_mode = RENDER_UNSET;
+    ask_for_a_sign("HELLO");
+    begin_the_sign();
+    config.birds = 5; /* Too few to write it. */
+    seed_random(5);
+    initialize_birds(birds);
+    assert(!sign_write(birds) && the_sign.failures == 1);
+    config.birds = 600;
+    initialize_birds(birds);
+    assert(sign_write(birds) && the_sign.why == SIGN_FITS);
+
+    char path[600], said[512];
+    scratch_file(path, sizeof(path), "sign_failure.txt");
+    fflush(stderr);
+    int saved = dup(STDERR_FILENO), file = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    assert(saved >= 0 && file >= 0 && dup2(file, STDERR_FILENO) == STDERR_FILENO);
+    sign_report_failure();
+    fflush(stderr);
+    assert(dup2(saved, STDERR_FILENO) == STDERR_FILENO);
+    close(saved);
+    close(file);
+    file = open(path, O_RDONLY);
+    assert(file >= 0);
+    read_to_the_end(file, said, sizeof(said));
+    close(file);
+    assert(remove(path) == 0);
+    assert(strstr(said, "the flock has 5 to write with") != NULL);
+    assert(strstr(said, "too big") == NULL);
+    reset_sign_state();
+}
+
+/* Whether the sky holds these windows, by their pids in the order they joined. */
+static int the_sky_holds(const char *sky_path, const pid_t *pids, int count) {
+    DIR *sky = opendir(sky_path);
+    if (sky == NULL) return count == 0;
+    char names[8][64];
+    int found = 0;
+    for (struct dirent *entry; (entry = readdir(sky)) != NULL;) {
+        if (entry->d_name[0] == '.') continue;
+        if (found < 8) snprintf(names[found], sizeof(names[found]), "%.63s", entry->d_name);
+        found++;
+    }
+    closedir(sky);
+    if (found != count) return 0;
+    qsort(names, (size_t)found, sizeof(names[0]), (int (*)(const void *, const void *))strcmp);
+    for (int i = 0; i < count; i++) {
+        const char *dash = strchr(names[i], '-');
+        if (dash == NULL || strtol(dash + 1, NULL, 10) != pids[i]) return 0;
+    }
+    return 1;
+}
+
+/* A window of the program on a terminal of its own, and what has been seen of it. */
+typedef struct {
+    int master, sizing, drawn;
+    size_t seen;
+    pid_t pid;
+    struct timespec drawn_at;
+} window_on_a_terminal_t;
+
+/* Reads what the windows have written, so that none is held up by a full terminal,
+ * and notes when each has taken its screen: a key before that is the terminal's,
+ * read while it is asked its colours. */
+static void read_the_windows(window_on_a_terminal_t *windows, int count) {
+    static const char taken[] = ALT_SCREEN_ON;
+    for (int k = 0; k < count; k++) {
+        window_on_a_terminal_t *w = &windows[k];
+        char chunk[4096];
+        ssize_t got;
+        while (readable_within(w->master, 0) > 0 &&
+               (got = read(w->master, chunk, sizeof(chunk))) > 0)
+            for (ssize_t i = 0; i < got && !w->drawn; i++) {
+                w->seen = chunk[i] == taken[w->seen] ? w->seen + 1 : (chunk[i] == '\033' ? 1 : 0);
+                if (w->seen == sizeof(taken) - 1) {
+                    w->drawn = 1;
+                    clock_gettime(CLOCK_MONOTONIC, &w->drawn_at);
+                }
+            }
+    }
+}
+
+/* Two windows of the program itself, each on a terminal of its own, in one sky, as
+ * two terminals side by side have it: they lie in the order they started, a q takes
+ * the first out of the sky at once and leaves it to the second, a q takes that one
+ * out too, and both end well with the sky empty. */
+static void test_two_windows_of_the_program_share_a_sky_and_leave_it(void) {
+    char home[64], sky_path[100];
+    snprintf(home, sizeof(home), "/tmp/cbs.XXXXXX");
+    assert(mkdtemp(home) != NULL);
+    snprintf(sky_path, sizeof(sky_path), "%s/cbirds", home);
+    window_on_a_terminal_t windows[2];
+    memset(windows, 0, sizeof(windows));
+    pid_t pids[2];
+    struct timespec began, now;
+    for (int w = 0; w < 2; w++) {
+        windows[w].master = posix_openpt(O_RDWR | O_NOCTTY);
+        int master = windows[w].master;
+        assert(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0);
+        const char *name = ptsname(master);
+        assert(name != NULL);
+        windows[w].sizing = open(name, O_RDWR | O_NOCTTY);
+        assert(windows[w].sizing >= 0);
+        struct winsize size = {.ws_row = 24, .ws_col = 80, .ws_xpixel = 0, .ws_ypixel = 0};
+        assert(ioctl(windows[w].sizing, TIOCSWINSZ, &size) == 0);
+        fflush(NULL);
+        pids[w] = windows[w].pid = fork();
+        assert(pids[w] >= 0);
+        if (pids[w] == 0) {
+            alarm(60);
+            if (setsid() < 0) _exit(90);
+            int terminal = open(name, O_RDWR);
+            if (terminal < 0 || ioctl(terminal, TIOCSCTTY, 0) < 0) _exit(91);
+            int quiet = open("/dev/null", O_WRONLY);
+            if (quiet < 0 || dup2(terminal, STDIN_FILENO) < 0 ||
+                dup2(terminal, STDOUT_FILENO) < 0 || dup2(quiet, STDERR_FILENO) < 0)
+                _exit(92);
+            as_a_fresh_run();
+            setenv("XDG_RUNTIME_DIR", home, 1);
+            char *argv[] = {"cbirds", "--link", "--seed", w == 0 ? "3" : "4", NULL};
+            exit(cbirds_application_main(4, argv));
+        }
+        /* The first is in the sky before the second starts, which puts it first. */
+        clock_gettime(CLOCK_MONOTONIC, &began);
+        for (;;) {
+            read_the_windows(windows, w + 1);
+            if (the_sky_holds(sky_path, pids, w + 1)) break;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            assert(elapsed_seconds(&began, &now) < 20);
+            readable_within(master, 20);
+        }
+    }
+    for (int w = 0; w < 2; w++) {
+        /* Its screen taken, and a moment after: the keys are its own. */
+        clock_gettime(CLOCK_MONOTONIC, &began);
+        for (;;) {
+            read_the_windows(windows, 2);
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            if (windows[w].drawn && elapsed_seconds(&windows[w].drawn_at, &now) > 0.5) break;
+            assert(elapsed_seconds(&began, &now) < 20);
+            readable_within(windows[w].master, 20);
+        }
+        assert(write(windows[w].master, "q", 1) == 1);
+        /* Out of the sky at the key, before its flock has flown off the top. */
+        clock_gettime(CLOCK_MONOTONIC, &began);
+        for (;;) {
+            read_the_windows(windows, 2);
+            if (the_sky_holds(sky_path, pids + w + 1, 1 - w)) break;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            assert(elapsed_seconds(&began, &now) < 20);
+            readable_within(windows[w].master, 20);
+        }
+    }
+    int statuses[2] = {0, 0}, ended[2] = {0, 0};
+    clock_gettime(CLOCK_MONOTONIC, &began);
+    while (!ended[0] || !ended[1]) {
+        read_the_windows(windows, 2);
+        for (int k = 0; k < 2; k++)
+            if (!ended[k] && waitpid(pids[k], &statuses[k], WNOHANG) == pids[k]) ended[k] = 1;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        assert(elapsed_seconds(&began, &now) < 30);
+        readable_within(windows[0].master, 20);
+    }
+    for (int w = 0; w < 2; w++) {
+        assert(WIFEXITED(statuses[w]) && WEXITSTATUS(statuses[w]) == EXIT_SUCCESS);
+        close(windows[w].sizing);
+        close(windows[w].master);
+    }
+    assert(rmdir(sky_path) == 0 && rmdir(home) == 0);
+}
+
 /* A window that is told to die leaves no socket behind, whichever way. */
 static void test_a_signal_removes_the_socket(void) {
     static const int SIGNALS[] = {SIGINT,  SIGTERM, SIGHUP, SIGQUIT,
@@ -9928,6 +10192,10 @@ int main(void) {
     test_a_shared_sky_cannot_be_benchmarked_or_recorded();
     test_a_shared_sky_is_refused_with_a_text();
     test_a_sky_that_cannot_be_joined_is_said_before_the_screen_is_taken();
+    test_a_paused_window_takes_nobody_in();
+    test_a_window_with_a_sign_keeps_the_birds_to_write_it();
+    test_a_sign_failure_is_said_for_what_it_was();
+    test_two_windows_of_the_program_share_a_sky_and_leave_it();
     test_no_bird_or_hawk_lands_past_the_arrays();
     test_everything_kept_for_a_bird_goes_with_it_and_a_bird_that_lands_has_none();
     test_nothing_crosses_while_the_intro_is_written();

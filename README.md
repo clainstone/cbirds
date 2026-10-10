@@ -211,6 +211,10 @@ git log --oneline --graph --color=always | cbirds
 cbirds --text poem.txt
 ```
 
+<p align="center"><img src="docs/letters.gif" alt="A bird drawn in letters, a list of settings beside it and rows of colour blocks: the letters take flight as a wave runs through them, fly as a flock, and land on the cells they left"></p>
+
+<p align="center"><code>cat docs/neofetch.txt | cbirds</code></p>
+
 It opens with the text exactly as the command printed it, in its own colours,
 laid out as a terminal would have laid it out: cbirds reads the escape
 sequences, so a logo with its information beside it comes out as a logo with its

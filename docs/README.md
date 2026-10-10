@@ -36,6 +36,15 @@ make
 ./cbirds --record docs/sextants.gif --record-fps 50 --record-seconds 7 \
          --record-size 80x22 -n 360 -s 12 --color acid --render sextants --speed 2 --seed 5
 
+# Text as the flock: a screenful like the one fastfetch prints, from a file kept
+# here so that the clip can be made again. It opens with the text at rest, a
+# wave lifts the letters, they fly as a flock, and they land on the cells they
+# left. A GIF of text is drawn in cells of 12 by 20 pixels, so 64x16 cells is
+# 768x320, wider than the others, which is what it takes to read it. The
+# letters move slowly, so ten frames a second will do.
+cat docs/neofetch.txt | ./cbirds --record docs/letters.gif --record-fps 10 \
+         --record-size 64x16 --seed 5
+
 # A sign. The flock writes it from the first frame and holds it for thirty
 # seconds at least, so eight seconds show the writing, the hovering and the
 # flock wheeling round it. 400 birds are enough for ten letters on two lines.

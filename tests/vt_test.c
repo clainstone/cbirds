@@ -458,8 +458,26 @@ static void test_erase_in_display(void) {
     feed(&vt, "\033[2J");
     assert(row_is(&vt, 0, "") && row_is(&vt, 1, "") && row_is(&vt, 2, ""));
     assert(vt.cursor_row == 1 && vt.cursor_col == 2); /* ED leaves the cursor where it was. */
+    /* 3 is the scrollback, not the screen: `clear` sends it after 2, and a command
+     * that sends it after its text keeps the text. */
     feed(&vt, "x\033[3J");
-    assert(row_is(&vt, 1, ""));
+    assert(row_is(&vt, 1, "  x"));
+    vt_destroy(&vt);
+}
+
+/* Next line is the start of the line below. A character set chosen with ESC ( is
+ * read whole, and a new escape or a control inside it does what it does anywhere;
+ * so does a control inside a sequence that is being ignored. */
+static void test_next_line_and_escapes_that_others_break_into(void) {
+    vt_t vt = make(10, 4);
+    feed(&vt, "ab\033Ecd");
+    assert(row_is(&vt, 0, "ab") && row_is(&vt, 1, "cd"));
+    feed(&vt, "\033(\033[2;5Hx"); /* ESC ( cut short by a CUP, then x. */
+    assert(row_is(&vt, 1, "cd  x"));
+    feed(&vt, "\033(\nBy"); /* A line feed inside, then B ends it, then y. */
+    assert(row_is(&vt, 2, "y"));
+    feed(&vt, "\033[1$;\npz"); /* An intermediate then a parameter: ignored to p. */
+    assert(row_is(&vt, 3, "z"));
     vt_destroy(&vt);
 }
 
@@ -958,6 +976,7 @@ int main(void) {
     test_columns_and_rows_are_counted_from_one();
     test_erase_in_line();
     test_erase_in_display();
+    test_next_line_and_escapes_that_others_break_into();
     test_erasing_paints_the_background_in_use();
     test_sgr_sets_the_sixteen_colours();
     test_sgr_sets_256_and_24_bit_colours();

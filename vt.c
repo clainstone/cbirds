@@ -491,9 +491,11 @@ static void erase_in_display(vt_t *vt) {
     } else if (mode == 1) {
         erase_lines(vt, 0, vt->cursor_row);
         erase_cells(vt, vt->cursor_row, 0, vt->cursor_col + 1);
-    } else if (mode == 2 || mode == 3) {
+    } else if (mode == 2) {
         erase_lines(vt, 0, vt->rows);
     }
+    /* 3 is the scrollback, which xterm and VTE erase and leave the screen as it is;
+     * there is no scrollback here, so it erases nothing. */
 }
 
 static void erase_in_line(vt_t *vt) {

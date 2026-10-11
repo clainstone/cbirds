@@ -30,6 +30,8 @@ struct gif_writer {
     size_t written;
     gif_status_t status;
     int have_palette;
+    uint8_t reserved[GIF_RESERVED_MAX][3]; /* Colours the table must have, as given. */
+    int reserved_count;
     uint8_t palette[GIF_COLOURS][3];
     uint8_t seeds[GIF_SEEDS][3]; /* Colours promised for later frames. */
     int seed_count;
@@ -107,11 +109,30 @@ static gif_status_t build_palette(gif_writer_t *w, const png_image_t *frame) {
             sums[(size_t)bucket * 3 + (size_t)c] += (uint32_t)w->seeds[i][c] * SEED_WEIGHT;
     }
 
+    /* The colours the first frame does not have and must, which only a space asks
+     * for, come first, exactly as given, in the order given, and what else is in
+     * their buckets is drawn in them: a bucket is too small for anyone to tell. Two
+     * of them in one bucket are one entry, their mean. */
+    int chosen[GIF_COLOURS];
+    int members[GIF_RESERVED_MAX] = {0};
+    unsigned totals[GIF_RESERVED_MAX][3] = {{0}};
+    int used = 0;
+    for (int r = 0; r < w->reserved_count; r++) {
+        int bucket = bucket_of(w->reserved[r]), entry = 0;
+        while (entry < used && chosen[entry] != bucket) entry++;
+        if (entry == used) chosen[used++] = bucket;
+        members[entry]++;
+        for (int c = 0; c < 3; c++) totals[entry][c] += w->reserved[r][c];
+    }
+    for (int entry = 0; entry < used; entry++) {
+        for (int c = 0; c < 3; c++)
+            w->palette[entry][c] = (uint8_t)(totals[entry][c] / (unsigned)members[entry]);
+        counts[chosen[entry]] = 0;
+    }
+
     /* The top entries by count, chosen by repeated selection: two hundred and
      * fifty six passes over the buckets is nothing next to the pixels. */
-    int chosen[GIF_COLOURS];
-    int used = 0;
-    for (int slot = 0; slot < GIF_COLOURS; slot++) {
+    for (int slot = used; slot < GIF_COLOURS; slot++) {
         int best = -1;
         uint32_t best_count = 0;
         for (int bucket = 0; bucket < QUANT_BUCKETS; bucket++)
@@ -280,6 +301,15 @@ gif_status_t gif_hint_colours(gif_writer_t *w, const uint8_t *rgb, int count) {
     for (int i = 0; i < count && w->seed_count < GIF_SEEDS; i++)
         memcpy(w->seeds[w->seed_count++], rgb + (size_t)i * 3, 3);
     return GIF_OK;
+}
+
+gif_status_t gif_reserve_colours(gif_writer_t *w, const uint8_t (*colours)[3], int count) {
+    if (w == NULL || count < 0 || (count > 0 && colours == NULL) || w->have_palette ||
+        w->frames > 0 || count > GIF_RESERVED_MAX - w->reserved_count)
+        return GIF_ERR_ARGUMENT;
+    if (count > 0) memcpy(w->reserved[w->reserved_count], colours, (size_t)count * 3);
+    w->reserved_count += count;
+    return w->status;
 }
 
 gif_status_t gif_add_frame(gif_writer_t *w, const png_image_t *frame) {

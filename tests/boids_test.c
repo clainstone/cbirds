@@ -135,6 +135,12 @@ static void reset_test_config(void) {
     config.hawks = 0;
     matrix_mode = 0;
     unlock_fps = 0;
+    /* The space is the one thing a test may leave running, and the flat flock must
+     * not find it there. */
+    end_the_sky();
+    sky_mode = 0;
+    sky_picture_size = 0;
+    ink_is_known = 0;
     apply_notches();
     share_the_sky = 0;
     memset(&open_edges, 0, sizeof(open_edges));
@@ -4763,16 +4769,23 @@ static void test_the_short_help_is_one_screen_at_eighty_columns(void) {
     fclose(help);
     assert(unlink(path) == 0);
 
-    int rows = 0, columns = 0;
+    int rows = 0, columns = 0, three_d_width = 0;
+    int in_the_3d_line = 0;
     for (const char *c = text; *c != '\0'; c++) {
         if ((*c & 0xC0) == 0x80) continue; /* Not a column: the rest of a character. */
         if (*c == '\n') {
             rows += columns <= 80 ? 1 : (columns + 79) / 80;
+            if (in_the_3d_line) three_d_width = columns;
+            in_the_3d_line = 0;
             columns = 0;
             continue;
         }
+        if (columns == 0 && strncmp(c, "      --3d ", 11) == 0) in_the_3d_line = 1;
         columns++;
     }
+    /* --3d is on it, in a line that does not wrap, and it is still a screen. */
+    assert(strstr(text, "--3d") != NULL);
+    assert(three_d_width > 0 && three_d_width <= 80);
     assert(rows <= 24);
 }
 
@@ -4870,6 +4883,11 @@ static void test_the_hawk_is_never_the_colour_of_the_flock(void) {
             static const uint8_t ACCENT[3] = {205, 0, 0}, GROUND[3] = {18, 18, 24};
             ramp_between(ACCENT, GROUND);
         }
+        /* Ink is built the same way, for a dark terminal. */
+        if (palette_is_ink()) {
+            static const uint8_t TEXT[3] = {229, 229, 229}, GROUND[3] = {18, 18, 24};
+            build_the_ink(TEXT, GROUND, SKY_DIM);
+        }
         const uint8_t *hawk = hawk_colour();
         double nearest = 1e9;
         for (int shade = 0; shade < palette()->shades; shade++) {
@@ -4945,7 +4963,7 @@ static void test_no_ramp_fades_into_a_black_terminal(void) {
     static const uint8_t BLACK[3] = {0, 0, 0};
     for (config.palette = 0; config.palette < PALETTE_COUNT; config.palette++) {
         /* Learned from the terminal, and kept off its ground by a test of its own. */
-        if (palette_follows_the_theme()) continue;
+        if (palette_follows_the_theme() || palette_is_ink()) continue;
         for (int shade = 0; shade < palette()->shades; shade++)
             assert(contrast_between(palette()->tints[shade], BLACK) >= 2.5);
     }
@@ -7491,6 +7509,8 @@ static void test_a_screensaver_is_a_lock_screen_for_every_mode(void) {
         {"--say", "hi", NULL, NULL},
         {"--text", text, NULL, NULL},
         {"--hawks", "2", NULL, NULL},
+        {"--3d", NULL, NULL, NULL},
+        {"--3d", "--hawks", "1", NULL},
         {"--link", NULL, NULL, NULL},
         {"--link", "--hawks", "1", NULL},
         {"--link", "--say", "hi", NULL},
@@ -10080,6 +10100,1695 @@ static void test_leaving_through_exit_removes_the_socket(void) {
     assert(rmdir(directory) == 0);
 }
 
+/* --- The space ---------------------------------------------------------- */
+
+/* Everything the flat flock draws on the way to a frame is a random number or a
+ * float, and the floats are not the same on every compiler: fused multiply and add
+ * moves the last bit on an arm64 build. The random numbers are integers. What the
+ * flat flock has always drawn, in the order it drew them, is then the state the
+ * generator is left in after a run, and these three came from the program as it
+ * was before --3d. A new draw on any path the default takes, or one fewer, or one
+ * reordered, moves it. */
+static uint32_t flat_flock_leaves_the_generator_at(int flocks, int depth, int trails,
+                                                   int hawk_count) {
+    enum { BIRDS = 200, FRAMES = 90 };
+    spatial_grid_t grid;
+    bird_t *birds = calloc(BIRDS, sizeof(*birds));
+    bird_t *snapshot = malloc(sizeof(*snapshot) * BIRDS);
+
+    assert(birds != NULL && snapshot != NULL);
+    reset_test_config();
+    legend_enabled = 0;
+    config.birds = BIRDS;
+    config.palette = palette_named("ember");
+    config.flocks = flocks;
+    config.trails = trails;
+    config.hawks = hawk_count;
+    deep_look = depth;
+    apply_screen_size(200, 50, 1600, 800);
+    set_frame_seconds(1.0 / FRAME_RATE);
+    seed_random(11);
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, BIRDS) == SPATIAL_GRID_OK);
+    initialize_birds(birds);
+    place_hawks();
+    for (int frame = 0; frame < FRAMES; frame++) {
+        memcpy(snapshot, birds, sizeof(*birds) * BIRDS);
+        assert(spatial_grid_build(&grid, BIRDS, read_bird_position, snapshot) == SPATIAL_GRID_OK);
+        fly(birds, snapshot, &grid);
+    }
+    spatial_grid_destroy(&grid);
+    free(snapshot);
+    free(birds);
+    deep_look = 0;
+    uint32_t left = next_random();
+    reset_test_config();
+    return left;
+}
+
+static void test_the_flat_flock_is_what_it_was(void) {
+    assert(flat_flock_leaves_the_generator_at(1, 0, 0, 0) == 87498907u);
+    assert(flat_flock_leaves_the_generator_at(3, 0, 1, 0) == 84104933u);
+    assert(flat_flock_leaves_the_generator_at(1, 1, 1, 2) == 1926977605u);
+    /* Without --3d the space is never touched: no birds in it, nothing flying. */
+    assert(sky.flying == 0 && sky.world.birds == NULL && sky.views == NULL);
+    /* And the flat flock's catalogue of pictures is laid out as it was. */
+    reset_test_config();
+    config.palette = palette_named("ember");
+    assert(flock_set_count() == palette_shades() * (WING_PHASES + 1));
+    assert(hawk_set(0) == 20 && trail_set(0) == 23 && sprite_set_count() == 26);
+    assert(flock_set(3, 1, 0) == 3 * WING_PHASES + 1 && flock_set(3, 0, 1) == 5 * WING_PHASES + 3);
+    assert(layer_count() == LAYERS);
+    assert(layer_in_pass(0) == LAYERS - 1 && layer_in_pass(LAYERS - 1) == 0);
+    /* The far plane under the near, and no panel to be behind. */
+    kitty_graphics_placement_t placement;
+    bird_t far = {.x = 5, .y = 5, .layer = 1}, near = {.x = 5, .y = 5, .layer = 0};
+    apply_screen_size(80, 24, 640, 384);
+    legend_enabled = 1;
+    measure_legend();
+    assert(bird_placement(&far, &placement) && placement.z_index == -1);
+    assert(bird_placement(&near, &placement) && placement.z_index == 0);
+    legend_enabled = 0;
+
+    /* And a hawk is on the near plane with the birds, the last thing placed, and
+     * not on the far one: the space puts it above its five sizes, which is a layer
+     * the flat sky must never be told of. */
+    kitty_graphics_t graphics;
+    bird_t flock[2] = {{.x = 100, .y = 100}, {.x = 200, .y = 200, .layer = 1}};
+    assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
+    config.birds = 2;
+    config.hawks = 1;
+    hawks[0] = (hawk_t){.x = 300, .y = 300};
+    assert(queue_render_frame(&graphics, flock) == KITTY_GRAPHICS_OK);
+    const char *last = graphics.buffer;
+    for (const char *at = strstr(last, "a=p"); at != NULL; at = strstr(at + 3, "a=p")) last = at;
+    char *hawk_placement = strndup(last, (size_t)(strstr(last, "\033\\") - last));
+    char hawk_id[40];
+    snprintf(hawk_id, sizeof(hawk_id), "I=%u,", (unsigned)hawk_image_id(&hawks[0]));
+    assert(hawk_placement != NULL && strstr(hawk_placement, hawk_id) != NULL);
+    assert(strstr(hawk_placement, "z=") == NULL);
+    free(hawk_placement);
+    kitty_graphics_destroy(&graphics);
+    memset(hawks, 0, sizeof(hawks));
+    reset_test_config();
+}
+
+/* The catalogue of pictures is one thing for every renderer. The Kitty upload sends
+ * every image that was built, under the id its place in the catalogue gives it, and
+ * the frame places images by the same ids; so a placement of an image that was not
+ * uploaded is a bird that is not there. Checked in the flat sky with everything it
+ * can draw at once, a far plane, tails and hawks, and in a space with its hawks,
+ * by reading the ids out of the frame that is queued. */
+static void every_placement_is_of_an_image_that_was_uploaded(const char *frame,
+                                                             const png_image_t *sprites,
+                                                             int *placements) {
+    int images = sprite_set_count() * ROTATION_FRAMES;
+    *placements = 0;
+    for (const char *at = strstr(frame, "a=p"); at != NULL; at = strstr(at + 3, "a=p")) {
+        const char *id = strstr(at, ",I=");
+        const char *end = strstr(at, "\033\\");
+        assert(id != NULL && id < end);
+        long number = strtol(id + 3, NULL, 10);
+        /* The upload names image i as i + 1, and sends only the ones that exist. */
+        assert(number >= 1 && number <= images);
+        assert(sprites[number - 1].pixels != NULL);
+        (*placements)++;
+    }
+}
+
+static void test_the_kitty_frame_places_only_what_the_upload_sent(void) {
+    static png_image_t frames[ROTATION_FRAMES * MAX_SPRITE_SETS];
+    enum { COUNT = 240 };
+    bird_t *birds = calloc(COUNT, sizeof(*birds)), *snapshot = malloc(sizeof(*snapshot) * COUNT);
+    spatial_grid_t grid;
+    kitty_graphics_t graphics;
+    int placements = 0;
+
+    assert(birds != NULL && snapshot != NULL);
+    assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
+
+    /* The flat sky, with everything on. */
+    reset_test_config();
+    legend_enabled = 0;
+    config.birds = COUNT;
+    config.palette = palette_named("ember");
+    config.hawks = 2;
+    config.trails = 1;
+    deep_look = 1;
+    apply_screen_size(96, 32, 768, 512);
+    set_frame_seconds(1.0 / FRAME_RATE);
+    seed_random(6);
+    assert(rasterise_sprites(frames) == PNG_OK);
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, COUNT) == SPATIAL_GRID_OK);
+    initialize_birds(birds);
+    place_hawks();
+    for (int frame = 0; frame < 30; frame++) {
+        memcpy(snapshot, birds, sizeof(*birds) * COUNT);
+        assert(spatial_grid_build(&grid, COUNT, read_bird_position, snapshot) == SPATIAL_GRID_OK);
+        fly(birds, snapshot, &grid);
+    }
+    int tailed = 0, far = 0;
+    for (int i = 0; i < COUNT; i++) {
+        if (birds[i].layer == 0 && i % 7 == 1) {
+            birds[i].trail_held = TRAIL_LENGTH;
+            tailed++;
+        }
+        far += birds[i].layer > 0;
+    }
+    assert(tailed > 0 && far > 0);
+    graphics.length = 0;
+    assert(queue_render_frame(&graphics, birds) == KITTY_GRAPHICS_OK);
+    every_placement_is_of_an_image_that_was_uploaded(graphics.buffer, frames, &placements);
+    /* The hawks are the last two placed, and they are the hawks' images. */
+    assert(placements > COUNT / 2);
+    const char *last = graphics.buffer;
+    for (const char *at = strstr(last, "a=p"); at != NULL; at = strstr(at + 3, "a=p")) last = at;
+    char hawk_id[40];
+    snprintf(hawk_id, sizeof(hawk_id), ",I=%u,", (unsigned)hawk_image_id(&hawks[1]));
+    assert(strstr(last, hawk_id) != NULL);
+    assert(hawk_set(0) <= (int)((hawk_image_id(&hawks[1]) - 1) / ROTATION_FRAMES) &&
+           (int)((hawk_image_id(&hawks[1]) - 1) / ROTATION_FRAMES) < trail_set(0));
+    spatial_grid_destroy(&grid);
+    free_sprites(frames);
+    deep_look = 0;
+
+    /* A space, with its hawks. */
+    reset_test_config();
+    sky_mode = 1;
+    legend_enabled = 0;
+    config.birds = COUNT;
+    config.palette = palette_named("ash");
+    config.hawks = 2;
+    apply_screen_size(96, 32, 768, 512);
+    seed_random(6);
+    assert(rasterise_sprites(frames) == PNG_OK);
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, COUNT) == SPATIAL_GRID_OK);
+    initialize_birds(birds);
+    place_hawks();
+    for (int frame = 0; frame < 60; frame++) fly(birds, snapshot, &grid);
+    graphics.length = 0;
+    assert(queue_render_frame(&graphics, birds) == KITTY_GRAPHICS_OK);
+    every_placement_is_of_an_image_that_was_uploaded(graphics.buffer, frames, &placements);
+    assert(placements > COUNT / 2);
+    /* None of them is of a set the space does not build: the tails. */
+    for (const char *at = strstr(graphics.buffer, "a=p"); at != NULL; at = strstr(at + 3, "a=p")) {
+        long number = strtol(strstr(at, ",I=") + 3, NULL, 10);
+        assert((number - 1) / ROTATION_FRAMES < trail_set(0));
+    }
+    spatial_grid_destroy(&grid);
+    free_sprites(frames);
+    kitty_graphics_destroy(&graphics);
+    free(snapshot);
+    free(birds);
+    reset_test_config();
+}
+
+/* Runs the option reader in a child, as the program would run it, and says what
+ * came of it: how it exited, what it printed to its error output, and the state
+ * of the switches it was meant to set, as a number. */
+static int options_read_in_a_child(char **argv, int argc, char *message, size_t size,
+                                   int *exit_status) {
+    int errors[2];
+    assert(pipe(errors) == 0);
+    fflush(NULL);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        alarm(20);
+        close(errors[0]);
+        if (dup2(errors[1], STDERR_FILENO) < 0) _exit(99);
+        reset_test_config();
+        read_options(argc, argv);
+        _exit((sky_mode ? 1 : 0) | (deep_look ? 2 : 0) | (config.trails ? 4 : 0));
+    }
+    close(errors[1]);
+    size_t length = 0;
+    ssize_t got;
+    while (length + 1 < size && (got = read(errors[0], message + length, size - 1 - length)) > 0)
+        length += (size_t)got;
+    message[length] = '\0';
+    close(errors[0]);
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status));
+    *exit_status = WEXITSTATUS(status);
+    return 1;
+}
+
+/* --3d is a switch in the Look group, and it is a different sky: more birds, smaller,
+ * in a dark ramp, unless something was asked for. What was asked for is kept,
+ * including the number the flat sky would have given. */
+static void test_three_d_has_defaults_of_its_own(void) {
+    char *plain[] = {"cbirds", "--3d", NULL};
+    char *asked[] = {"cbirds", "--3d", "-n", "800", "-s", "20", "--color", "ember", NULL};
+    char *theme[] = {"cbirds", "--3d", "--color", "theme", NULL};
+
+    reset_test_config();
+    config.bird_size = 0; /* As a fresh process has it: not given. */
+    read_options(2, plain);
+    assert(sky_mode == 1);
+    assert(config.birds == SKY_BIRDS && SKY_BIRDS == 2000);
+    assert(config.palette == palette_named("ink"));
+    assert(config.bird_size == 0); /* Settled when the renderer is known, below. */
+    static const int TEXT[] = {RENDER_BRAILLE, RENDER_SEXTANTS, RENDER_BLOCKS};
+    static const int SPRITES[] = {RENDER_KITTY, RENDER_UNSET};
+    int saved_render = render_mode;
+    for (size_t i = 0; i < sizeof(TEXT) / sizeof(*TEXT); i++) {
+        render_mode = TEXT[i];
+        config.bird_size = 0;
+        settle_the_bird_size();
+        assert(config.bird_size == SKY_TEXT_BIRD_SIZE);
+    }
+    for (size_t i = 0; i < sizeof(SPRITES) / sizeof(*SPRITES); i++) {
+        render_mode = SPRITES[i];
+        config.bird_size = 0;
+        settle_the_bird_size();
+        assert(config.bird_size == SKY_BIRD_SIZE);
+    }
+    render_mode = saved_render;
+
+    reset_test_config();
+    config.bird_size = 0;
+    read_options(8, asked);
+    assert(sky_mode == 1 && config.birds == 800 && config.bird_size == 20);
+    assert(config.palette == palette_named("ember"));
+
+    /* The terminal's own colours are a colour like any other, and asked for. */
+    reset_test_config();
+    read_options(4, theme);
+    assert(config.palette == palette_named("theme"));
+
+    /* Ink is a ramp like the rest, for either sky: asked for by name it is kept, and
+     * the flat flock keeps everything else it has. The example of --3d in --help
+     * says how many birds it flies and in which ramp, and they are the ones it does:
+     * the row of the option is one short line, for -h to fit its screen. */
+    char *ink[] = {"cbirds", "--color", "ink", NULL};
+    reset_test_config();
+    read_options(3, ink);
+    assert(sky_mode == 0 && palette_is_ink() && config.birds == 800);
+    int said = 0;
+    for (int i = 0; EXAMPLES[i].command != NULL; i++)
+        if (strcmp(EXAMPLES[i].command, "cbirds --3d") == 0) {
+            assert(strstr(EXAMPLES[i].what, "2000 birds in ink") != NULL);
+            assert(strstr(EXAMPLES[i].what, "in ash") == NULL);
+            said++;
+        }
+    assert(said == 1);
+
+    /* Without it nothing is different: 800 birds, the terminal's colours, thirty. */
+    char *flat[] = {"cbirds", NULL};
+    reset_test_config();
+    config.bird_size = 0;
+    read_options(1, flat);
+    settle_the_bird_size();
+    assert(sky_mode == 0 && config.birds == 800 && config.palette == 0 && config.bird_size == 30);
+    reset_test_config();
+}
+
+/* What a space cannot do it says, once, and in the same words every time: flocks
+ * are for the flat sky and so is the rain, the second sky is every bird's own
+ * distance now, and there are no tails. */
+static void test_three_d_says_what_it_replaces(void) {
+    char message[512];
+    int status;
+
+    char *flocks[] = {"cbirds", "--3d", "--flocks", "2", NULL};
+    options_read_in_a_child(flocks, 4, message, sizeof(message), &status);
+    assert(status == EXIT_USAGE);
+    assert(strstr(message, "--3d is one flock over one roost; --flocks is for the flat sky") !=
+           NULL);
+
+    char *rain[] = {"cbirds", "--matrix", "--3d", NULL};
+    options_read_in_a_child(rain, 3, message, sizeof(message), &status);
+    assert(status == EXIT_USAGE);
+    assert(strstr(message, "--matrix is for the flat sky") != NULL);
+
+    char *depth[] = {"cbirds", "--3d", "--depth", NULL};
+    options_read_in_a_child(depth, 3, message, sizeof(message), &status);
+    assert(status == 1); /* In the space, and the second sky cleared. */
+    assert(strstr(message, "--3d replaces --depth") != NULL);
+
+    char *tails[] = {"cbirds", "--3d", "--trails", NULL};
+    options_read_in_a_child(tails, 3, message, sizeof(message), &status);
+    assert(status == 1);
+    assert(strstr(message, "--3d draws no tails") != NULL);
+
+    /* Nothing is said about any of it when there is no --3d. */
+    char *flat[] = {"cbirds", "--depth", "--trails", "--flocks", "2", NULL};
+    options_read_in_a_child(flat, 5, message, sizeof(message), &status);
+    assert(status == (2 | 4) && message[0] == '\0');
+
+    /* And the help knows it, in the Look group, on the one screen. */
+    const option_t *three = NULL;
+    for (size_t i = 0; i < OPTION_COUNT; i++)
+        if (strcmp(OPTIONS[i].name, "3d") == 0) three = &OPTIONS[i];
+    assert(three != NULL && strcmp(three->group, "Look") == 0 && three->essential == 1);
+    assert(three->kind == OPTION_FLAG && three->target == &sky_mode);
+    reset_test_config();
+}
+
+/*
+ * Ink: the terminal's own text colour, fading into its own ground.
+ *
+ * Built at run time from what the terminal answers, like theme, so the tests build
+ * it from pairs they made up: the two a terminal is most likely to be, and the
+ * colour schemes that are neither.
+ */
+typedef struct {
+    const char *name;
+    uint8_t foreground[3], background[3];
+} ink_pair_t;
+
+static const ink_pair_t DARK_INK = {"white on black", {229, 229, 229}, {0, 0, 0}};
+static const ink_pair_t LIGHT_INK = {"black on white", {0, 0, 0}, {255, 255, 255}};
+static const ink_pair_t INK_PAIRS[] = {
+    {"white on black", {255, 255, 255}, {0, 0, 0}},
+    {"grey on near black", {229, 229, 229}, {18, 18, 24}},
+    {"black on white", {0, 0, 0}, {255, 255, 255}},
+    {"solarized dark", {131, 148, 150}, {0, 43, 54}},
+    {"solarized light", {101, 123, 131}, {253, 246, 227}},
+    {"dracula", {248, 248, 242}, {40, 42, 54}},
+    {"gruvbox light", {60, 56, 54}, {251, 241, 199}},
+};
+
+static double the_nearest_ink_contrast(const ink_pair_t *pair, int shade) {
+    return contrast_between(ink_tints[shade], pair->background);
+}
+
+static void test_ink_runs_from_the_foreground_towards_the_background(void) {
+    static const double PULLS[] = {SKY_DIM, FAR_DIM};
+    for (size_t p = 0; p < sizeof(PULLS) / sizeof(*PULLS); p++)
+        for (size_t i = 0; i < sizeof(INK_PAIRS) / sizeof(*INK_PAIRS); i++) {
+            const ink_pair_t *pair = &INK_PAIRS[i];
+            ink_is_known = 0;
+            build_the_ink(pair->foreground, pair->background, PULLS[p]);
+            assert(ink_is_known && memcmp(ink_ground, pair->background, 3) == 0);
+            /* It starts on the text colour, as the terminal has it. */
+            assert(memcmp(ink_tints[0], pair->foreground, 3) == 0);
+            for (int shade = 1; shade < 5; shade++) {
+                for (int c = 0; c < 3; c++) {
+                    /* Towards the background and never past it, a step at a time. */
+                    int step = (int)ink_tints[shade][c] - (int)ink_tints[shade - 1][c];
+                    int way = (int)pair->background[c] - (int)pair->foreground[c];
+                    assert(step * way >= 0 && abs(step) <= abs(way));
+                    assert(abs((int)ink_tints[shade][c] - (int)pair->foreground[c]) <= abs(way));
+                }
+                /* A ramp: every shade is nearer the ground than the one before. */
+                assert(the_nearest_ink_contrast(pair, shade) <=
+                       the_nearest_ink_contrast(pair, shade - 1));
+                assert(memcmp(ink_tints[shade], pair->background, 3) != 0);
+            }
+            /* Stopping well short of it: the farthest bird, as it is drawn once the
+             * renderer has dimmed it, still stands off the ground by two to one. */
+            uint8_t drawn[3];
+            pulled_towards(ink_tints[4], pair->background, PULLS[p], drawn);
+            assert(contrast_between(drawn, pair->background) >= INK_FAR_CONTRAST);
+            /* And not by hugging the text colour: where the terminal has the
+             * contrast for it the ramp goes a good way, so the depth shows. */
+            if (the_nearest_ink_contrast(pair, 0) > 10)
+                assert(the_nearest_ink_contrast(pair, 4) < the_nearest_ink_contrast(pair, 0) / 2);
+        }
+
+    /* A grey terminal makes grey ink and a white one makes black, which is the
+     * whole of the idea: the same builder, opposite ramps. */
+    build_the_ink(DARK_INK.foreground, DARK_INK.background, SKY_DIM);
+    for (int shade = 0; shade < 5; shade++) {
+        assert(ink_tints[shade][0] == ink_tints[shade][1] &&
+               ink_tints[shade][1] == ink_tints[shade][2]);
+        assert(ink_tints[shade][0] >= 60); /* Never the black it is written on. */
+        if (shade > 0) assert(ink_tints[shade][0] < ink_tints[shade - 1][0]);
+    }
+    build_the_ink(LIGHT_INK.foreground, LIGHT_INK.background, SKY_DIM);
+    for (int shade = 0; shade < 5; shade++) {
+        assert(ink_tints[shade][0] == ink_tints[shade][1] &&
+               ink_tints[shade][1] == ink_tints[shade][2]);
+        assert(ink_tints[shade][0] <= 190); /* Never the white it is written on. */
+        if (shade > 0) assert(ink_tints[shade][0] > ink_tints[shade - 1][0]);
+    }
+    assert(ink_tints[0][0] == 0);
+
+    /* A terminal with no contrast to give has none to take away: the ramp is the
+     * one shade, and the builder neither hangs nor goes past it. */
+    static const uint8_t SAME[3] = {90, 90, 90}, CLOSE[3] = {100, 100, 100};
+    build_the_ink(SAME, SAME, SKY_DIM);
+    for (int shade = 0; shade < 5; shade++) assert(memcmp(ink_tints[shade], SAME, 3) == 0);
+    build_the_ink(CLOSE, SAME, FAR_DIM);
+    for (int shade = 0; shade < 5; shade++) assert(memcmp(ink_tints[shade], CLOSE, 3) == 0);
+    ink_is_known = 0;
+}
+
+/* Learned from the terminal like theme, and a ramp for every ramp's check: on a
+ * black terminal no shade fades into it, which is the test every other ramp has. */
+static void test_ink_does_not_fade_into_a_black_terminal(void) {
+    static const uint8_t BLACK[3] = {0, 0, 0};
+    for (int white = 160; white <= 255; white += 5) {
+        uint8_t text[3] = {(uint8_t)white, (uint8_t)white, (uint8_t)white};
+        build_the_ink(text, BLACK, SKY_DIM);
+        for (int shade = 0; shade < 5; shade++)
+            assert(contrast_between(ink_tints[shade], BLACK) >= 2.5);
+        build_the_ink(text, BLACK, FAR_DIM);
+        for (int shade = 0; shade < 5; shade++)
+            assert(contrast_between(ink_tints[shade], BLACK) >= 2.5);
+    }
+    ink_is_known = 0;
+}
+
+/* The sprites are tinted from the ramp and dimmed towards the ground, and on a
+ * white ground that is towards white. */
+static void test_ink_is_drawn_as_it_was_built(void) {
+    static const ink_pair_t *PAIRS[] = {&DARK_INK, &LIGHT_INK};
+    for (size_t i = 0; i < 2; i++) {
+        const ink_pair_t *pair = PAIRS[i];
+        reset_test_config();
+        sky_mode = 1;
+        config.palette = palette_named("ink");
+        assert(palette_is_ink() && !the_ground_is_known());
+        /* Until a terminal has been asked the ground is the picture's own. */
+        assert(picture_ground() == PICTURE_GROUND);
+        build_the_ink(pair->foreground, pair->background, SKY_DIM);
+        assert(the_ground_is_known() && picture_ground() == ink_ground);
+        config.palette = palette_named("ember");
+        assert(picture_ground() == PICTURE_GROUND); /* Only ink asks, so only ink knows. */
+        config.palette = palette_named("ink");
+
+        double previous = 0;
+        for (int bin = 0; bin < SKY_BINS; bin++) {
+            png_image_t bird = {0, 0, NULL};
+            assert(png_image_alloc(&bird, 1, 1) == PNG_OK);
+            bird.pixels[3] = 255;
+            tint_sky(&bird, bin);
+            uint8_t drawn[3] = {bird.pixels[0], bird.pixels[1], bird.pixels[2]};
+            double contrast = contrast_between(drawn, pair->background);
+            /* Nearer is stronger, bin by bin, the whole way. */
+            assert(contrast > previous);
+            previous = contrast;
+            if (bin == 0) assert(contrast >= 2.0 && contrast < 2.3);
+            if (bin == SKY_BINS - 1) assert(memcmp(drawn, pair->foreground, 3) == 0);
+            png_image_free(&bird);
+        }
+        /* The flat sky's far plane, built for how hard it is dimmed. */
+        build_the_ink(pair->foreground, pair->background, FAR_DIM);
+        for (int shade = 0; shade < 5; shade++) {
+            png_image_t bird = {0, 0, NULL};
+            assert(png_image_alloc(&bird, 1, 1) == PNG_OK);
+            bird.pixels[3] = 255;
+            far_tint(&bird, shade);
+            uint8_t drawn[3] = {bird.pixels[0], bird.pixels[1], bird.pixels[2]};
+            assert(contrast_between(drawn, pair->background) >= 2.0 - 1e-9);
+            png_image_free(&bird);
+        }
+        ink_is_known = 0;
+        reset_test_config();
+    }
+}
+
+/* A frame of the flock composed onto a ground the colour of a white terminal: the
+ * picture the snapshot and the GIF writer make, and the check that three
+ * dimensions look right on paper. Every bird's strongest pixel stands off the
+ * ground, the nearest is black, and the hawk is not the colour of the paper. */
+static void test_a_flock_of_ink_is_seen_on_a_white_ground(void) {
+    static png_image_t frames[ROTATION_FRAMES * MAX_SPRITE_SETS];
+    png_image_t canvas = {0, 0, NULL};
+    enum { ROWS = SKY_BINS, PER = 6 };
+    bird_t birds[ROWS * PER];
+
+    reset_test_config();
+    sky_mode = 1;
+    config.palette = palette_named("ink");
+    config.birds = ROWS * PER;
+    config.bird_size = 12;
+    apply_screen_size(96, 32, 768, 512);
+    build_the_ink(LIGHT_INK.foreground, LIGHT_INK.background, SKY_DIM);
+    assert(rasterise_sprites(frames) == PNG_OK);
+    assert(png_image_alloc(&canvas, screen.width, screen.height) == PNG_OK);
+    memset(birds, 0, sizeof(birds));
+    for (int bin = 0; bin < ROWS; bin++)
+        for (int i = 0; i < PER; i++) {
+            bird_t *bird = &birds[bin * PER + i];
+            bird->layer = bin;
+            bird->shape = i % SKY_SHAPES;
+            bird->frame = i * 9;
+            bird->x = 40 + i * 100;
+            bird->y = 30 + bin * 90;
+        }
+    compose_onto(&canvas, frames, birds, 1);
+    /* The ground is white, and not the dark one of the picture. */
+    assert(memcmp(canvas.pixels, LIGHT_INK.background, 3) == 0 && canvas.pixels[3] == 255);
+    for (int bin = 0; bin < ROWS; bin++) {
+        double strongest = 0;
+        for (int i = 0; i < PER; i++) {
+            const bird_t *bird = &birds[bin * PER + i];
+            double best = 0;
+            for (int y = 0; y < sky_bin_size(bin); y++)
+                for (int x = 0; x < sky_bin_size(bin); x++) {
+                    const uint8_t *pixel =
+                        canvas.pixels +
+                        (((size_t)(bird->y + y)) * (size_t)canvas.width + (size_t)(bird->x + x)) *
+                            4;
+                    double contrast = contrast_between(pixel, LIGHT_INK.background);
+                    if (contrast > best) best = contrast;
+                }
+            /* A bird that is seen at all, whatever its shape, even the thinnest. */
+            assert(best >= 1.8);
+            if (best > strongest) strongest = best;
+        }
+        assert(strongest >= 2.0);
+        if (bin == ROWS - 1) assert(strongest >= 15); /* The nearest is black on white. */
+    }
+    /* A hawk against paper: scarlet, which is seen there, and not the near white
+     * or the cyan, which are far from the ink and as near as can be to the sheet. */
+    const uint8_t *hawk = hawk_colour();
+    assert(contrast_between(hawk, LIGHT_INK.background) >= HAWK_GROUND_CONTRAST);
+    assert(memcmp(hawk, HAWK_COLOURS[0], 3) == 0);
+    /* On a dark ground the choice is the one it always was: nothing is ruled out. */
+    build_the_ink(DARK_INK.foreground, DARK_INK.background, SKY_DIM);
+    assert(contrast_between(hawk_colour(), DARK_INK.background) >= HAWK_GROUND_CONTRAST);
+    config.palette = palette_named("ash");
+    const uint8_t *with_ash = hawk_colour();
+    config.palette = palette_named("ink");
+    assert(memcmp(hawk_colour(), with_ash, 3) == 0);
+
+    png_image_free(&canvas);
+    free_sprites(frames);
+    ink_is_known = 0;
+    reset_test_config();
+}
+
+/* The terminal is asked for its background and then its foreground, with the
+ * machinery the theme uses, and a terminal that does not answer, or answers half,
+ * is not guessed at. The terminal is a pty with the test on the other end of it. */
+typedef enum { ANSWER_BOTH, ANSWER_NOTHING, ANSWER_THE_BACKGROUND } answer_t;
+
+static int learn_the_ink_from(answer_t answer, const char *background, const char *foreground,
+                              const uint8_t expected_background[3],
+                              const uint8_t expected_foreground[3], char *asked,
+                              size_t asked_size) {
+    int master = posix_openpt(O_RDWR | O_NOCTTY);
+    assert(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0);
+    const char *name = ptsname(master);
+    assert(name != NULL);
+    int terminal = open(name, O_RDWR | O_NOCTTY);
+    assert(terminal >= 0);
+    struct termios raw;
+    assert(tcgetattr(terminal, &raw) == 0);
+    cfmakeraw(&raw);
+    assert(tcsetattr(terminal, TCSANOW, &raw) == 0);
+    fflush(NULL);
+
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        alarm(20);
+        close(master);
+        if (dup2(terminal, STDIN_FILENO) < 0 || dup2(terminal, STDOUT_FILENO) < 0) _exit(99);
+        ink_is_known = 0;
+        int learned = learn_the_ink(SKY_DIM);
+        if (!learned) _exit(ink_is_known ? 98 : 1);
+        if (!ink_is_known || memcmp(ink_ground, expected_background, 3) != 0 ||
+            memcmp(ink_tints[0], expected_foreground, 3) != 0)
+            _exit(97);
+        _exit(0);
+    }
+    close(terminal);
+    asked[0] = '\0';
+    /* The terminal's side: read what is asked, answer what the case answers, until
+     * the other end is gone. A read that fails is that, and the child's end of the
+     * pty closing is how the test knows it has finished. */
+    for (;;) {
+        if (readable_within(master, 5000) <= 0) break;
+        char request[64];
+        ssize_t got = read(master, request, sizeof(request) - 1);
+        if (got <= 0) break;
+        request[got] = '\0';
+        if (strlen(asked) + (size_t)got < asked_size) strcat(asked, request);
+        const char *reply = NULL;
+        if (strstr(request, "]11;?") != NULL && answer != ANSWER_NOTHING) reply = background;
+        if (strstr(request, "]10;?") != NULL && answer == ANSWER_BOTH) reply = foreground;
+        if (reply != NULL) assert(write(master, reply, strlen(reply)) == (ssize_t)strlen(reply));
+    }
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    close(master);
+    assert(WIFEXITED(status));
+    return WEXITSTATUS(status);
+}
+
+static void test_ink_is_asked_of_the_terminal(void) {
+    char asked[256];
+    static const uint8_t WHITE[3] = {255, 255, 255}, BLACK[3] = {0, 0, 0},
+                         GREY[3] = {0xe5, 0xe5, 0xe5};
+
+    /* A dark terminal: four hex digits a channel, as xterm answers. */
+    assert(learn_the_ink_from(ANSWER_BOTH, "\033]11;rgb:0000/0000/0000\033\\",
+                              "\033]10;rgb:e5e5/e5e5/e5e5\033\\", BLACK, GREY, asked,
+                              sizeof(asked)) == 0);
+    /* The background first, then the text. */
+    assert(strstr(asked, "]11;?") != NULL && strstr(asked, "]10;?") != NULL);
+    assert(strstr(asked, "]11;?") < strstr(asked, "]10;?"));
+
+    /* A light one, answering with two digits a channel and a bell, which some do. */
+    assert(learn_the_ink_from(ANSWER_BOTH, "\033]11;rgb:ff/ff/ff\007", "\033]10;rgb:00/00/00\007",
+                              WHITE, BLACK, asked, sizeof(asked)) == 0);
+
+    /* A terminal that says nothing is asked once and not guessed at: there is no
+     * foreground to ask for when there is no ground to put it on. */
+    assert(learn_the_ink_from(ANSWER_NOTHING, "", "", WHITE, BLACK, asked, sizeof(asked)) == 1);
+    assert(strstr(asked, "]11;?") != NULL && strstr(asked, "]10;?") == NULL);
+
+    /* One that knows its ground and not its text is not guessed at either: a ramp
+     * from a foreground that was made up is invisible on the terminals that need
+     * it most. */
+    assert(learn_the_ink_from(ANSWER_THE_BACKGROUND, "\033]11;rgb:ffff/ffff/ffff\033\\", "", WHITE,
+                              BLACK, asked, sizeof(asked)) == 1);
+    assert(strstr(asked, "]10;?") != NULL);
+}
+
+/* No terminal, no ink: a recording and a benchmark have nothing to ask, so the ramp
+ * the flock wore before there was ink is what they draw, and they stay as they
+ * were. */
+static void test_ink_without_a_terminal_is_ash(void) {
+    char path[600];
+    reset_test_config();
+    config.palette = palette_named("ink");
+    ink_is_known = 0;
+    settle_the_palette_without_a_terminal();
+    assert(config.palette == palette_named("ash") && !palette_is_ink() && !the_ground_is_known());
+
+    /* A ramp is only ink where it was asked for. */
+    config.palette = palette_named("ember");
+    settle_the_palette_without_a_terminal();
+    assert(config.palette == palette_named("ember"));
+
+    scratch_file(path, sizeof(path), "ink.gif");
+    config.palette = palette_named("ink");
+    sky_mode = 1;
+    config.birds = 60;
+    record_path = path;
+    record_fps = 25;
+    record_seconds = 1;
+    record_columns = 48;
+    record_rows = 16;
+    fflush(stdout);
+    int saved = dup(STDOUT_FILENO);
+    FILE *quiet = freopen("/dev/null", "w", stdout);
+    assert(quiet != NULL);
+    int status = run_recording();
+    fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+    clearerr(stdout);
+    assert(status == EXIT_SUCCESS);
+    assert(config.palette == palette_named("ash") && !the_ground_is_known());
+    remove(path);
+    record_path = NULL;
+    record_seconds = 0;
+    reset_test_config();
+}
+
+/* A space is framed to fill the window, so its birds are a share of it, and a
+ * window that settles at another size gets birds of another size: not at once, or
+ * dragging a corner would rebuild them every frame, and not for a change too small
+ * to see. The flat flock's are the size it was asked for, and are left alone. */
+static void test_the_birds_are_rebuilt_when_the_window_settles(void) {
+    kitty_graphics_t graphics;
+    int quiet = open("/dev/null", O_WRONLY);
+    assert(quiet >= 0 && kitty_graphics_init(&graphics, quiet) == KITTY_GRAPHICS_OK);
+
+    reset_test_config();
+    sky_mode = 1;
+    config.bird_size = 8;
+    config.palette = palette_named("ash");
+    render_mode = RENDER_BRAILLE;
+    picture_held_for = picture_last_seen = 0;
+    apply_screen_size(96, 32, 768, 512);
+    assert(rasterise_sprites(text_sprites) == PNG_OK);
+    int built_for = sky_picture_size;
+    int near_size = text_sprites[flock_set(0, 0, SKY_BINS - 1) * ROTATION_FRAMES].width;
+    assert(built_for == 512 && near_size == sky_bin_size(SKY_BINS - 1));
+    /* The window as it was needs nothing, however long it is looked at. */
+    for (int frame = 0; frame < 3 * RESIZE_SETTLE_FRAMES; frame++)
+        assert(fit_the_sprites_to_the_window(&graphics) == SPRITES_FIT);
+    assert(sky_picture_size == built_for);
+
+    /* Dragged: a new size every frame, however far it goes, is never rebuilt for. */
+    for (int frame = 0; frame < 4 * RESIZE_SETTLE_FRAMES; frame++) {
+        int height = 512 + 10 * (frame + 1);
+        apply_screen_size(96, 32, height * 3 / 2, height);
+        assert(the_sprites_are_for_another_picture() || frame < 4);
+        assert(fit_the_sprites_to_the_window(&graphics) == SPRITES_FIT);
+    }
+    assert(sky_picture_size == built_for);
+
+    /* Settled at twice the size: nothing for a third of a second, then a rebuild,
+     * once, and the birds are twice as big and placed by what they were drawn at. */
+    apply_screen_size(192, 64, 1536, 1024);
+    assert(the_sprites_are_for_another_picture());
+    int frames_to_wait = 0;
+    while (fit_the_sprites_to_the_window(&graphics) == SPRITES_FIT) {
+        assert(sky_picture_size == built_for && ++frames_to_wait <= 3 * RESIZE_SETTLE_FRAMES);
+    }
+    assert(frames_to_wait == RESIZE_SETTLE_FRAMES);
+    assert(sky_picture_size == 1024 && !the_sprites_are_for_another_picture());
+    int grown = text_sprites[flock_set(0, 0, SKY_BINS - 1) * ROTATION_FRAMES].width;
+    assert(grown == sky_bin_size(SKY_BINS - 1) && grown >= near_size * 2 - 1);
+    for (int bin = 0; bin < SKY_BINS; bin++)
+        for (int shape = 0; shape < SKY_SHAPES; shape++)
+            assert(text_sprites[flock_set(0, shape, bin) * ROTATION_FRAMES].width ==
+                   sky_bin_size(bin));
+    assert(hawk_size_in_layer(0) == sky_bin_size(0) * 3 &&
+           text_sprites[hawk_set(0) * ROTATION_FRAMES].width == hawk_size_in_layer(0));
+    for (int frame = 0; frame < 3 * RESIZE_SETTLE_FRAMES; frame++)
+        assert(fit_the_sprites_to_the_window(&graphics) == SPRITES_FIT);
+
+    /* A change of a few in a hundred is not worth the pause. */
+    apply_screen_size(192, 64, 1536 * 103 / 100, 1024 * 103 / 100);
+    for (int frame = 0; frame < 3 * RESIZE_SETTLE_FRAMES; frame++)
+        assert(fit_the_sprites_to_the_window(&graphics) == SPRITES_FIT);
+    assert(sky_picture_size == 1024);
+
+    /* And smaller again; and under Kitty the images are sent, and freed here. */
+    render_mode = RENDER_KITTY;
+    apply_screen_size(96, 32, 768, 512);
+    sprite_fit_t fit = SPRITES_FIT;
+    for (int frame = 0; frame < 2 * RESIZE_SETTLE_FRAMES && fit == SPRITES_FIT; frame++)
+        fit = fit_the_sprites_to_the_window(&graphics);
+    assert(fit == SPRITES_REBUILT && sky_picture_size == 512);
+    assert(text_sprites[flock_set(0, 0, 0) * ROTATION_FRAMES].pixels == NULL);
+    assert(graphics.length == 0); /* Sent, not left in the buffer. */
+
+    /* The flat flock's sprites do not depend on the window, so they are never
+     * rebuilt for it. */
+    free_sprites(text_sprites);
+    reset_test_config();
+    render_mode = RENDER_BRAILLE;
+    apply_screen_size(96, 32, 768, 512);
+    for (int frame = 0; frame < 3 * RESIZE_SETTLE_FRAMES; frame++) {
+        apply_screen_size(96 + frame, 32, 768 + 8 * frame, 512);
+        assert(fit_the_sprites_to_the_window(&graphics) == SPRITES_FIT);
+    }
+    assert(text_sprites[flock_set(0, 0, 0) * ROTATION_FRAMES].pixels == NULL);
+
+    kitty_graphics_destroy(&graphics);
+    close(quiet);
+    picture_held_for = picture_last_seen = 0;
+    render_mode = RENDER_KITTY;
+    reset_test_config();
+}
+
+/* A set of pictures for every size and shape, and the hawks' and the tails' after
+ * them, where the flat flock has its far plane. */
+static void test_a_space_has_a_picture_for_every_size_and_shape(void) {
+    static png_image_t frames[ROTATION_FRAMES * MAX_SPRITE_SETS];
+    int seen[MAX_SPRITE_SETS] = {0};
+
+    reset_test_config();
+    sky_mode = 1;
+    config.palette = palette_named("ember");
+    config.bird_size = 12;
+    apply_screen_size(96, 32, 768, 512);
+    assert(flock_set_count() == SKY_BINS * SKY_SHAPES);
+    assert(hawk_set(0) == flock_set_count());
+    assert(trail_set(0) == flock_set_count() + SKY_BINS * WING_PHASES); /* A hawk a size. */
+    for (int bin = 0; bin < SKY_BINS; bin++)
+        for (int shape = 0; shape < SKY_SHAPES; shape++) seen[flock_set(0, shape, bin)]++;
+    for (int wing = 0; wing < SKY_BINS * WING_PHASES; wing++) seen[hawk_set(wing)]++;
+    for (int step = 0; step < TRAIL_LENGTH; step++) seen[trail_set(step)]++;
+    for (int set = 0; set < sprite_set_count(); set++) assert(seen[set] == 1);
+    assert(sprite_set_count() <= MAX_SPRITE_SETS);
+
+    assert(rasterise_sprites(frames) == PNG_OK);
+    long ink[SKY_BINS][SKY_SHAPES];
+    int previous_width = 0;
+    for (int bin = 0; bin < SKY_BINS; bin++) {
+        /* Bigger the nearer, as sky_bin_size says, and square. */
+        const png_image_t *first = &frames[flock_set(0, 0, bin) * ROTATION_FRAMES];
+        assert(first->width == sky_bin_size(bin) && first->height == first->width);
+        assert(first->width >= previous_width);
+        previous_width = first->width;
+        for (int shape = 0; shape < SKY_SHAPES; shape++) {
+            for (int frame = 0; frame < ROTATION_FRAMES; frame++) {
+                const png_image_t *image =
+                    &frames[flock_set(0, shape, bin) * ROTATION_FRAMES + frame];
+                assert(image->pixels != NULL && image->width == first->width);
+            }
+            const png_image_t *image = &frames[flock_set(0, shape, bin) * ROTATION_FRAMES];
+            ink[bin][shape] = 0;
+            for (int i = 0; i < image->width * image->height; i++)
+                ink[bin][shape] += image->pixels[i * 4 + 3];
+        }
+    }
+    assert(sky_bin_size(SKY_BINS - 1) > sky_bin_size(0));
+    /* A bird seen edge on, or shortened, has less in it than one in full view, in
+     * every size where there is room for the difference to show. */
+    for (int bin = 2; bin < SKY_BINS; bin++) {
+        assert(ink[bin][1] < ink[bin][0] && ink[bin][2] < ink[bin][1]);
+        assert(ink[bin][SKY_ACROSS_LEVELS] < ink[bin][0]);
+    }
+    /* Further off is dimmer: the first opaque pixel of the nearest and the farthest. */
+    int brightness[2] = {0, 0};
+    for (int which = 0; which < 2; which++) {
+        const png_image_t *image =
+            &frames[flock_set(0, 0, which ? 0 : SKY_BINS - 1) * ROTATION_FRAMES];
+        for (int i = 0; i < image->width * image->height; i++)
+            if (image->pixels[i * 4 + 3] == 255) {
+                brightness[which] =
+                    image->pixels[i * 4] + image->pixels[i * 4 + 1] + image->pixels[i * 4 + 2];
+                break;
+            }
+    }
+    assert(brightness[0] > 0 && brightness[1] > 0 && brightness[1] < brightness[0]);
+    /* The hawks are after the flock, a size and a wing phase each, and a hawk is
+     * bigger than a bird of its size, and scarlet. */
+    for (int bin = 0; bin < SKY_BINS; bin++)
+        for (int wing = 0; wing < WING_PHASES; wing++) {
+            const png_image_t *hawk = &frames[hawk_set(bin * WING_PHASES + wing) * ROTATION_FRAMES];
+            assert(hawk->pixels != NULL && hawk->width > sky_bin_size(bin));
+            if (wing == 0) assert(hawk->width == hawk_size_in_layer(bin));
+        }
+    /* No tails, which a space has none of: a set that is not built is not uploaded
+     * or drawn either. */
+    for (int step = 0; step < TRAIL_LENGTH; step++)
+        assert(frames[trail_set(step) * ROTATION_FRAMES].pixels == NULL);
+    free_sprites(frames);
+    reset_test_config();
+}
+
+/* How a bird is drawn: its shape follows how much of it the camera sees. */
+static void test_a_birds_shape_follows_what_the_camera_sees(void) {
+    sky_view_t full = {.along = 1.0f, .across = 1.0f}, head_on = {.along = 0.3f, .across = 1.0f},
+               edge_on = {.along = 1.0f, .across = 0.2f}, both = {.along = 0.2f, .across = 0.2f};
+
+    assert(sky_shape(&full, WING_SPAN[0]) == 0);
+    assert(sky_shape(&full, WING_SPAN[1]) == 1); /* Wings half in, seen from above. */
+    assert(sky_shape(&full, WING_SPAN[2]) == 2);
+    assert(sky_shape(&head_on, WING_SPAN[0]) == SKY_ACROSS_LEVELS);
+    assert(sky_shape(&edge_on, WING_SPAN[0]) == 2);
+    assert(sky_shape(&both, WING_SPAN[0]) == SKY_SHAPES - 1);
+    for (double a = 0; a <= 1; a += 0.05)
+        for (double b = 0; b <= 1; b += 0.05) {
+            sky_view_t view = {.along = (float)a, .across = (float)b};
+            for (int beat = 0; beat < WING_PHASES; beat++) {
+                int shape = sky_shape(&view, WING_SPAN[beat]);
+                assert(shape >= 0 && shape < SKY_SHAPES);
+            }
+        }
+}
+
+typedef struct {
+    int placed, ordered;
+} frame_summary_t;
+
+/* The z of every placement in a Kitty frame, in the order they were queued. */
+static frame_summary_t summarise_the_placements(const char *frame) {
+    frame_summary_t summary = {0, 1};
+    int previous = -1000;
+    for (const char *at = strstr(frame, "a=p"); at != NULL; at = strstr(at + 3, "a=p")) {
+        const char *end = strstr(at, "\033\\");
+        const char *z = strstr(at, ",z=");
+        int level = z != NULL && z < end ? atoi(z + 3) : 0;
+        if (level < previous) summary.ordered = 0;
+        previous = level;
+        summary.placed++;
+    }
+    return summary;
+}
+
+/* The space comes out of the same renderers as the flat flock: the birds it
+ * projects are placed far to near, drawn in braille, composed onto a ground, and
+ * kept out from behind the panel. */
+static void test_a_space_is_drawn_by_the_renderers_of_the_flat_flock(void) {
+    enum { COUNT = 400 };
+    bird_t *birds = calloc(COUNT, sizeof(*birds)), *snapshot = malloc(sizeof(*snapshot) * COUNT);
+    spatial_grid_t grid;
+    kitty_graphics_t graphics;
+    png_image_t canvas = {0, 0, NULL};
+
+    assert(birds != NULL && snapshot != NULL);
+    reset_test_config();
+    sky_mode = 1;
+    legend_enabled = 0;
+    config.birds = COUNT;
+    config.bird_size = 8;
+    config.palette = palette_named("ash");
+    apply_screen_size(96, 32, 768, 512);
+    set_frame_seconds(1.0 / FRAME_RATE);
+    seed_random(4);
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, COUNT) == SPATIAL_GRID_OK);
+    initialize_birds(birds);
+    assert(sky.flying == 1);
+    for (int frame = 0; frame < 20; frame++) fly(birds, snapshot, &grid);
+
+    int on_screen = 0, bins_used[SKY_BINS] = {0};
+    for (int i = 0; i < COUNT; i++) {
+        assert(birds[i].layer >= 0 && birds[i].layer < SKY_BINS);
+        assert(birds[i].frame >= 0 && birds[i].frame < ROTATION_FRAMES);
+        assert(birds[i].shape >= 0 && birds[i].shape < SKY_SHAPES);
+        assert(sprite_image_id(&birds[i]) >= 1 &&
+               sprite_image_id(&birds[i]) <= (uint32_t)sprite_set_count() * ROTATION_FRAMES);
+        kitty_graphics_placement_t placement;
+        if (bird_placement(&birds[i], &placement)) {
+            on_screen++;
+            assert(placement.z_index == birds[i].layer);
+        }
+        bins_used[birds[i].layer]++;
+    }
+    int bins_in_use = 0;
+    for (int bin = 0; bin < SKY_BINS; bin++) bins_in_use += bins_used[bin] > 0;
+    assert(bins_in_use >= 3); /* A flock has depth. */
+    assert(on_screen > COUNT * 9 / 10);
+
+    /* Sprites: one placement a bird that is on the screen, far to near. */
+    assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
+    assert(queue_render_frame(&graphics, birds) == KITTY_GRAPHICS_OK);
+    frame_summary_t summary = summarise_the_placements(graphics.buffer);
+    assert(summary.placed == on_screen && summary.ordered);
+
+    /* Text: the same birds, as dots. */
+    render_mode = RENDER_BRAILLE;
+    assert(prepare_text_renderer());
+    clear_graphics_buffer(&graphics);
+    assert(queue_render_frame(&graphics, birds) == KITTY_GRAPHICS_OK);
+    assert(strstr(graphics.buffer, "a=p") == NULL);
+    int dots = 0;
+    for (const unsigned char *c = (const unsigned char *)graphics.buffer; *c; c++)
+        if (c[0] == 0xE2 && (c[1] & 0xFC) == 0xA0) dots++;
+    assert(dots > COUNT / 4);
+
+    /* A picture: composed onto a ground, which has birds on it of more than one
+     * brightness, because a far bird is dimmer. */
+    assert(png_image_alloc(&canvas, screen.width, screen.height) == PNG_OK);
+    compose_onto(&canvas, text_sprites, birds, 1);
+    int levels[256] = {0}, seen = 0;
+    for (int i = 0; i < canvas.width * canvas.height; i++) {
+        uint8_t red = canvas.pixels[i * 4];
+        if (red > 60 && !levels[red]++) seen++;
+    }
+    assert(seen >= 3);
+
+    /* Behind the panel is not drawn, and beside it is. */
+    render_mode = RENDER_KITTY;
+    legend_enabled = 1;
+    apply_screen_size(96, 32, 768, 512);
+    legend_drawn = 1;
+    kitty_graphics_placement_t placement;
+    bird_t behind = {.x = 40, .y = 40, .layer = 2}, beside = {.x = 600, .y = 40, .layer = 2};
+    assert(!bird_placement(&behind, &placement));
+    assert(bird_placement(&beside, &placement));
+    legend_drawn = 0;
+
+    png_image_free(&canvas);
+    free_sprites(text_sprites);
+    cells_destroy(&text_cells);
+    png_image_free(&text_canvas);
+    memset(&text_canvas, 0, sizeof(text_canvas));
+    kitty_graphics_destroy(&graphics);
+    spatial_grid_destroy(&grid);
+    free(snapshot);
+    free(birds);
+    render_mode = RENDER_KITTY;
+    reset_test_config();
+}
+
+/* Each row of the panel says what it does in a space, and none is longer than the
+ * panel is wide: the edges are a roost that pulls, and perception is how many
+ * neighbours a bird heeds. */
+static void test_the_panel_says_what_its_rows_do_in_a_space(void) {
+    char lines[LEGEND_MAX_ROWS][LEGEND_LINE_MAX];
+
+    reset_test_config();
+    sky_mode = 1;
+    apply_screen_size(96, 32, 768, 512);
+    build_legend(lines);
+    assert(strstr(lines[1], "roost") != NULL && strstr(lines[1], "boundary") == NULL);
+    assert(strstr(lines[2], "separation") != NULL && strstr(lines[3], "alignment") != NULL);
+    assert(strstr(lines[4], "turning") != NULL && strstr(lines[4], "70\u00b0") != NULL);
+    assert(strstr(lines[5], "neighbours") != NULL && strstr(lines[5], "perception") == NULL);
+    assert(strstr(lines[6], "speed") != NULL);
+    /* On the notches they start on, a factor of one, and seven birds. */
+    for (int row = 1; row <= 3; row++) assert(strstr(lines[row], "1.00\u00d7") != NULL);
+    assert(strstr(lines[5], " 7 ") != NULL);
+    for (int row = 0; row < LEGEND_ROWS; row++) assert(legend_cells(lines[row]) == LEGEND_COLUMNS);
+    /* The ends of the bars: a twentieth of the roost's pull to three times it, a
+     * fifth of the separation to two and a half, and one neighbour to thirteen. */
+    config.boundary_notch = config.separation_notch = config.alignment_notch = 0;
+    config.vision_notch = 0;
+    apply_notches();
+    build_legend(lines);
+    assert(strstr(lines[1], "0.05\u00d7") != NULL && strstr(lines[2], "0.20\u00d7") != NULL);
+    assert(strstr(lines[3], "0.07\u00d7") != NULL && strstr(lines[5], " 1 ") != NULL);
+    config.boundary_notch = config.separation_notch = config.alignment_notch = LEGEND_BAR_CELLS;
+    config.vision_notch = LEGEND_BAR_CELLS;
+    apply_notches();
+    build_legend(lines);
+    assert(strstr(lines[1], "2.90\u00d7") != NULL && strstr(lines[2], "2.60\u00d7") != NULL);
+    assert(strstr(lines[3], "2.87\u00d7") != NULL && strstr(lines[5], "13") != NULL);
+    for (int row = 0; row < LEGEND_ROWS; row++) assert(legend_cells(lines[row]) == LEGEND_COLUMNS);
+
+    /* The flat flock's rows are what they were. */
+    sky_mode = 0;
+    reset_test_config();
+    build_legend(lines);
+    assert(strstr(lines[1], "boundary") != NULL && strstr(lines[5], "perception") != NULL);
+}
+
+/* The sliders are weights on the flight, and each is a factor on what it was tuned
+ * at: the default notches are the tuned flight exactly, and the ends of each bar
+ * are the ends of the factor, as the panel prints them. */
+static void test_the_sliders_steer_the_flight_in_a_space(void) {
+    reset_test_config();
+    sky_mode = 1;
+    sky_rules_t tuned = sky_default_rules();
+    sky_rules_t rules = sky_rules();
+    assert(rules.neighbours == 7);
+    assert(fabs(rules.separation - tuned.separation) < 1e-9);
+    assert(fabs(rules.alignment - tuned.alignment) < 1e-9);
+    assert(fabs(rules.roost - tuned.roost) < 1e-9);
+    assert(rules.current == tuned.current && rules.cruise == tuned.cruise);
+    assert(fabs(rules.turn_rate - turning_notch_radians()) < 1e-12);
+
+    config.boundary_notch = config.separation_notch = config.alignment_notch = 0;
+    config.vision_notch = 0;
+    config.turning_notch = 0;
+    apply_notches();
+    rules = sky_rules();
+    assert(rules.neighbours == 1);
+    assert(rules.roost < 0.1 * tuned.roost && rules.alignment < 0.1 * tuned.alignment);
+    assert(rules.separation < 0.25 * tuned.separation);
+    assert(fabs(rules.turn_rate * 180 / M_PI - 30) < 1e-9);
+
+    config.boundary_notch = config.separation_notch = config.alignment_notch = LEGEND_BAR_CELLS;
+    config.vision_notch = LEGEND_BAR_CELLS;
+    config.turning_notch = LEGEND_BAR_CELLS;
+    apply_notches();
+    rules = sky_rules();
+    assert(rules.neighbours == 13 && rules.neighbours <= SKY_MAX_NEIGHBOURS);
+    assert(rules.roost > 2.5 * tuned.roost && rules.alignment > 2.5 * tuned.alignment);
+    assert(rules.separation > 2.5 * tuned.separation);
+    assert(fabs(rules.turn_rate - 2 * M_PI) < 1e-9);
+    /* Each one a step up from the one before it. */
+    double roost = -1;
+    for (int notch = 0; notch <= LEGEND_BAR_CELLS; notch++) {
+        config.boundary_notch = notch;
+        apply_notches();
+        assert(sky_rules().roost > roost);
+        roost = sky_rules().roost;
+    }
+    reset_test_config();
+}
+
+/* + and - grow and shrink a flock that is flying in a space like any other: the
+ * birds already in the air go on, and the new ones are born into it. */
+static void test_a_space_grows_and_shrinks_with_the_keys(void) {
+    bird_t *birds = calloc(100, sizeof(*birds)), *snapshot = malloc(sizeof(*snapshot) * 100);
+    spatial_grid_t grid;
+
+    assert(birds != NULL && snapshot != NULL);
+    reset_test_config();
+    sky_mode = 1;
+    legend_enabled = 0;
+    config.birds = 100;
+    apply_screen_size(96, 32, 768, 512);
+    seed_random(2);
+    initialize_birds(birds);
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, 400) == SPATIAL_GRID_OK);
+    for (int frame = 0; frame < 5; frame++) fly(birds, snapshot, &grid);
+    sky_bird_t before = sky.world.birds[40];
+
+    int from = config.birds;
+    assert(feed_input("+") == 1 && population_changed && config.birds > from);
+    population_changed = 0;
+    assert(resize_the_flock(&birds, &snapshot, from, config.birds) == 1);
+    assert(sky.world.capacity >= config.birds);
+    assert(memcmp(&before, &sky.world.birds[40], sizeof(before)) == 0);
+    int grown = config.birds;
+    for (int frame = 0; frame < 5; frame++) fly(birds, snapshot, &grid);
+    for (int i = 0; i < grown; i++)
+        assert(isfinite(sky.world.birds[i].x) && birds[i].layer >= 0 && birds[i].layer < SKY_BINS);
+
+    assert(feed_input("---") == 1 && config.birds < grown);
+    for (int frame = 0; frame < 5; frame++) fly(birds, snapshot, &grid);
+    /* The tails key does nothing in a space, where there are none to draw. */
+    config.trails = 0;
+    assert(feed_input("e") == 1 && config.trails == 0);
+
+    /* The keys said the population had changed, and nobody is going to act on it. */
+    population_changed = 0;
+    spatial_grid_destroy(&grid);
+    free(snapshot);
+    free(birds);
+    reset_test_config();
+}
+
+/* A second of the show is a second of flight at the pace it ships at, a space
+ * goes slower or faster with the speed slider like the flat flock does, and a
+ * paused one stands still, camera and all, until it is stepped. */
+static void test_a_space_flies_at_the_pace_it_is_told(void) {
+    bird_t *birds = calloc(60, sizeof(*birds)), *snapshot = malloc(sizeof(*snapshot) * 60);
+    spatial_grid_t grid;
+    kitty_graphics_t graphics;
+
+    assert(birds != NULL && snapshot != NULL);
+    reset_test_config();
+    sky_mode = 1;
+    legend_enabled = 0;
+    config.birds = 60;
+    apply_screen_size(96, 32, 768, 512);
+    seed_random(2);
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, 60) == SPATIAL_GRID_OK);
+    assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
+    initialize_birds(birds);
+    assert(sky.world.clock == 0); /* The warm up is before anybody is looking. */
+
+    static const int NOTCHES[] = {0, DEFAULT_PACE_NOTCH, 4, 12};
+    for (size_t i = 0; i < sizeof(NOTCHES) / sizeof(*NOTCHES); i++) {
+        config.pace_notch = NOTCHES[i];
+        apply_notches();
+        double started = sky.world.clock;
+        for (int frame = 0; frame < FRAME_RATE; frame++) fly(birds, snapshot, &grid);
+        /* A second on screen is the pace's worth of seconds of flight, at the rate
+         * the flight was tuned: two and a half to the pace's one fifth. */
+        assert(fabs(sky.world.clock - started - config.pace * SKY_TIME) < 1e-6);
+    }
+    config.pace_notch = DEFAULT_PACE_NOTCH;
+    apply_notches();
+
+    paused = 1;
+    step_once = 0;
+    bird_t held[60];
+    memcpy(held, birds, sizeof(held));
+    double stopped_at = sky.world.clock;
+    assert(render_frame(&graphics, birds, snapshot, &grid) == KITTY_GRAPHICS_OK);
+    assert(memcmp(held, birds, sizeof(held)) == 0 && sky.world.clock == stopped_at);
+    step_once = 1;
+    clear_graphics_buffer(&graphics);
+    assert(render_frame(&graphics, birds, snapshot, &grid) == KITTY_GRAPHICS_OK);
+    assert(sky.world.clock > stopped_at && step_once == 0);
+    paused = 0;
+
+    kitty_graphics_destroy(&graphics);
+    spatial_grid_destroy(&grid);
+    free(snapshot);
+    free(birds);
+    reset_test_config();
+}
+
+/* Hawks hunt in a space: the module flies them and the flight's seam draws them
+ * where the camera sees them, in front of every bird, one size to a distance. */
+static void test_hawks_hunt_in_a_space_and_are_drawn_over_it(void) {
+    enum { COUNT = 300 };
+    bird_t *birds = calloc(COUNT, sizeof(*birds)), *snapshot = malloc(sizeof(*snapshot) * COUNT);
+    spatial_grid_t grid;
+    kitty_graphics_t graphics;
+
+    assert(birds != NULL && snapshot != NULL);
+    reset_test_config();
+    sky_mode = 1;
+    legend_enabled = 0;
+    config.birds = COUNT;
+    config.hawks = 2;
+    config.palette = palette_named("ash");
+    config.bird_size = 8;
+    apply_screen_size(96, 32, 768, 512);
+    set_frame_seconds(1.0 / FRAME_RATE);
+    seed_random(8);
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, COUNT) == SPATIAL_GRID_OK);
+    assert(kitty_graphics_init(&graphics, STDOUT_FILENO) == KITTY_GRAPHICS_OK);
+    initialize_birds(birds);
+    assert(sky.world.hawk_count == 2);
+    for (int frame = 0; frame < 120; frame++) fly(birds, snapshot, &grid);
+
+    int seen = 0;
+    for (int i = 0; i < 2; i++) {
+        assert(hawks[i].layer >= 0 && hawks[i].layer < SKY_BINS);
+        assert(hawks[i].frame >= 0 && hawks[i].frame < ROTATION_FRAMES);
+        assert(hawk_image_id(&hawks[i]) >= 1 &&
+               hawk_image_id(&hawks[i]) <= (uint32_t)sprite_set_count() * ROTATION_FRAMES);
+        /* It is where the camera sees the hawk: the module's own hawk, projected. */
+        sky_camera_t camera;
+        sky_view_t view;
+        sky_camera(&camera);
+        sky_hawk_view(&sky.world, i, &camera, &view);
+        assert(view.visible && fabs(hawks[i].x - view.x) < 1e-3 &&
+               fabs(hawks[i].y - view.y) < 1e-3);
+        seen += hawks[i].x >= 0 && hawks[i].x < screen.width && hawks[i].y >= 0 &&
+                hawks[i].y < screen.height;
+    }
+    assert(seen >= 1);
+    /* And in the sprite frame they come after the last bird, on top of all of it. */
+    assert(queue_render_frame(&graphics, birds) == KITTY_GRAPHICS_OK);
+    frame_summary_t summary = summarise_the_placements(graphics.buffer);
+    assert(summary.ordered && summary.placed > COUNT / 2);
+    const char *last = graphics.buffer;
+    for (const char *at = strstr(last, "a=p"); at != NULL; at = strstr(at + 3, "a=p")) last = at;
+    char hawk_id[40];
+    snprintf(hawk_id, sizeof(hawk_id), "I=%u,", (unsigned)hawk_image_id(&hawks[1]));
+    const char *end = strstr(last, "\033\\");
+    char *copy = strndup(last, (size_t)(end - last));
+    assert(copy != NULL);
+    assert(strstr(copy, hawk_id) != NULL && strstr(copy, "z=5") != NULL);
+    free(copy);
+
+    /* k summons another and K sends one away, as they do in the flat sky, and the
+     * flight follows the count on the next frame. */
+    hawk_sets_built = 1;
+    assert(feed_input("k") == 1 && config.hawks == 3);
+    fly(birds, snapshot, &grid);
+    assert(sky.world.hawk_count == 3);
+    assert(feed_input("KK") == 1 && config.hawks == 1);
+    fly(birds, snapshot, &grid);
+    assert(sky.world.hawk_count == 1);
+    /* The hunt of the flat sky does not run in a space, whatever calls it. */
+    hawk_t before = hawks[0];
+    hunt(birds);
+    assert(memcmp(&before, &hawks[0], sizeof(before)) == 0);
+
+    kitty_graphics_destroy(&graphics);
+    spatial_grid_destroy(&grid);
+    free(snapshot);
+    free(birds);
+    config.hawks = 0;
+    reset_test_config();
+}
+
+/* The pointer is a stick in the sky here too: the ray through it is the module's,
+ * and the flock leaves its line. */
+static void test_the_pointer_pokes_the_flock_in_a_space(void) {
+    enum { COUNT = 400 };
+    bird_t *birds = calloc(COUNT, sizeof(*birds)), *snapshot = malloc(sizeof(*snapshot) * COUNT);
+    spatial_grid_t grid;
+    double near_without = 0, near_with = 0;
+
+    assert(birds != NULL && snapshot != NULL);
+    for (int world = 0; world < 2; world++) {
+        reset_test_config();
+        sky_mode = 1;
+        legend_enabled = 0;
+        config.birds = COUNT;
+        apply_screen_size(96, 32, 768, 512);
+        set_frame_seconds(1.0 / FRAME_RATE);
+        seed_random(12);
+        mouse.present = 0;
+        assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+        assert(spatial_grid_prepare(&grid, screen.width, screen.height, COUNT) == SPATIAL_GRID_OK);
+        initialize_birds(birds);
+        sky_camera_t camera;
+        sky_camera(&camera);
+        /* The pointer in the middle of the flock's picture. */
+        double middle_x = camera.centre_x, middle_y = camera.centre_y;
+        for (int frame = 0; frame < 90; frame++) {
+            if (world == 1) {
+                mouse.present = 1;
+                mouse.x = middle_x;
+                mouse.y = middle_y;
+            }
+            fly(birds, snapshot, &grid);
+        }
+        /* How many birds are drawn within a bird's length of the middle: the ones the
+         * stick has not cleared. */
+        sky_camera(&camera);
+        double origin[3], direction[3];
+        sky_camera_ray(&camera, middle_x, middle_y, origin, direction);
+        int near_the_line = 0;
+        for (int i = 0; i < COUNT; i++) {
+            const sky_bird_t *bird = &sky.world.birds[i];
+            double rx = bird->x - origin[0], ry = bird->y - origin[1], rz = bird->z - origin[2];
+            double along = rx * direction[0] + ry * direction[1] + rz * direction[2];
+            double ox = rx - along * direction[0], oy = ry - along * direction[1],
+                   oz = rz - along * direction[2];
+            if (along > 0 && sqrt(ox * ox + oy * oy + oz * oz) < SKY_POKE_REACH / 2)
+                near_the_line++;
+        }
+        if (world == 0)
+            near_without = near_the_line;
+        else
+            near_with = near_the_line;
+        spatial_grid_destroy(&grid);
+        mouse.present = 0;
+    }
+    /* The ray is where the pointer says, and the flock is less in its way. */
+    assert(near_without > 5);
+    assert(near_with < near_without);
+    free(snapshot);
+    free(birds);
+    reset_test_config();
+}
+
+/* A recording needs no terminal, in a space as anywhere: a GIF of sprites or of
+ * braille, and a cast of braille, each of the size asked for, with no BOIDS written
+ * before it starts. */
+static void test_a_space_records_headless(void) {
+    char path[600];
+    static const char *NAMES[] = {"space.gif", "space.cast", "space-braille.gif"};
+    static const int MODES[] = {RENDER_UNSET, RENDER_UNSET, RENDER_BRAILLE};
+
+    for (int which = 0; which < 3; which++) {
+        scratch_file(path, sizeof(path), NAMES[which]);
+        reset_test_config();
+        sky_mode = 1;
+        config.birds = 120;
+        config.bird_size = 0;
+        config.palette = palette_named("ash");
+        render_mode = MODES[which];
+        record_path = path;
+        record_fps = 20;
+        record_seconds = 1;
+        record_columns = 60;
+        record_rows = 20;
+        fflush(stdout);
+        int saved = dup(STDOUT_FILENO);
+        assert(freopen("/dev/null", "w", stdout) != NULL);
+        int status = run_recording();
+        fflush(stdout);
+        dup2(saved, STDOUT_FILENO);
+        close(saved);
+        clearerr(stdout);
+        assert(status == EXIT_SUCCESS);
+        assert(formation.writing == 0);                     /* No letters: it is not a screen. */
+        assert(sky.flying == 0 && sky.world.birds == NULL); /* And it cleaned up after itself. */
+
+        FILE *file = fopen(path, "rb");
+        assert(file != NULL);
+        fseek(file, 0, SEEK_END);
+        long length = ftell(file);
+        rewind(file);
+        assert(length > 1000);
+        char head[8] = {0};
+        assert(fread(head, 1, 6, file) == 6);
+        if (which == 1) {
+            assert(head[0] == '{');
+            fseek(file, 0, SEEK_SET);
+            static char text[1 << 16];
+            int braille = 0, events = 0;
+            while (fgets(text, sizeof(text), file) != NULL) {
+                events++;
+                for (const unsigned char *c = (const unsigned char *)text; *c; c++)
+                    if (c[0] == 0xE2 && (c[1] & 0xFC) == 0xA0) braille++;
+            }
+            assert(events == 1 + 20 + 2 &&
+                   braille > 100); /* A header, an opening, twenty frames, a closing. */
+        } else {
+            assert(memcmp(head, "GIF89a", 6) == 0);
+        }
+        fclose(file);
+        remove(path);
+        record_path = NULL;
+    }
+    record_seconds = 0;
+    render_mode = RENDER_KITTY;
+    reset_test_config();
+}
+
+/* The ramps that were there are where they were, and ink comes after them. */
+static void test_ink_is_a_ramp_after_the_others(void) {
+    static const char *const OLD[] = {"theme",  "ember", "ice",    "acid", "matrix",
+                                      "aurora", "prism", "potion", "dusk", "ash"};
+    assert(PALETTE_COUNT == 11);
+    for (int i = 0; i < 10; i++) assert(strcmp(PALETTES[i].name, OLD[i]) == 0);
+    assert(strcmp(PALETTES[10].name, "ink") == 0 && palette_named("ink") == 10);
+    assert(PALETTES[10].shades == 5);
+}
+
+/* A recording's table of colours is made from its first frame, and in a space the
+ * first frame does not show every size of bird, nor a hawk that is still off the
+ * screen: the colours the sprites are drawn in are asked for, and are in the table
+ * exactly, the hawk's and every size's. */
+static void test_a_recording_of_a_space_asks_for_its_sprites(void) {
+    char path[600];
+    scratch_file(path, sizeof(path), "space_colours.gif");
+    reset_test_config();
+    sky_mode = 1;
+    config.palette = palette_named("ice");
+    config.birds = 200;
+    config.hawks = 2;
+    record_path = path;
+    record_fps = 25;
+    record_seconds = 2;
+    record_columns = 64;
+    record_rows = 18;
+    fflush(stdout);
+    int saved = dup(STDOUT_FILENO);
+    FILE *quiet = freopen("/dev/null", "w", stdout);
+    assert(quiet != NULL);
+    int status = run_recording();
+    fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+    clearerr(stdout);
+    assert(status == EXIT_SUCCESS);
+    FILE *file = fopen(path, "rb");
+    assert(file != NULL);
+    uint8_t header[13 + 768];
+    assert(fread(header, 1, sizeof(header), file) == sizeof(header));
+    fclose(file);
+    remove(path);
+    record_path = NULL;
+    record_seconds = 0;
+
+    /* The colours as the sprites are tinted: a bird of each size, and the hawk. */
+    uint8_t wanted[SKY_BINS + 1][3];
+    sky_mode = 1;
+    config.palette = palette_named("ice");
+    for (int bin = 0; bin < SKY_BINS; bin++) {
+        png_image_t bird = {0, 0, NULL};
+        assert(png_image_alloc(&bird, 1, 1) == PNG_OK);
+        memset(bird.pixels, 255, 4);
+        tint_sky(&bird, bin);
+        memcpy(wanted[bin], bird.pixels, 3);
+        png_image_free(&bird);
+    }
+    memcpy(wanted[SKY_BINS], hawk_colour(), 3);
+    for (int w = 0; w <= SKY_BINS; w++) {
+        int found = 0;
+        for (int entry = 0; entry < 256; entry++)
+            if (memcmp(header + 13 + entry * 3, wanted[w], 3) == 0) found = 1;
+        assert(found);
+    }
+    reset_test_config();
+}
+
+/* What a line of options can leave behind in the program's own variables, put back
+ * as a fresh process has them. */
+static void forget_the_options(void) {
+    reset_sign_state();
+    text_path = NULL;
+    forget_the_text();
+    letters_mode = 0;
+    sky_mode = 0;
+    deep_look = 0;
+    matrix_mode = 0;
+    the_rain_is_falling = 0;
+    requested_preset = -1;
+    config.shape = 0;
+    config.bird_size = 0;
+    config.hawks = 0;
+}
+
+/* A line, split at its spaces, read as the program reads its own. */
+static void read_the_line(const char *line) {
+    static char copy[512];
+    char *words[32] = {"cbirds"};
+    int count = 1;
+    forget_the_options();
+    assert(strlen(line) < sizeof(copy));
+    strcpy(copy, line);
+    for (char *word = strtok(copy, " "); word != NULL && count < 31; word = strtok(NULL, " "))
+        words[count++] = word;
+    words[count] = NULL;
+    read_options(count, words);
+}
+
+/* A line read in a child, for the lines that end the run. */
+static void read_the_line_in_a_child(void *line) {
+    read_the_line((const char *)line);
+}
+
+/* Runs something that may end the run in a child, and says how it exited and what
+ * it said on its error output. */
+static int status_of_a_run_that_may_exit(void (*run)(void *), void *context, char *said,
+                                         size_t size) {
+    int errors[2];
+    assert(pipe(errors) == 0);
+    fflush(NULL);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        alarm(20);
+        close(errors[0]);
+        if (dup2(errors[1], STDERR_FILENO) < 0) _exit(99);
+        run(context);
+        _exit(0);
+    }
+    close(errors[1]);
+    /* To its end, so that a child that says more than a line is not killed for it. */
+    size_t length = 0;
+    ssize_t got;
+    while ((got = read(errors[0], said + length, size - 1 - length)) > 0) length += (size_t)got;
+    said[length] = '\0';
+    close(errors[0]);
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status));
+    return WEXITSTATUS(status);
+}
+
+/* The same line, and then the text found on a pipe. */
+typedef struct {
+    const char *line, *text_file;
+} piped_line_t;
+
+static void take_the_text_piped_in_on_a_line(void *context) {
+    const piped_line_t *piped = context;
+    read_the_line(piped->line);
+    int fd = open(piped->text_file, O_RDONLY);
+    if (fd < 0 || dup2(fd, STDIN_FILENO) < 0) _exit(98);
+    int taken = take_the_text(60, 12, 1);
+    _exit(taken ? 0 : 3); /* A flock goes on when there was nothing to see. */
+}
+
+/* Where a shape is in the list --shape takes. */
+static int shape_index(const char *name) {
+    name_the_shapes();
+    for (int i = 0; SHAPE_NAMES[i] != NULL; i++)
+        if (strcmp(SHAPE_NAMES[i], name) == 0) return i;
+    return -1;
+}
+
+/* A space takes its own birds and ramp for whatever was left open, a bird as the
+ * flock has it, and what was asked for wins whichever side of --3d it is on, even
+ * when it is the very thing the flock ships with. */
+static void test_a_space_settles_what_was_not_asked_for(void) {
+    read_the_line("--3d");
+    assert(sky_mode && config.birds == SKY_BIRDS && config.shape == 0);
+    assert(config.palette == palette_named("ink") && !palette_was_asked_for);
+    const char *space_both_ways[][2] = {
+        {"-n 800 --3d", "--3d -n 800"},           {"--color ash --3d", "--3d --color ash"},
+        {"--color ink --3d", "--3d --color ink"}, {"--color theme --3d", "--3d --color theme"},
+        {"--shape dot --3d", "--3d --shape dot"},
+    };
+    const int space_birds[] = {800, SKY_BIRDS, SKY_BIRDS, SKY_BIRDS, SKY_BIRDS};
+    const char *space_ramp[] = {"ink", "ash", "ink", "theme", "ink"};
+    for (size_t pair = 0; pair < sizeof(space_both_ways) / sizeof(*space_both_ways); pair++)
+        for (int way = 0; way < 2; way++) {
+            read_the_line(space_both_ways[pair][way]);
+            assert(sky_mode && config.birds == space_birds[pair]);
+            assert(config.palette == palette_named(space_ramp[pair]));
+            assert(palette_was_asked_for == (pair == 1 || pair == 2 || pair == 3));
+            assert(config.shape == (pair == 4 ? shape_index("dot") : 0));
+        }
+    /* The flock's own birds are 800 and its ramp theme, as ever, with no --3d. */
+    read_the_line("");
+    assert(!sky_mode && config.birds == 800 && config.palette == 0 && !palette_was_asked_for);
+    read_the_line("-n 50");
+    assert(!sky_mode && config.birds == 50 && config.palette == 0);
+    forget_the_options();
+}
+
+/* A space is the flock in another sky, and a text and a sign are both made on the
+ * flat one, with its screen to lay them out on: said in one line, naming the two,
+ * with the status of every other usage error, in either order on the line, before
+ * anything is opened. A text on a pipe is said when it is found. What does go with
+ * it goes: the lock screen, hawks, and the notes about what it replaces. */
+static void test_a_space_is_refused_with_a_text_and_a_sign(void) {
+    char text[600], empty[600], picture[600], said[512], line[1200];
+    scratch_file(text, sizeof(text), "space_refuse.txt");
+    scratch_file(empty, sizeof(empty), "space_refuse_empty.txt");
+    world_write(text, "hello, world\n");
+    world_write(empty, "");
+    write_a_picture("space_refuse.png", 1, 255);
+    scratch_file(picture, sizeof(picture), "space_refuse.png");
+
+    const char *asked[][2] = {
+        {"--say hi", "--say"},
+        {"--clock", "--clock"},
+        {"--clock --seconds", "--seconds"},
+        {"--clock-at 10:00", "--clock-at"},
+        {"--picture /nowhere/at/all.png", "--picture"}, /* Never opened. */
+    };
+    for (size_t a = 0; a < sizeof(asked) / sizeof(*asked); a++) {
+        char expected[128];
+        snprintf(expected, sizeof(expected), "--3d does not go with %s:", asked[a][1]);
+        snprintf(line, sizeof(line), "--3d %s", asked[a][0]);
+        assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, line, said, sizeof(said)) ==
+               EXIT_USAGE);
+        assert(strstr(said, expected) != NULL);
+        assert(strchr(said, '\n') == said + strlen(said) - 1);
+        snprintf(line, sizeof(line), "%s --3d", asked[a][0]);
+        assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, line, said, sizeof(said)) ==
+               EXIT_USAGE);
+        assert(strstr(said, expected) != NULL && strchr(said, '\n') == said + strlen(said) - 1);
+    }
+
+    /* A text file, either way round, and the text of standard input, named. */
+    snprintf(line, sizeof(line), "--3d --text %s", text);
+    assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, line, said, sizeof(said)) ==
+           EXIT_USAGE);
+    assert(strstr(said, "--3d does not go with --text:") != NULL);
+    assert(strchr(said, '\n') == said + strlen(said) - 1);
+    snprintf(line, sizeof(line), "--text %s --3d", text);
+    assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, line, said, sizeof(said)) ==
+           EXIT_USAGE);
+    assert(strstr(said, "--3d does not go with --text:") != NULL);
+    assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, "--3d --text -", said,
+                                         sizeof(said)) == EXIT_USAGE);
+    assert(strstr(said, "--3d does not go with --text:") != NULL);
+
+    /* Text on a pipe is said when it is found, and a pipe with nothing in it is no
+     * text, so the space goes on. */
+    piped_line_t piped = {"--3d", text};
+    assert(status_of_a_run_that_may_exit(take_the_text_piped_in_on_a_line, &piped, said,
+                                         sizeof(said)) == EXIT_USAGE);
+    assert(strstr(said, "--3d does not go with text on standard input:") != NULL);
+    assert(strchr(said, '\n') == said + strlen(said) - 1);
+    piped.text_file = empty;
+    assert(status_of_a_run_that_may_exit(take_the_text_piped_in_on_a_line, &piped, said,
+                                         sizeof(said)) == 3);
+    assert(said[0] == '\0');
+
+    /* The refusals the space had before stand, and say the same. */
+    assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, "--3d --flocks 2", said,
+                                         sizeof(said)) == EXIT_USAGE);
+    assert(strstr(said, "--3d is one flock over one roost; --flocks is for the flat sky") != NULL);
+    assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, "--3d --matrix", said,
+                                         sizeof(said)) == EXIT_USAGE);
+    assert(strstr(said, "--matrix is for the flat sky") != NULL);
+
+    /* What does go with it goes, and what it replaces is said once. */
+    const char *fine[] = {"--3d --screensaver",           "--3d --hawks 2",
+                          "--3d --hawks 1 --color ember", "--3d -n 800 --render braille",
+                          "--3d --preset murmuration",    "--3d --shape dot --seed 3"};
+    for (size_t f = 0; f < sizeof(fine) / sizeof(*fine); f++) {
+        assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, (void *)fine[f], said,
+                                             sizeof(said)) == 0);
+        assert(said[0] == '\0');
+    }
+    assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, "--3d --depth", said,
+                                         sizeof(said)) == 0);
+    assert(strstr(said, "--3d replaces --depth") != NULL);
+
+    assert(unlink(text) == 0 && unlink(empty) == 0 && unlink(picture) == 0);
+    forget_the_options();
+}
+
+/* A bird's place in a space does not travel to another window, so a shared sky is
+ * refused with one, either way round, in one line that names both and says why. */
+static void test_a_shared_sky_is_refused_with_a_space(void) {
+    char said[512];
+    const char *lines[] = {"--link --3d", "--3d --link", "--3d --hawks 1 --link"};
+    for (size_t l = 0; l < sizeof(lines) / sizeof(*lines); l++) {
+        assert(status_of_a_run_that_may_exit(read_the_line_in_a_child, (void *)lines[l], said,
+                                             sizeof(said)) == EXIT_USAGE);
+        assert(strstr(said, "--link does not go with --3d:") != NULL);
+        assert(strchr(said, '\n') == said + strlen(said) - 1); /* One line. */
+    }
+    forget_the_options();
+}
+
 int main(void) {
     make_scratch();
     trig_lookup_init();
@@ -10275,6 +11984,33 @@ int main(void) {
     test_a_clock_changes_a_letter_while_birds_cross();
     test_a_signal_removes_the_socket();
     test_leaving_through_exit_removes_the_socket();
+    /* The space, and ink. */
+    test_the_flat_flock_is_what_it_was();
+    test_the_kitty_frame_places_only_what_the_upload_sent();
+    test_three_d_has_defaults_of_its_own();
+    test_three_d_says_what_it_replaces();
+    test_ink_is_a_ramp_after_the_others();
+    test_ink_runs_from_the_foreground_towards_the_background();
+    test_ink_does_not_fade_into_a_black_terminal();
+    test_ink_is_drawn_as_it_was_built();
+    test_a_flock_of_ink_is_seen_on_a_white_ground();
+    test_ink_is_asked_of_the_terminal();
+    test_ink_without_a_terminal_is_ash();
+    test_the_birds_are_rebuilt_when_the_window_settles();
+    test_a_space_has_a_picture_for_every_size_and_shape();
+    test_a_birds_shape_follows_what_the_camera_sees();
+    test_a_space_is_drawn_by_the_renderers_of_the_flat_flock();
+    test_the_panel_says_what_its_rows_do_in_a_space();
+    test_the_sliders_steer_the_flight_in_a_space();
+    test_a_space_grows_and_shrinks_with_the_keys();
+    test_a_space_flies_at_the_pace_it_is_told();
+    test_hawks_hunt_in_a_space_and_are_drawn_over_it();
+    test_the_pointer_pokes_the_flock_in_a_space();
+    test_a_space_records_headless();
+    test_a_recording_of_a_space_asks_for_its_sprites();
+    test_a_space_settles_what_was_not_asked_for();
+    test_a_space_is_refused_with_a_text_and_a_sign();
+    test_a_shared_sky_is_refused_with_a_space();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);
     return 0;

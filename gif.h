@@ -35,6 +35,21 @@ gif_status_t gif_open(gif_writer_t **writer, const char *path, int width, int he
 enum { GIF_SEEDS = 32 };
 gif_status_t gif_hint_colours(gif_writer_t *writer, const uint8_t *rgb, int count);
 
+/*
+ * Colours the table must have, exactly, whatever the first frame shows: in a space
+ * a size of bird nobody has flown into view yet, or a hawk still off the screen,
+ * would otherwise be drawn in the nearest colour the table has, a red as a grey. A
+ * reserved colour takes an entry before anything is counted, exactly as given, in
+ * the order given, and whatever else falls in its bucket is drawn in it, a bucket
+ * being too small for anyone to tell. Colours that share a bucket share an entry,
+ * which is their mean. Calls add to the list, up to GIF_RESERVED_MAX in all, and
+ * only before the first frame; with none reserved the palette is exactly what the
+ * first frame makes. A call that cannot be kept whole is refused and changes
+ * nothing.
+ */
+enum { GIF_RESERVED_MAX = 32 };
+gif_status_t gif_reserve_colours(gif_writer_t *writer, const uint8_t (*colours)[3], int count);
+
 /* RGBA in, alpha ignored: a GIF frame is opaque. */
 gif_status_t gif_add_frame(gif_writer_t *writer, const png_image_t *frame);
 

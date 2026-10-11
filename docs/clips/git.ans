@@ -1,0 +1,19 @@
+* [35m|[m   [33m97026e6[m Merge sky3d: --3d, a murmuration in three di..
+[36m|[m[1;31m\[m [35m\[m  
+[36m|[m * [35m|[m [33m852ea26[m --3d: the birds are rebuilt when the window ..
+[36m|[m * [35m|[m [33m179036a[m Ink: the terminal's own text colour, fading ..
+[36m|[m * [35m|[m [33mea39fe4[m Reserving no colours is not a memcpy of noth..
+[36m|[m * [35m|[m [33m24f1642[m --3d: a bird with a hawk on it turns as it c..
+[36m|[m * [35m|[m [33mbb91b6a[m --3d: a seed changes the air, so seeds are n..
+[36m|[m * [35m|[m [33mb86cf24[m README: --3d, in the Use block, its own sect..
+[36m|[m * [35m|[m [33m819be23[m --3d: the camera stands closer, makes room q..
+[36m|[m * [35m|[m [33m868ba8a[m --3d: a murmuration in three dimensions, see..
+[36m|[m * [35m|[m [33m1de53a5[m A GIF can be asked for colours its first fra..
+[36m|[m * [35m|[m [33m760190a[m A murmuration in three dimensions: birds in ..
+[36m|[m [35m|[m[35m/[m  
+* [35m|[m [33m5955a24[m README: the signs paragraph says what the fo..
+* [35m|[m [33m9f32c08[m README: rewrap the picture paragraph          
+* [35m|[m [33md65d553[m README: --matrix gives a picture its ramp, a..
+* [35m|[m [33mc94988c[m A picture beside --matrix is drawn in the ma..
+* [35m|[m [33m14c1d2a[m Test that a GIF of a sign with hawks has the..
+* [35m|[m [33m51b7fc4[m README: a sign beside a night, a text and a ..

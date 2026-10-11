@@ -63,7 +63,7 @@ cat docs/neofetch.txt | ./cbirds --record docs/letters.gif --record-fps 10 \
 # is a tenth of the camera's orbit: this is one of 48 that were recorded and
 # looked at, chosen because the flock closes into a ring around the hawk
 # between the third and the sixth second, and folds into arcs and sheets after
-# it. Most of the seeds are over 3 MB at this size; this one is 2.9.
+# it. Most of the seeds are over 3 MB at this size; this one is just under.
 ./cbirds --record docs/3d.gif --record-fps 25 --record-seconds 12 \
          --record-size 64x18 --3d --color ember --hawks 1 --seed 45
 

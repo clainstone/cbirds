@@ -391,8 +391,9 @@ sheets and ribbons.
 Without `-n`, `-s` or `-c` there are 2000 birds, of 8 pixels, or 5 in text, in
 `ink`: the ramp from your terminal's text colour to its background, asked for
 at startup, so the flock is grey on a dark terminal and near black on a light
-one. A terminal that does not answer, and every recording, gets `ash`.
-`--color ink` asks for it in the flat sky as well.
+one. A terminal that does not answer, or whose text is the colour of its
+ground, and every recording, get `ash`. `--color ink` asks for it in the flat
+sky as well.
 
 In the panel the `boundary` row becomes `roost`, the pull home, and
 `perception` becomes `neighbours`, how many a bird heeds, from one to thirteen.

@@ -57,6 +57,16 @@ cat docs/neofetch.txt | ./cbirds --record docs/letters.gif --record-fps 10 \
 ./cbirds --record docs/clock.gif --record-fps 20 --record-seconds 14 \
          --record-size 64x18 -n 300 --clock-at 10:09:52 --seed 5
 
+# The murmuration, in ember and with a hawk. With no terminal to ask, ink falls
+# back to ash and the birds are grey, so the colour is named. The size of the
+# flock is the default 2000. Seeds differ a good deal in twelve seconds, which
+# is a tenth of the camera's orbit: this is one of 48 that were recorded and
+# looked at, chosen because the flock closes into a ring around the hawk
+# between the third and the sixth second, and folds into arcs and sheets after
+# it. Most of the seeds are over 3 MB at this size; this one is 2.9.
+./cbirds --record docs/3d.gif --record-fps 25 --record-seconds 12 \
+         --record-size 64x18 --3d --color ember --hawks 1 --seed 45
+
 # And the asciinema cast, at the default pace, with the braille birds at the
 # 60 pixels they were drawn at before 30 became the default everywhere.
 ./cbirds --record docs/demo.cast --record-fps 30 --record-seconds 8 \

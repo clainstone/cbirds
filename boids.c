@@ -10,6 +10,7 @@
 #include <locale.h>
 #include <math.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -490,7 +491,14 @@ static int sky_picture_size;
 static int sky_bin_size(int bin) {
     double picture =
         sky_picture_size > 0 ? sky_picture_size : sky_picture(screen.width, screen.height);
-    int size = (int)(config.bird_size * picture / 512.0 * sky_bin_scale(bin) + 0.5);
+    /* No bigger than lets the nearest bird be twice the largest --size: a big --size
+     * on a big window was birds of hundreds of pixels, sprites of hundreds of
+     * megabytes and seconds to build them. Every size comes down with it, so the
+     * depth reads as it did. */
+    double middle = config.bird_size * picture / 512.0;
+    double most = 2.0 * MAX_BIRD_SIZE / sky_bin_scale(SKY_BINS - 1);
+    if (middle > most) middle = most;
+    int size = (int)(middle * sky_bin_scale(bin) + 0.5);
     return size < MIN_BIRD_SIZE ? MIN_BIRD_SIZE : size;
 }
 
@@ -601,6 +609,21 @@ static void restore_terminal(void) {
     write_all(SYNC_UPDATE_END, sizeof(SYNC_UPDATE_END) - 1);
     write_all(CURSOR_SHOW, sizeof(CURSOR_SHOW) - 1);
     write_all(ALT_SCREEN_OFF, sizeof(ALT_SCREEN_OFF) - 1);
+}
+
+/* The run ends on an error found after the terminal was taken, and the person is
+ * told why on the terminal they had: the screen is given back first. On the
+ * alternate screen, with output processing off, a message is thrown away with the
+ * screen or staircases across it, and nobody reads why the program stopped. The
+ * arguments are worked out before the terminal is touched, so an errno they report
+ * is the one that was set. */
+static void leave_saying(const char *format, ...) {
+    restore_terminal();
+    va_list arguments;
+    va_start(arguments, format);
+    vfprintf(stderr, format, arguments);
+    va_end(arguments);
+    exit(EXIT_FAILURE);
 }
 
 static void signal_handler(int signal_number) {
@@ -905,8 +928,8 @@ static void update_screen_dimensions(void) {
  * The terminal's own colours, asked for rather than guessed.
  *
  * OSC 4 names a palette entry, OSC 10 and 11 the foreground and background. The
- * answer comes back as rgb:RRRR/GGGG/BBBB, four hex digits a channel, and a
- * terminal that does not implement the query simply says nothing. A ramp is then
+ * answer comes back as rgb:RRRR/GGGG/BBBB, usually four hex digits a channel, and
+ * a terminal that does not implement the query simply says nothing. A ramp is then
  * built between the most saturated answer and the background, which is what
  * makes a screenshot match the poster's own setup: the single thing that decides
  * whether a terminal toy looks native or looks imported.
@@ -914,19 +937,40 @@ static void update_screen_dimensions(void) {
 static uint8_t theme_tints[5][3];
 static int theme_is_known;
 
+static int hex_digit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* An X colour: one to four hex digits a channel, each its own count, which X
+ * scales to sixteen bits and whose top byte is the colour: two digits are the
+ * byte, four its high half, three the top eight of twelve bits, and one digit
+ * repeated. Four is the usual answer and some terminals send two; one channel read
+ * as the others' width turned a white of one digit black. An rgba: answer has an
+ * alpha after the three, which a colour on a screen does not need. */
 static int parse_osc_colour(const char *reply, uint8_t rgb[3]) {
     const char *at = strstr(reply, "rgb:");
-    unsigned r, g, b;
-    if (at == NULL) return 0;
-    if (sscanf(at + 4, "%4x/%4x/%4x", &r, &g, &b) != 3) return 0;
-    /* Four hex digits a channel is the usual answer, but some terminals send
-     * two; scale whichever came back down to a byte. */
-    const char *slash = strchr(at + 4, '/');
-    int digits = slash ? (int)(slash - (at + 4)) : 4;
-    int shift = digits >= 4 ? 8 : 0;
-    rgb[0] = (uint8_t)(r >> shift);
-    rgb[1] = (uint8_t)(g >> shift);
-    rgb[2] = (uint8_t)(b >> shift);
+    if (at != NULL)
+        at += 4;
+    else if ((at = strstr(reply, "rgba:")) != NULL)
+        at += 5;
+    else
+        return 0;
+    for (int channel = 0; channel < 3; channel++) {
+        unsigned value = 0;
+        int digits = 0;
+        while (digits < 4 && hex_digit(at[digits]) >= 0)
+            value = value * 16 + (unsigned)hex_digit(at[digits++]);
+        if (digits == 0 || hex_digit(at[digits]) >= 0) return 0;
+        rgb[channel] = (uint8_t)(digits == 1   ? value * 17
+                                 : digits == 2 ? value
+                                 : digits == 3 ? value >> 4
+                                               : value >> 8);
+        at += digits;
+        if (channel < 2 && *at++ != '/') return 0;
+    }
     return 1;
 }
 
@@ -1068,11 +1112,16 @@ static void build_the_ink(const uint8_t foreground[3], const uint8_t background[
 
 /* Both colours or neither: a ramp from a foreground that was guessed would be
  * invisible on exactly the terminals that need it. The background is asked first
- * and a silent terminal costs one wait, not two. */
+ * and a silent terminal costs one wait, not two. A text the colour of its ground
+ * is no text anybody reads, and a flock in it would not be seen: that answer is
+ * taken for no answer. */
+static const double INK_LEAST_CONTRAST = 1.5;
+
 static int learn_the_ink(double pull) {
     uint8_t foreground[3], background[3];
     if (!ask_colour("\033]11;?\033\\", background)) return 0;
     if (!ask_colour("\033]10;?\033\\", foreground)) return 0;
+    if (contrast_between(foreground, background) < INK_LEAST_CONTRAST) return 0;
     build_the_ink(foreground, background, pull);
     return 1;
 }
@@ -3799,6 +3848,7 @@ static struct {
     sky_view_t *views;
     int views_capacity;
     int flying;
+    int shaped; /* The birds whose shape the last flying frame chose. */
 } sky;
 
 /* The flight is tuned in metres and seconds, and at the pace the program ships at
@@ -3808,6 +3858,20 @@ static const double SKY_TIME = 1.0 / DEFAULT_PACE;
 /* No step longer than this, in seconds of flight: a bird turns at a limited rate
  * per step, and a long one is a bird that cannot turn where it was going to. */
 static const double SKY_LONGEST_STEP = 1.0 / 30;
+/* A live frame stands for the time since the one before, and a space flies it in
+ * as many steps as that takes. After a stall, a terminal that stopped reading, a
+ * stopped process, a laptop that slept (which CLOCK_MONOTONIC counts on macOS),
+ * one frame stood for all of it and flew it at once with the keys unread: a
+ * minute away was seconds of a frozen screen, and a machine that could not keep
+ * up fell further behind every frame. A live frame of a space stands for a quarter
+ * of a second at most, and what it misses it does not fly. A recording's frames
+ * are its own, and the flat sky flies a frame in three steps at most however long
+ * it is; both are left as they were. */
+static const double SKY_LONGEST_LIVE_FRAME = 0.25;
+
+static double live_frame_seconds(double elapsed) {
+    return sky_mode && elapsed > SKY_LONGEST_LIVE_FRAME ? SKY_LONGEST_LIVE_FRAME : elapsed;
+}
 enum { SKY_WARMUP_STEPS = 8 * 30 };
 /* How far from the line the pointer makes through the sky a bird feels it, in
  * metres: a stick wider than a bird and narrower than the flock. */
@@ -3843,8 +3907,10 @@ static int sky_shape(const sky_view_t *view, double beat) {
     return along * SKY_ACROSS_LEVELS + across;
 }
 
-/* Where the birds are on the screen, as the renderers want them. */
-static void project_the_sky(bird_t *birds) {
+/* Where the birds are on the screen, as the renderers want them. A frame that
+ * flies beats their wings as well; a paused one only looks, and leaves each bird
+ * the shape it was drawn in, choosing one only for a bird that has none yet. */
+static void project_the_sky(bird_t *birds, int beating) {
     sky_camera_t camera;
     sky_camera(&camera);
     if (sky.views_capacity < config.birds) {
@@ -3867,9 +3933,11 @@ static void project_the_sky(bird_t *birds) {
         bird->layer = view->bin;
         bird->direction = view->angle;
         bird->frame = direction_frame(view->angle);
-        bird->shape = sky_shape(view, WING_SPAN[WING_SEQUENCE[bird->wing % WING_CYCLE]]);
-        beat_wings(bird);
+        if (beating || i >= sky.shaped)
+            bird->shape = sky_shape(view, WING_SPAN[WING_SEQUENCE[bird->wing % WING_CYCLE]]);
+        if (beating) beat_wings(bird);
     }
+    if (beating) sky.shaped = config.birds;
     for (int i = 0; i < config.hawks && i < sky.world.hawk_count; i++) {
         sky_view_t view;
         hawk_t *hawk = &hawks[i];
@@ -3884,6 +3952,7 @@ static void project_the_sky(bird_t *birds) {
         hawk->direction = view.angle;
         hawk->frame = direction_frame(view.angle);
         /* It soars, wings out, until the dive, and then it beats. */
+        if (!beating) continue;
         if (sky.world.hawks[i].diving) {
             hawk->wing_clock += WING_HZ * WING_CYCLE * frame_seconds;
             while (hawk->wing_clock >= 1.0) {
@@ -3900,7 +3969,8 @@ static void begin_the_sky(bird_t *birds) {
     sky_destroy(&sky.world);
     /* The only draw from the flock's own numbers, so a seed is still a flock. */
     uint32_t seed = next_random();
-    if (sky_init(&sky.world, config.birds, seed) != SKY_OK) exit(EXIT_FAILURE);
+    if (sky_init(&sky.world, config.birds, seed) != SKY_OK)
+        leave_saying("%s: out of memory for %d birds in a space\n", program_name, config.birds);
     sky_populate(&sky.world, 0, config.birds, 0);
     sky.flying = 1;
     /* Let it settle before anybody looks: a flock thrown into the air as a cloud
@@ -3915,7 +3985,7 @@ static void begin_the_sky(bird_t *birds) {
         birds[i].wing = (int)(random_unit() * WING_CYCLE) % WING_CYCLE;
         birds[i].wing_clock = random_unit();
     }
-    project_the_sky(birds);
+    project_the_sky(birds, 1);
 }
 
 static int grow_the_sky(int from, int to) {
@@ -3947,7 +4017,17 @@ static void fly_the_sky(bird_t *birds) {
     if (steps < 1) steps = 1;
     for (int step = 0; step < steps; step++)
         sky_step(&sky.world, config.birds, &rules, &poke, seconds / steps);
-    project_the_sky(birds);
+    project_the_sky(birds, 1);
+}
+
+/* Paused, a space is still seen from where the camera stands: the birds that + has
+ * added, a hawk that k has called and a window of another size are put where they
+ * are, where they would otherwise be drawn wherever the flat sky put them until the
+ * flight went on. Nothing flies, beats its wings or draws a random number. */
+static void look_at_the_sky(bird_t *birds) {
+    if (sky.shaped > config.birds) sky.shaped = config.birds;
+    sky_set_hawks(&sky.world, config.hawks);
+    project_the_sky(birds, 0);
 }
 
 static void update_birds(bird_t *birds, const bird_t *snapshot, const spatial_grid_t *grid) {
@@ -4323,6 +4403,35 @@ static void paint_the_letters(const bird_t *birds) {
     }
 }
 
+/* A hawk in a space is a few pixels among two thousand birds, and a text cell wears
+ * the colour most of its ink is in: inside the flock the birds outvoted it, and for
+ * a second or more of a hunt the hawk was not drawn at all. Once the cells are read,
+ * every cell its own picture has ink in wears its colour, as a hawk over text is an
+ * arrow in it; the dots are still the ones the canvas has. The flat sky's hawk is
+ * twice a bird and has cleared the air round it, and is left as it was. */
+static void colour_the_hawks_in(cells_t *cells, const png_image_t *frames) {
+    if (!sky_mode) return;
+    const uint8_t *colour = hawk_colour();
+    for (int h = 0; h < config.hawks; h++) {
+        const png_image_t *sprite = &frames[hawk_set(hawk_wing(&hawks[h])) * ROTATION_FRAMES +
+                                            hawks[h].frame % ROTATION_FRAMES];
+        if (sprite->pixels == NULL) continue;
+        int left = (int)hawks[h].x - hawk_offset_of(&hawks[h]);
+        int top = (int)hawks[h].y - hawk_offset_of(&hawks[h]);
+        for (int y = 0; y < sprite->height; y++)
+            for (int x = 0; x < sprite->width; x++) {
+                if (sprite->pixels[((size_t)y * (size_t)sprite->width + (size_t)x) * 4 + 3] < 128)
+                    continue;
+                if (left + x < 0 || top + y < 0) continue;
+                cell_t *cell =
+                    cells_at(cells, (left + x) / screen.cell_width, (top + y) / screen.cell_height);
+                if (cell == NULL || cell->glyph == 0) continue;
+                if (cell->has_fg) memcpy(cell->fg, colour, 3);
+                if (cell->has_bg) memcpy(cell->bg, colour, 3);
+            }
+    }
+}
+
 static kitty_graphics_status_t queue_text_frame(kitty_graphics_t *graphics, const bird_t *birds) {
     if (!text_renderer_fits_the_screen()) return KITTY_GRAPHICS_ERR_MEMORY;
     kitty_graphics_status_t status = kitty_graphics_begin_synchronized_update(graphics);
@@ -4342,6 +4451,7 @@ static kitty_graphics_status_t queue_text_frame(kitty_graphics_t *graphics, cons
     } else {
         compose_onto(&text_canvas, text_sprites, birds, 0);
         cells_read(&text_cells, text_style(), &text_canvas, screen.cell_width, screen.cell_height);
+        colour_the_hawks_in(&text_cells, text_sprites);
     }
     if (cells_emit(&text_cells) != CELLS_OK) return KITTY_GRAPHICS_ERR_MEMORY;
     if (status == KITTY_GRAPHICS_OK)
@@ -4815,6 +4925,8 @@ static kitty_graphics_status_t render_frame(kitty_graphics_t *graphics, bird_t *
     if (!paused || step_once) {
         step_once = 0;
         fly(birds, snapshot, grid);
+    } else if (sky_mode) {
+        look_at_the_sky(birds);
     }
     return queue_render_frame(graphics, birds);
 }
@@ -5044,6 +5156,13 @@ enum { OPTION_COUNT = sizeof(OPTIONS) / sizeof(*OPTIONS) };
     "       space pause   . step   0 reset   +/- birds   Tab preset\n"             \
     "       h panel   e trails   k/K hawks   g/G flocks avoid, with two or more\n" \
     "       enter letters off, or home (with text)   q quit\n"
+
+/* What --size and three of the sliders are in a space, where the rows above say
+ * what they are in the flat sky. */
+#define SPACE_HELP                                                                   \
+    "\nIn --3d  --size is the bird halfway into the flock (default 8, 5 in text),\n" \
+    "         --boundary the pull of the roost, --turning a turn a second, and\n"    \
+    "         --perception 12 to 60 the neighbours a bird heeds, 1 to 13\n"
 
 enum { EXIT_USAGE = 2 }; /* A mistyped command is not a run that went wrong. */
 
@@ -5718,13 +5837,21 @@ static png_status_t rasterise_sprites(png_image_t *frames) {
         status =
             rasterise_geometry(&source, frames, far_size, 1.0, sets, arguments, shades, far_tint);
     }
-    /* Hawks, at twice the size, at each wing phase, and in a space at each size. */
-    for (int bin = 0; bin < (sky_mode ? SKY_BINS : 1); bin++) {
-        for (int wing = 0; wing < WING_PHASES && status == PNG_OK; wing++) {
-            int set = hawk_set(bin * WING_PHASES + wing), argument = 0;
-            status = rasterise_geometry(&source, frames,
-                                        sky_mode ? hawk_size_in_layer(bin) : hawk_sprite_size(),
-                                        WING_SPAN[wing], &set, &argument, 1, tint_hawk);
+    /* Hawks, at twice the size, at each wing phase, and in a space at each size.
+     * There the nearest is drawn from the sprite and the others are it made
+     * smaller: drawing each from the sprite again was two thirds of the time a
+     * space took to build, with or without a hawk in it. */
+    for (int wing = 0; wing < WING_PHASES && status == PNG_OK; wing++) {
+        int nearest = sky_mode ? SKY_BINS - 1 : 0, argument = 0;
+        int set = hawk_set(nearest * WING_PHASES + wing);
+        status = rasterise_geometry(&source, frames,
+                                    sky_mode ? hawk_size_in_layer(nearest) : hawk_sprite_size(),
+                                    WING_SPAN[wing], &set, &argument, 1, tint_hawk);
+        for (int bin = 0; bin < nearest && status == PNG_OK; bin++) {
+            int smaller = hawk_set(bin * WING_PHASES + wing), size = hawk_size_in_layer(bin);
+            for (int i = 0; i < ROTATION_FRAMES && status == PNG_OK; i++)
+                status = png_resize(&frames[set * ROTATION_FRAMES + i], size, size,
+                                    &frames[smaller * ROTATION_FRAMES + i]);
         }
     }
     /* Tails: one geometry, a set a step of fading. Not in three dimensions, where a
@@ -5896,7 +6023,7 @@ static int write_snapshot(const char *path, const bird_t *birds) {
 static void usage(FILE *out, const char *program, int everything) {
     options_usage(out, program, "cbirds \u2014 a flock of birds in your terminal.", EXAMPLES,
                   OPTIONS, OPTION_COUNT, everything);
-    if (everything) fputs(KEYS_HELP, out);
+    if (everything) fputs(KEYS_HELP SPACE_HELP, out);
 }
 
 /* HH:MM or HH:MM:SS, as many digits as the person felt like typing. */
@@ -6626,6 +6753,7 @@ static int run_cast_recording(void) {
             compose_onto(&text_canvas, text_sprites, birds, 0);
             cells_read(&text_cells, CELLS_BRAILLE, &text_canvas, screen.cell_width,
                        screen.cell_height);
+            colour_the_hawks_in(&text_cells, text_sprites);
         }
         if (cells_emit(&text_cells) != CELLS_OK) break;
         /* Inside a synchronized update, for the players that honour it. */
@@ -6811,6 +6939,7 @@ static int run_recording(void) {
                 compose_onto(&canvas, frames, birds, 0);
                 cells_read(&text_cells, text_style(), &canvas, screen.cell_width,
                            screen.cell_height);
+                colour_the_hawks_in(&text_cells, frames);
             }
             png_image_free(&painted);
             if (cells_emit(&text_cells) != CELLS_OK ||
@@ -6985,48 +7114,35 @@ int main(int argc, char **argv) {
         config.palette = FALLBACK_INK;
 
     spatial_grid_status_t grid_status = spatial_grid_init(&grid, SPATIAL_CELL_SIZE);
-    if (grid_status != SPATIAL_GRID_OK) {
-        fprintf(stderr, "Cannot initialize spatial grid: %s\n",
-                spatial_grid_status_string(grid_status));
-        exit(EXIT_FAILURE);
-    }
+    if (grid_status != SPATIAL_GRID_OK)
+        leave_saying("Cannot initialize spatial grid: %s\n",
+                     spatial_grid_status_string(grid_status));
     /* A named seed makes a run repeatable, which is what lets a look be shared
      * and a bug report be reproduced. */
     seed_random(requested_seed >= 0 ? (unsigned)requested_seed : (unsigned)time(NULL));
     update_screen_dimensions();
     settle_the_bird_size(); /* From the screen, if it is a sign that is being sized. */
     grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, config.birds);
-    if (grid_status != SPATIAL_GRID_OK) {
-        fprintf(stderr, "Cannot prepare spatial grid: %s\n",
-                spatial_grid_status_string(grid_status));
-        exit(EXIT_FAILURE);
-    }
+    if (grid_status != SPATIAL_GRID_OK)
+        leave_saying("Cannot prepare spatial grid: %s\n", spatial_grid_status_string(grid_status));
     /* The sprites, once, as pixels: the text renderers read them back as cells
      * every frame, and Kitty is sent them encoded and then places them by id. */
     if (drawing_with_text()) {
-        if (!prepare_text_renderer()) {
-            fprintf(stderr, "%s: cannot build the sprites to draw with\n", program_name);
-            exit(EXIT_FAILURE);
-        }
+        if (!prepare_text_renderer())
+            leave_saying("%s: cannot build the sprites to draw with\n", program_name);
     } else if (rasterise_sprites(text_sprites) != PNG_OK) {
-        fprintf(stderr, "%s: cannot build the sprites to draw with\n", program_name);
-        exit(EXIT_FAILURE);
+        leave_saying("%s: cannot build the sprites to draw with\n", program_name);
     }
     set_frame_seconds(1.0 / FRAME_RATE);
     hawk_sets_built = 1;
 
     bird_t *birds = calloc((size_t)bird_room(config.birds), sizeof(*birds));
     bird_t *snapshot = malloc(sizeof(*snapshot) * (size_t)bird_room(config.birds));
-    if (!birds || !snapshot) {
-        perror("Out of memory");
-        exit(EXIT_FAILURE);
-    }
+    if (!birds || !snapshot) leave_saying("Out of memory: %s\n", strerror(errno));
     kitty_graphics_status_t graphics_status = kitty_graphics_init(&graphics, STDOUT_FILENO);
-    if (graphics_status != KITTY_GRAPHICS_OK) {
-        fprintf(stderr, "Cannot initialize Kitty graphics: %s\n",
-                kitty_graphics_status_string(graphics_status));
-        exit(EXIT_FAILURE);
-    }
+    if (graphics_status != KITTY_GRAPHICS_OK)
+        leave_saying("Cannot initialize Kitty graphics: %s\n",
+                     kitty_graphics_status_string(graphics_status));
 
     enter_alt_screen();
     write_all("\x1b[J", sizeof("\x1b[J") - 1);
@@ -7038,11 +7154,9 @@ int main(int argc, char **argv) {
         sprites_uploaded = 1; /* Even a failed upload may have left some behind. */
         graphics_status = upload_sprite_sets(&graphics, text_sprites);
         free_sprites(text_sprites);
-        if (graphics_status != KITTY_GRAPHICS_OK) {
-            fprintf(stderr, "Cannot upload Kitty graphics: %s\n",
-                    kitty_graphics_status_string(graphics_status));
-            exit(EXIT_FAILURE);
-        }
+        if (graphics_status != KITTY_GRAPHICS_OK)
+            leave_saying("Cannot upload Kitty graphics: %s\n",
+                         kitty_graphics_status_string(graphics_status));
     }
 
     struct timespec started;
@@ -7065,7 +7179,7 @@ int main(int argc, char **argv) {
         }
 
         clock_gettime(CLOCK_MONOTONIC, &frame_start);
-        set_frame_seconds(elapsed_seconds(&previous_frame, &frame_start));
+        set_frame_seconds(live_frame_seconds(elapsed_seconds(&previous_frame, &frame_start)));
         previous_frame = frame_start;
         if (leaving > 0) {
             leaving -= frame_seconds;
@@ -7082,18 +7196,14 @@ int main(int argc, char **argv) {
         update_screen_dimensions();
         if (reflow_the_letters(&birds, &snapshot)) live_birds = config.birds;
         sprite_fit_t fit = fit_the_sprites_to_the_window(&graphics);
-        if (fit == SPRITES_FAILED) {
-            fprintf(stderr, "%s: cannot build the sprites to draw with\n", program_name);
-            exit(EXIT_FAILURE);
-        }
+        if (fit == SPRITES_FAILED)
+            leave_saying("%s: cannot build the sprites to draw with\n", program_name);
         /* The pause was building, not flying: the next frame is one frame long. */
         if (fit == SPRITES_REBUILT) clock_gettime(CLOCK_MONOTONIC, &previous_frame);
         grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, grid_items());
-        if (grid_status != SPATIAL_GRID_OK) {
-            fprintf(stderr, "Cannot resize spatial grid: %s\n",
-                    spatial_grid_status_string(grid_status));
-            exit(EXIT_FAILURE);
-        }
+        if (grid_status != SPATIAL_GRID_OK)
+            leave_saying("Cannot resize spatial grid: %s\n",
+                         spatial_grid_status_string(grid_status));
         if (population_changed) {
             /* Grown or shrunk by a keypress, and the grid needs room for them. */
             population_changed = 0;
@@ -7102,11 +7212,9 @@ int main(int argc, char **argv) {
             else
                 config.birds = live_birds; /* Keep what we have rather than lose it. */
             grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, grid_items());
-            if (grid_status != SPATIAL_GRID_OK) {
-                fprintf(stderr, "Cannot resize spatial grid: %s\n",
-                        spatial_grid_status_string(grid_status));
-                exit(EXIT_FAILURE);
-            }
+            if (grid_status != SPATIAL_GRID_OK)
+                leave_saying("Cannot resize spatial grid: %s\n",
+                             spatial_grid_status_string(grid_status));
         }
         if (the_row.opened) {
             /* The birds that have come in, after the keys have had their say about
@@ -7114,52 +7222,41 @@ int main(int argc, char **argv) {
             sky_keep_up();
             sky_take_in(birds, &live_birds);
             grid_status = spatial_grid_prepare(&grid, screen.width, screen.height, grid_items());
-            if (grid_status != SPATIAL_GRID_OK) {
-                fprintf(stderr, "Cannot resize spatial grid: %s\n",
-                        spatial_grid_status_string(grid_status));
-                exit(EXIT_FAILURE);
-            }
+            if (grid_status != SPATIAL_GRID_OK)
+                leave_saying("Cannot resize spatial grid: %s\n",
+                             spatial_grid_status_string(grid_status));
         }
         /* After the flock has the size it is to have, and after the screen is
          * measured: a sign is laid out for both, and reads every bird of it. */
         if (leaving <= 0) sign_advance(birds);
         memcpy(snapshot, birds, sizeof(*birds) * (size_t)config.birds);
         grid_status = spatial_grid_build(&grid, config.birds, read_bird_position, snapshot);
-        if (grid_status != SPATIAL_GRID_OK) {
-            fprintf(stderr, "Cannot build spatial grid: %s\n",
-                    spatial_grid_status_string(grid_status));
-            exit(EXIT_FAILURE);
-        }
+        if (grid_status != SPATIAL_GRID_OK)
+            leave_saying("Cannot build spatial grid: %s\n",
+                         spatial_grid_status_string(grid_status));
         if (leaving > 0) fly_away(birds);
         graphics_status = leaving > 0 ? queue_render_frame(&graphics, birds)
                                       : render_frame(&graphics, birds, snapshot, &grid);
-        if (graphics_status != KITTY_GRAPHICS_OK) {
-            fprintf(stderr, "Cannot render Kitty graphics: %s\n",
-                    kitty_graphics_status_string(graphics_status));
-            exit(EXIT_FAILURE);
-        }
+        if (graphics_status != KITTY_GRAPHICS_OK)
+            leave_saying("Cannot render Kitty graphics: %s\n",
+                         kitty_graphics_status_string(graphics_status));
         if (leaving <= 0) sky_hand_over(birds, &live_birds);
         size_t frame_bytes = graphics.length;
         while (running && graphics.length > 0) {
             graphics_status = kitty_graphics_flush_nonblocking(&graphics);
             if (graphics_status == KITTY_GRAPHICS_AGAIN) {
-                if (wait_for_terminal_io() < 0) {
-                    perror("Cannot wait for terminal output");
-                    exit(EXIT_FAILURE);
-                }
+                if (wait_for_terminal_io() < 0)
+                    leave_saying("Cannot wait for terminal output: %s\n", strerror(errno));
                 running = handle_input();
                 continue;
             }
             if (graphics_status != KITTY_GRAPHICS_OK) {
                 /* Whatever the renderer: the text ones go through this buffer
                  * too, and a reader that went away is the usual reason. */
-                if (graphics_status == KITTY_GRAPHICS_ERR_IO)
-                    fprintf(stderr, "%s: cannot write to the terminal: %s\n", program_name,
-                            strerror(errno));
-                else
-                    fprintf(stderr, "%s: cannot write to the terminal: %s\n", program_name,
-                            kitty_graphics_status_string(graphics_status));
-                exit(EXIT_FAILURE);
+                leave_saying("%s: cannot write to the terminal: %s\n", program_name,
+                             graphics_status == KITTY_GRAPHICS_ERR_IO
+                                 ? strerror(errno)
+                                 : kitty_graphics_status_string(graphics_status));
             }
         }
         if (!running) break;

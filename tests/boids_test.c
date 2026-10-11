@@ -11789,6 +11789,378 @@ static void test_a_shared_sky_is_refused_with_a_space(void) {
     forget_the_options();
 }
 
+/* A live frame of a space stands for a quarter of a second at most, however long the
+ * terminal kept it waiting: a stall was flown all at once, with the keys unread. A
+ * flat frame stands for all of it, as it always has, and flies it in three steps. */
+static void test_a_live_frame_of_a_space_stands_for_a_quarter_second_at_most(void) {
+    bird_t *birds = calloc(60, sizeof(*birds)), *snapshot = malloc(sizeof(*snapshot) * 60);
+    spatial_grid_t grid;
+
+    assert(birds != NULL && snapshot != NULL);
+    reset_test_config();
+    assert(live_frame_seconds(3600) == 3600 && live_frame_seconds(0.02) == 0.02);
+    sky_mode = 1;
+    assert(live_frame_seconds(0.02) == 0.02);
+    assert(live_frame_seconds(3600) == SKY_LONGEST_LIVE_FRAME);
+    /* At the fastest pace a minute away is that quarter second's flight. */
+    legend_enabled = 0;
+    config.birds = 60;
+    config.pace_notch = LEGEND_BAR_CELLS;
+    apply_notches();
+    apply_screen_size(96, 32, 768, 512);
+    seed_random(3);
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, 60) == SPATIAL_GRID_OK);
+    initialize_birds(birds);
+    double before = sky.world.clock;
+    set_frame_seconds(live_frame_seconds(60));
+    fly(birds, snapshot, &grid);
+    assert(fabs(sky.world.clock - before - SKY_LONGEST_LIVE_FRAME * config.pace * SKY_TIME) < 1e-9);
+    set_frame_seconds(1.0 / FRAME_RATE);
+    spatial_grid_destroy(&grid);
+    free(snapshot);
+    free(birds);
+    reset_test_config();
+}
+
+/* A hawk inside a space's flock is seen in the text renderers too: the cells its
+ * picture is in wear its colour, however many birds there are in them. */
+static void test_a_hawk_in_a_space_wears_its_colour_in_text(void) {
+    static png_image_t frames[ROTATION_FRAMES * MAX_SPRITE_SETS];
+    enum { COUNT = 48 };
+    bird_t birds[COUNT];
+    png_image_t canvas = {0, 0, NULL};
+    cells_t cells;
+
+    reset_test_config();
+    sky_mode = 1;
+    render_mode = RENDER_BRAILLE;
+    config.palette = palette_named("ash");
+    config.bird_size = SKY_BIRD_SIZE;
+    config.birds = COUNT;
+    config.hawks = 1;
+    apply_screen_size(96, 32, 768, 512);
+    assert(rasterise_sprites(frames) == PNG_OK);
+    /* A crowd of the nearest birds over the place a far hawk is. */
+    const int cx = 400, cy = 248;
+    memset(birds, 0, sizeof(birds));
+    for (int i = 0; i < COUNT; i++) {
+        int size = sky_bin_size(SKY_BINS - 1);
+        birds[i].layer = SKY_BINS - 1;
+        birds[i].shape = 0;
+        birds[i].frame = (i * 7) % ROTATION_FRAMES;
+        birds[i].x = cx - size / 2 + (i % 7 - 3) * 3;
+        birds[i].y = cy - size / 2 + (i / 7 - 3) * 3;
+    }
+    memset(hawks, 0, sizeof(hawks));
+    hawks[0].x = cx;
+    hawks[0].y = cy;
+    hawks[0].layer = 0;
+    assert(png_image_alloc(&canvas, screen.width, screen.height) == PNG_OK);
+    compose_onto(&canvas, frames, birds, 0);
+    assert(cells_init(&cells, 1) == CELLS_OK && cells_resize(&cells, 96, 32) == CELLS_OK);
+    cells_read(&cells, CELLS_BRAILLE, &canvas, screen.cell_width, screen.cell_height);
+    cell_t *under = cells_at(&cells, cx / screen.cell_width, cy / screen.cell_height);
+    assert(under != NULL && under->glyph != 0);
+    /* The birds outvote it... */
+    assert(memcmp(under->fg, hawk_colour(), 3) != 0);
+    colour_the_hawks_in(&cells, frames);
+    /* ...and then it is there, in its colour, on the dots that were. */
+    assert(memcmp(under->fg, hawk_colour(), 3) == 0 && under->glyph != 0);
+    int hawk_cells = 0;
+    for (int row = 0; row < 32; row++)
+        for (int col = 0; col < 96; col++) {
+            cell_t *cell = cells_at(&cells, col, row);
+            hawk_cells += cell->glyph != 0 && memcmp(cell->fg, hawk_colour(), 3) == 0;
+        }
+    assert(hawk_cells >= 1 && hawk_cells <= 9);
+    /* The flat sky's cells are left as they were read. */
+    sky_mode = 0;
+    cells_read(&cells, CELLS_BRAILLE, &canvas, screen.cell_width, screen.cell_height);
+    uint8_t read_as[3];
+    memcpy(read_as, under->fg, 3);
+    colour_the_hawks_in(&cells, frames);
+    assert(memcmp(under->fg, read_as, 3) == 0);
+    sky_mode = 1;
+
+    cells_destroy(&cells);
+    png_image_free(&canvas);
+    free_sprites(frames);
+    memset(hawks, 0, sizeof(hawks));
+    render_mode = RENDER_KITTY;
+    reset_test_config();
+}
+
+/* The nearest bird of a space is never more than twice the largest --size, on
+ * however big a window: it was hundreds of pixels, and its sprites hundreds of
+ * megabytes. Every size comes down with it, so the depth reads as it did, a hawk
+ * is never smaller than the nearest bird, and the windows people have are as they
+ * were. */
+static void test_a_space_keeps_its_nearest_bird_to_twice_the_largest_size(void) {
+    reset_test_config();
+    sky_mode = 1;
+    config.bird_size = MAX_BIRD_SIZE;
+    apply_screen_size(960, 270, 7680, 4320);
+    assert(sky_bin_size(SKY_BINS - 1) == 2 * MAX_BIRD_SIZE);
+    for (int bin = 1; bin < SKY_BINS; bin++) assert(sky_bin_size(bin) > sky_bin_size(bin - 1));
+    double ratio = (double)sky_bin_size(0) / sky_bin_size(SKY_BINS - 1);
+    assert(fabs(ratio - sky_bin_scale(0) / sky_bin_scale(SKY_BINS - 1)) < 0.02);
+    for (int bin = 0; bin < SKY_BINS; bin++) assert(hawk_size_in_layer(bin) >= sky_bin_size(bin));
+
+    config.bird_size = SKY_BIRD_SIZE;
+    static const int WINDOWS[][2] = {{768, 512}, {1920, 1088}, {3840, 2160}};
+    for (size_t w = 0; w < sizeof(WINDOWS) / sizeof(*WINDOWS); w++) {
+        apply_screen_size(WINDOWS[w][0] / 8, WINDOWS[w][1] / 16, WINDOWS[w][0], WINDOWS[w][1]);
+        double middle = SKY_BIRD_SIZE * sky_picture(screen.width, screen.height) / 512.0;
+        for (int bin = 0; bin < SKY_BINS; bin++) {
+            int size = (int)(middle * sky_bin_scale(bin) + 0.5);
+            assert(sky_bin_size(bin) == (size < MIN_BIRD_SIZE ? MIN_BIRD_SIZE : size));
+        }
+    }
+    reset_test_config();
+}
+
+/* The hawks of a space are drawn once a wing phase, at the nearest size, and the
+ * others are those made smaller: a size, a wing phase and a heading each, as
+ * before, for a third of the time it took to draw them all. */
+static void test_the_far_hawks_of_a_space_are_the_nearest_made_smaller(void) {
+    static png_image_t frames[ROTATION_FRAMES * MAX_SPRITE_SETS];
+    reset_test_config();
+    sky_mode = 1;
+    config.palette = palette_named("ash");
+    config.bird_size = SKY_BIRD_SIZE;
+    apply_screen_size(120, 34, 960, 544);
+    assert(rasterise_sprites(frames) == PNG_OK);
+    for (int wing = 0; wing < WING_PHASES; wing++) {
+        int nearest = hawk_set((SKY_BINS - 1) * WING_PHASES + wing);
+        for (int bin = 0; bin < SKY_BINS - 1; bin++) {
+            int set = hawk_set(bin * WING_PHASES + wing), size = hawk_size_in_layer(bin);
+            for (int i = 0; i < ROTATION_FRAMES; i++) {
+                const png_image_t *got = &frames[set * ROTATION_FRAMES + i];
+                assert(got->pixels != NULL && got->width == size && got->height == size);
+                if (i % 7 != 0) continue;
+                png_image_t expected = {0, 0, NULL};
+                assert(png_resize(&frames[nearest * ROTATION_FRAMES + i], size, size, &expected) ==
+                       PNG_OK);
+                assert(memcmp(got->pixels, expected.pixels, (size_t)size * (size_t)size * 4) == 0);
+                png_image_free(&expected);
+            }
+        }
+    }
+    free_sprites(frames);
+    reset_test_config();
+}
+
+/* Every error that ends a live run after the screen is taken goes through one
+ * place, which gives the screen back before it speaks and keeps the errno it was
+ * to report: a space that could not build its sprites for a bigger window said so
+ * on the alternate screen, and it was gone with it. */
+static void test_an_error_after_the_screen_is_taken_is_said_after_it_is_given_back(void) {
+    static char output[1 << 16];
+    int master = posix_openpt(O_RDWR | O_NOCTTY);
+    assert(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0);
+    const char *name = ptsname(master);
+    assert(name != NULL);
+    int terminal = open(name, O_RDWR | O_NOCTTY);
+    assert(terminal >= 0);
+    fflush(NULL);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        alarm(20);
+        if (dup2(terminal, STDIN_FILENO) < 0 || dup2(terminal, STDOUT_FILENO) < 0 ||
+            dup2(terminal, STDERR_FILENO) < 0)
+            _exit(99);
+        terminal_is_raw = terminal_restored = alt_screen_is_on = sprites_uploaded = 0;
+        atexit(restore_terminal); /* As main does, so that leaving without the call would show. */
+        enter_alt_screen();
+        errno = ENOENT;
+        leave_saying("cbirds: it broke: %s\n", strerror(errno));
+        _exit(98);
+    }
+    close(terminal);
+    size_t length = 0;
+    int status = 0;
+    for (;;) {
+        if (readable_within(master, 100) > 0) {
+            ssize_t got = read(master, output + length, sizeof(output) - 1 - length);
+            if (got <= 0) break;
+            length += (size_t)got;
+        }
+        if (waitpid(child, &status, WNOHANG) == child) {
+            child = -1;
+            break;
+        }
+    }
+    if (child > 0) assert(waitpid(child, &status, 0) == child);
+    while (readable_within(master, 100) > 0) {
+        ssize_t got = read(master, output + length, sizeof(output) - 1 - length);
+        if (got <= 0) break;
+        length += (size_t)got;
+    }
+    output[length] = '\0';
+    close(master);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_FAILURE);
+    const char *told = strstr(output, "cbirds: it broke: No such file or directory");
+    const char *taken = strstr(output, ALT_SCREEN_ON);
+    const char *given_back = NULL;
+    for (const char *at = strstr(output, ALT_SCREEN_OFF); at != NULL;
+         at = strstr(at + 1, ALT_SCREEN_OFF))
+        given_back = at;
+    assert(taken != NULL && given_back != NULL && told != NULL);
+    assert(told > given_back && given_back > taken);
+}
+
+/* Paused, a space still shows what has changed: the birds + adds, the hawk k calls
+ * and a window of another size, each where the camera sees it. Nothing flies, and
+ * no wing beats. */
+static void test_a_paused_space_shows_what_changed(void) {
+    enum { ROOM = 400 };
+    bird_t *birds = calloc(ROOM, sizeof(*birds)), *snapshot = malloc(sizeof(*snapshot) * ROOM);
+    spatial_grid_t grid;
+    kitty_graphics_t graphics;
+    int quiet = open("/dev/null", O_WRONLY);
+
+    assert(birds != NULL && snapshot != NULL && quiet >= 0);
+    reset_test_config();
+    sky_mode = 1;
+    legend_enabled = 0;
+    config.birds = 100;
+    config.bird_size = SKY_BIRD_SIZE;
+    apply_screen_size(96, 32, 768, 512);
+    seed_random(5);
+    assert(spatial_grid_init(&grid, SPATIAL_CELL_SIZE) == SPATIAL_GRID_OK);
+    assert(spatial_grid_prepare(&grid, screen.width, screen.height, ROOM) == SPATIAL_GRID_OK);
+    assert(kitty_graphics_init(&graphics, quiet) == KITTY_GRAPHICS_OK);
+    initialize_birds(birds);
+    for (int frame = 0; frame < 5; frame++) fly(birds, snapshot, &grid);
+
+    paused = 1;
+    step_once = 0;
+    hawk_sets_built = 1;
+    double clock = sky.world.clock;
+    int from = config.birds;
+    assert(feed_input("++") == 1 && population_changed && config.birds > from);
+    population_changed = 0;
+    assert(resize_the_flock(&birds, &snapshot, from, config.birds) == 1);
+    assert(feed_input("k") == 1 && config.hawks == 1);
+    apply_screen_size(120, 40, 960, 640);
+    int wings[100];
+    for (int i = 0; i < from; i++) wings[i] = birds[i].wing;
+    assert(render_frame(&graphics, birds, snapshot, &grid) == KITTY_GRAPHICS_OK);
+    assert(sky.world.clock == clock && sky.world.hawk_count == 1);
+
+    sky_camera_t camera;
+    sky_camera(&camera);
+    sky_view_t *views = malloc(sizeof(*views) * (size_t)config.birds), hawk;
+    assert(views != NULL);
+    sky_view(&sky.world, config.birds, &camera, views);
+    int seen = 0;
+    for (int i = 0; i < config.birds; i++) {
+        if (!views[i].visible) continue;
+        double half = sky_bin_size(views[i].bin) / 2.0;
+        assert(birds[i].x == views[i].x - half && birds[i].y == views[i].y - half);
+        seen++;
+    }
+    assert(seen > config.birds * 9 / 10);
+    sky_hawk_view(&sky.world, 0, &camera, &hawk);
+    assert(hawk.visible && hawks[0].x == hawk.x && hawks[0].y == hawk.y);
+    for (int i = 0; i < from; i++) assert(birds[i].wing == wings[i]);
+    free(views);
+
+    paused = 0;
+    kitty_graphics_destroy(&graphics);
+    close(quiet);
+    spatial_grid_destroy(&grid);
+    free(snapshot);
+    free(birds);
+    config.hawks = 0;
+    memset(hawks, 0, sizeof(hawks));
+    reset_test_config();
+}
+
+/* A colour answer is read whatever its width, one to four hex digits a channel and
+ * each channel its own, as X writes them, and as rgba: with an alpha after it. What
+ * is not a colour is not read as one. */
+static void test_a_colour_answer_is_read_whatever_its_digits(void) {
+    static const struct {
+        const char *reply;
+        int ok;
+        uint8_t rgb[3];
+    } CASES[] = {
+        {"\033]11;rgb:ffff/0000/8080\033\\", 1, {255, 0, 128}},
+        {"\033]11;rgb:e5e5/e5e5/e5e5\033\\", 1, {229, 229, 229}},
+        {"\033]11;rgb:e5/e5/e5\007", 1, {229, 229, 229}},
+        {"\033]11;rgb:f/f/f\033\\", 1, {255, 255, 255}},
+        {"\033]11;rgb:0/8/f\033\\", 1, {0, 136, 255}},
+        {"\033]11;rgb:800/800/fff\033\\", 1, {128, 128, 255}},
+        {"\033]11;rgb:ff/8/0800\033\\", 1, {255, 136, 8}},
+        {"\033]11;rgba:0000/ffff/0000/dddd\033\\", 1, {0, 255, 0}},
+        {"\033]4;3;rgb:cdcd/0000/0000\007", 1, {205, 0, 0}},
+        {"\033]11;rgb:12345/0/0\033\\", 0, {0, 0, 0}},
+        {"\033]11;rgb:/0/0\033\\", 0, {0, 0, 0}},
+        {"\033]11;rgb:zz/00/00\033\\", 0, {0, 0, 0}},
+        {"\033]11;rgb:00/00\033\\", 0, {0, 0, 0}},
+        {"\033]11;?\033\\", 0, {0, 0, 0}},
+    };
+    for (size_t i = 0; i < sizeof(CASES) / sizeof(*CASES); i++) {
+        uint8_t rgb[3] = {1, 2, 3};
+        assert(parse_osc_colour(CASES[i].reply, rgb) == CASES[i].ok);
+        if (CASES[i].ok) assert(memcmp(rgb, CASES[i].rgb, 3) == 0);
+    }
+}
+
+/* A terminal whose text is the colour of its ground has told nothing ink can use:
+ * a flock in that colour is not seen, so it is taken for no answer, and the ramp is
+ * ash as it is for a terminal that says nothing. */
+static void test_ink_is_not_built_from_a_text_the_colour_of_its_ground(void) {
+    char asked[256];
+    static const uint8_t GREY[3] = {0x80, 0x80, 0x80};
+    assert(learn_the_ink_from(ANSWER_BOTH, "\033]11;rgb:8080/8080/8080\033\\",
+                              "\033]10;rgb:8080/8080/8080\033\\", GREY, GREY, asked,
+                              sizeof(asked)) == 1);
+    /* And a pair with contrast to give is built as ever. */
+    static const uint8_t BLACK[3] = {0, 0, 0}, WHITE[3] = {255, 255, 255};
+    assert(learn_the_ink_from(ANSWER_BOTH, "\033]11;rgb:0000/0000/0000\033\\",
+                              "\033]10;rgb:ffff/ffff/ffff\033\\", BLACK, WHITE, asked,
+                              sizeof(asked)) == 0);
+}
+
+/* The full help says what --size and three of the sliders are in a space, after the
+ * keys, in lines that fit eighty columns; -h, which is one screen, does not. */
+static void test_the_help_says_what_the_sliders_are_in_a_space(void) {
+    char path[512], text[16384];
+    for (int everything = 0; everything < 2; everything++) {
+        scratch_file(path, sizeof(path), "space-help.txt");
+        FILE *help = fopen(path, "w+");
+        assert(help != NULL);
+        usage(help, "cbirds", everything);
+        rewind(help);
+        size_t length = fread(text, 1, sizeof(text) - 1, help);
+        text[length] = '\0';
+        fclose(help);
+        assert(unlink(path) == 0);
+        const char *note = strstr(text, "In --3d");
+        if (!everything) {
+            assert(note == NULL);
+            continue;
+        }
+        assert(note != NULL && note > strstr(text, "Keys"));
+        assert(strstr(note, "--size") && strstr(note, "--boundary") && strstr(note, "roost"));
+        assert(strstr(note, "--turning") && strstr(note, "a second"));
+        assert(strstr(note, "--perception") && strstr(note, "1 to 13"));
+        int columns = 0;
+        for (const char *c = note; *c != '\0'; c++) {
+            if ((*c & 0xC0) == 0x80) continue;
+            if (*c == '\n') {
+                columns = 0;
+                continue;
+            }
+            assert(++columns <= 80);
+        }
+    }
+}
+
 int main(void) {
     make_scratch();
     trig_lookup_init();
@@ -12011,6 +12383,15 @@ int main(void) {
     test_a_space_settles_what_was_not_asked_for();
     test_a_space_is_refused_with_a_text_and_a_sign();
     test_a_shared_sky_is_refused_with_a_space();
+    test_a_live_frame_of_a_space_stands_for_a_quarter_second_at_most();
+    test_a_hawk_in_a_space_wears_its_colour_in_text();
+    test_a_space_keeps_its_nearest_bird_to_twice_the_largest_size();
+    test_the_far_hawks_of_a_space_are_the_nearest_made_smaller();
+    test_an_error_after_the_screen_is_taken_is_said_after_it_is_given_back();
+    test_a_paused_space_shows_what_changed();
+    test_a_colour_answer_is_read_whatever_its_digits();
+    test_ink_is_not_built_from_a_text_the_colour_of_its_ground();
+    test_the_help_says_what_the_sliders_are_in_a_space();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);
     return 0;

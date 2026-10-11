@@ -932,6 +932,60 @@ static void test_the_camera_makes_room_quickly_and_takes_it_back_slowly(void) {
     sky_destroy(&narrow);
 }
 
+/* None asked for is none found, and nothing is written before the start of the
+ * list it was given: the program never asks for fewer than one, and a caller
+ * that did was told so by a write to the word in front of its array. */
+static void test_no_neighbours_asked_for_is_none_found(void) {
+    sky_rules_t rules = sky_default_rules();
+    sky_t sky;
+    int index[SKY_MAX_NEIGHBOURS + 1];
+    double squared[SKY_MAX_NEIGHBOURS + 1];
+
+    assert(sky_init(&sky, 40, 3) == SKY_OK);
+    sky_populate(&sky, 0, 40, 0);
+    sky_step(&sky, 40, &rules, NULL, 1.0 / 30);
+    assert(sky_index(&sky, 40) == SKY_OK);
+    for (int k = -3; k <= 0; k++) {
+        index[0] = 12345;
+        squared[0] = 6.5;
+        assert(sky_neighbours(&sky, 7, k, 1e9, index + 1, squared + 1) == 0);
+        assert(index[0] == 12345 && squared[0] == 6.5);
+    }
+    assert(sky_neighbours(&sky, 7, 1, 1e9, index + 1, squared + 1) == 1);
+    sky_destroy(&sky);
+}
+
+/* A bird that may not turn still flies, straight on and level: nought over nought
+ * made its roll and its speed nothing a number, and the step then put every bird
+ * of the flock back at the roost. */
+static void test_a_flock_that_may_not_turn_flies_on(void) {
+    sky_rules_t rules = sky_default_rules();
+    sky_t sky;
+
+    rules.turn_rate = 0;
+    assert(sky_init(&sky, 50, 5) == SKY_OK);
+    sky_populate(&sky, 0, 50, 0);
+    double before[50][3];
+    for (int i = 0; i < 50; i++) {
+        before[i][0] = sky.birds[i].x;
+        before[i][1] = sky.birds[i].y;
+        before[i][2] = sky.birds[i].z;
+    }
+    for (int step = 0; step < 30; step++) sky_step(&sky, 50, &rules, NULL, 1.0 / 30);
+    int at_the_roost = 0, moved = 0;
+    for (int i = 0; i < 50; i++) {
+        const sky_bird_t *bird = &sky.birds[i];
+        assert(isfinite(bird->x + bird->y + bird->z + bird->roll + bird->speed));
+        assert(bird->roll == 0 && bird->speed > 0);
+        at_the_roost += bird->x == 0 && bird->y == 0 && bird->z == 0;
+        double dx = bird->x - before[i][0], dy = bird->y - before[i][1],
+               dz = bird->z - before[i][2];
+        moved += sqrt(dx * dx + dy * dy + dz * dz) > 1;
+    }
+    assert(at_the_roost == 0 && moved == 50);
+    sky_destroy(&sky);
+}
+
 int main(void) {
     test_the_nearest_birds_are_the_ones_a_search_of_everything_finds();
     test_an_index_too_fine_for_the_sky_is_cut_coarser();
@@ -956,5 +1010,7 @@ int main(void) {
     test_a_bird_flees_a_hawk_in_reach();
     test_a_hawk_goes_through_its_bird_and_runs_on();
     test_a_hawk_hunts_for_as_long_as_it_is_left();
+    test_no_neighbours_asked_for_is_none_found();
+    test_a_flock_that_may_not_turn_flies_on();
     return 0;
 }

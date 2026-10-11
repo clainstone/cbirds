@@ -416,6 +416,8 @@ static void read_slots(const sky_grid_t *grid, int first, int last, int self, co
 }
 
 int sky_neighbours(const sky_t *sky, int self, int k, double reach, int *index, double *squared) {
+    /* None asked for is none found, and not a write before the start of the list. */
+    if (k <= 0) return 0;
     const sky_grid_t *grid = &sky->grid;
     const sky_bird_t *me = &sky->birds[self];
     nearest_t best = {0, k < SKY_MAX_NEIGHBOURS ? k : SKY_MAX_NEIGHBOURS, {0}, {0}};
@@ -621,7 +623,10 @@ static void fly_one(const sky_t *sky, sky_bird_t *out, int self, const sky_rules
 
     /* It leans into the turn, as far as the turn is sharp. */
     double rate = seconds > 0 ? turned / seconds : 0;
-    double roll_goal = clamp(rate / rules->turn_rate, -1, 1) * ROLL_LIMIT;
+    /* A bird that may not turn does not lean either: nought over nought was a bird
+     * with no roll and no speed, and every one of them was put back at the roost. */
+    double roll_goal =
+        rules->turn_rate > 0 ? clamp(rate / rules->turn_rate, -1, 1) * ROLL_LIMIT : 0;
     out->roll = me->roll + (roll_goal - me->roll) * clamp(seconds / ROLL_MEMORY, 0, 1);
 
     double speed_goal =

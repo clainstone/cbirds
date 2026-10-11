@@ -525,6 +525,40 @@ static void test_reserved_colours_share_buckets_add_up_and_have_a_limit(void) {
     png_image_free(&first);
 }
 
+/* A reserved colour's own bucket is drawn in it, even when a colour of the frame is
+ * nearer the corner the buckets are measured from: the colours a space asks for
+ * exactly were drawn in a neighbour's, a near white as a grey. */
+static void test_a_reserved_colour_draws_its_own_bucket(void) {
+    enum { W = 16, H = 8 };
+    static const uint8_t RESERVED[1][3] = {{244, 244, 246}};
+    static const uint8_t NEIGHBOUR[3] = {237, 237, 240};
+    const char *path = scratch_file("own_bucket.gif");
+    gif_writer_t *writer = NULL;
+    png_image_t frame = {0, 0, NULL};
+    reading_t read;
+
+    assert(png_image_alloc(&frame, W, H) == PNG_OK);
+    for (int i = 0; i < W * H; i++) {
+        memcpy(frame.pixels + i * 4, i % W < 4 ? RESERVED[0] : NEIGHBOUR, 3);
+        frame.pixels[i * 4 + 3] = 255;
+    }
+    assert(gif_open(&writer, path, W, H, 5) == GIF_OK);
+    assert(gif_reserve_colours(writer, RESERVED, 1) == GIF_OK);
+    assert(gif_add_frame(writer, &frame) == GIF_OK);
+    assert(gif_close(writer, NULL, NULL) == GIF_OK);
+    assert(read_gif(path, &read));
+    /* Both colours have entries, the reserved one first... */
+    for (int c = 0; c < 3; c++) assert(read.palette[0][c] == RESERVED[0][c]);
+    /* ...and each is drawn in its own. */
+    for (int c = 0; c < 3; c++) {
+        assert(read.palette[read.indices[0]][c] == RESERVED[0][c]);
+        assert(read.palette[read.indices[W - 1]][c] == NEIGHBOUR[c]);
+    }
+    free(read.indices);
+    png_image_free(&frame);
+    remove(path);
+}
+
 int main(void) {
     make_scratch();
     test_round_trip();
@@ -534,6 +568,7 @@ int main(void) {
     test_a_colour_promised_for_later_has_an_entry_of_its_own();
     test_a_colour_the_first_frame_lacks_can_be_reserved();
     test_reserved_colours_share_buckets_add_up_and_have_a_limit();
+    test_a_reserved_colour_draws_its_own_bucket();
     /* Every test removes what it wrote, so this fails if one did not. */
     assert(rmdir(scratch) == 0);
     return 0;

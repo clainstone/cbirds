@@ -129,6 +129,7 @@ static gif_status_t build_palette(gif_writer_t *w, const png_image_t *frame) {
             w->palette[entry][c] = (uint8_t)(totals[entry][c] / (unsigned)members[entry]);
         counts[chosen[entry]] = 0;
     }
+    int reserved_entries = used;
 
     /* The top entries by count, chosen by repeated selection: two hundred and
      * fifty six passes over the buckets is nothing next to the pixels. */
@@ -173,7 +174,12 @@ static gif_status_t build_palette(gif_writer_t *w, const png_image_t *frame) {
         }
         w->bucket_to_index[bucket] = (uint8_t)best_slot;
     }
-    (void)chosen;
+    /* A reserved colour's own bucket is drawn in it. The nearest entry is measured
+     * from a bucket's corner, and a colour that came from the frame can be nearer
+     * that corner than the reserved one is: the colours somebody asked for exactly
+     * would then be drawn in a neighbour's. */
+    for (int entry = 0; entry < reserved_entries; entry++)
+        w->bucket_to_index[chosen[entry]] = (uint8_t)entry;
     free(counts);
     free(sums);
     w->have_palette = 1;

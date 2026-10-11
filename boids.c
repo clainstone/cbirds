@@ -974,9 +974,17 @@ static int parse_osc_colour(const char *reply, uint8_t rgb[3]) {
     return 1;
 }
 
+/* How long a colour question waits for its answer: a terminal on the same machine
+ * answers in a millisecond or two, and one that never answers costs no more than
+ * this. The tests, whose terminal is another process on a busy machine, wait
+ * longer. */
+static int colour_reply_milliseconds = 60;
+
 static int ask_colour(const char *request, uint8_t rgb[3]) {
     char reply[128];
-    if (terminal_query(request, strlen(request), reply, sizeof(reply), 60) == 0) return 0;
+    if (terminal_query(request, strlen(request), reply, sizeof(reply), colour_reply_milliseconds) ==
+        0)
+        return 0;
     return parse_osc_colour(reply, rgb);
 }
 

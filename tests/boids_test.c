@@ -8287,6 +8287,13 @@ static void test_text_from_a_named_pipe_is_opened_once(void) {
             }
             if (waitpid(run, &status, WNOHANG) == run) break;
         }
+        /* What the run had still to say when it exited: on a busy machine it can
+         * be the whole of it. */
+        while (readable_within(master, 100) > 0) {
+            ssize_t got = read(master, output + length, sizeof(output) - 1 - length);
+            if (got <= 0) break;
+            length += (size_t)got;
+        }
         output[length] = '\0';
         int wrote = 0;
         assert(waitpid(writer, &wrote, 0) == writer);
@@ -10704,6 +10711,7 @@ static int learn_the_ink_from(answer_t answer, const char *background, const cha
         close(master);
         if (dup2(terminal, STDIN_FILENO) < 0 || dup2(terminal, STDOUT_FILENO) < 0) _exit(99);
         ink_is_known = 0;
+        colour_reply_milliseconds = 1000; /* The other end is a process on a busy machine. */
         int learned = learn_the_ink(SKY_DIM);
         if (!learned) _exit(ink_is_known ? 98 : 1);
         if (!ink_is_known || memcmp(ink_ground, expected_background, 3) != 0 ||

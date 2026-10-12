@@ -183,21 +183,10 @@ flock and it scatters. Press `q` and it flies off the top. Left alone for a
 minute, it starts moving the sliders itself; any key takes them back.
 
 `h` opens the panel of sliders in the corner, and `--panel` opens it from the
-start. Lowercase lowers, uppercase raises, one press is one notch. With two
-flocks or more there is one row more, `avoidance` on `g`/`G`.
-
-```
-╭────────────────────────────────────╮
-│ boundary   ▓▓▓▓░░░░░░░░  0.20  b/B │
-│ separation ▓▓▓▓░░░░░░░░ 0.005  s/S │
-│ alignment  ▓▓▓▓░░░░░░░░  1.50  a/A │
-│ turning    ▓▓▓▓▓▓▓▓░░░░   70°  t/T │
-│ perception ▓▓▓▓▓▓░░░░░░  36px  p/P │
-│ speed      ▓░░░░░░░░░░░  0.4×  v/V │
-│ frame        0.6ms    31KB  60fps  │
-│ quit       q                       │
-╰────────────────────────────────────╯
-```
+start: `boundary` on `b`/`B`, `separation` on `s`/`S`, `alignment` on `a`/`A`,
+`turning` on `t`/`T`, `perception` on `p`/`P`, `speed` on `v`/`V`, and with two
+flocks or more `avoidance` on `g`/`G`. Lowercase lowers, uppercase raises, one
+press is one notch.
 
 | key | | key | |
 |---|---|---|---|

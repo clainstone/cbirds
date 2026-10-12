@@ -41,6 +41,22 @@ dependencies. Every clip on this page was recorded by cbirds itself.
 <td align="center"><code>cbirds --render kitty --depth --trails --color ice</code></td>
 </tr>
 <tr>
+<td width="50%"><img src="docs/code.gif" alt="Syntax-highlighted C, the three rules from boids.c: a wave from the middle lifts the letters, they fly as a flock, and each one lands back on the cell it left"></td>
+<td width="50%"><img src="docs/dusk.gif" alt="A murmuration of two thousand birds at dusk, in three dimensions: those near the camera large and peach, those far from it small and indigo, and a stream of the nearest sweeps round in front of the camera before the flock folds back into one body"></td>
+</tr>
+<tr>
+<td align="center"><code>pygmentize -f 16m -O style=monokai docs/rules.c | cbirds</code></td>
+<td align="center"><code>cbirds --render kitty --3d --color dusk</code></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/hello.gif" alt="Birds gather into the word HELLO, red through violet, and hover in their places while the rest of the flock wheels round it"></td>
+<td width="50%"><img src="docs/seconds.gif" alt="The flock tells the time, 12:34:56, mint through to violet: the seconds tick as their birds hop over to the next digit, and at 12:35 the digit of the minute that changes lets go and other birds write the new one"></td>
+</tr>
+<tr>
+<td align="center"><code>cbirds --render kitty --say "hello" --color prism</code></td>
+<td align="center"><code>cbirds --render kitty --clock-at 12:34:56 --seconds --color aurora</code></td>
+</tr>
+<tr>
 <td width="50%"><img src="docs/braille.gif" alt="The same flock and hawks in braille dots, as a terminal without a graphics protocol shows it"></td>
 <td width="50%"><img src="docs/sextants.gif" alt="The flock in sextant blocks, as a text terminal with a font from 2020 or later shows it"></td>
 </tr>

@@ -27,6 +27,38 @@ make
 ./cbirds --record docs/depth.gif --record-fps 25 --record-seconds 8 \
          --record-size 64x18 -n 160 -s 14 --color ice --depth --trails --speed 1 --seed 9
 
+# Code that flies: docs/rules.c is the loop in flock_direction(), in boids.c,
+# that sums the three rules, with the rest of it left out and its long lines
+# broken so that it fits sixteen lines of 48 columns and none wraps; pygmentize
+# colours it. A GIF of text is drawn in cells of 12 by 20 pixels, so 48x16 cells
+# is 576x320. It opens on the code at rest. At seed 64 the wave starts in the
+# middle of it and the last letter is home 21.5 seconds in, the soonest of 64
+# seeds, so 23 seconds end on the code at rest again and the GIF loops without a
+# jump. Ten frames a second, as for the letters further down.
+pygmentize -f 16m -O style=monokai docs/rules.c | ./cbirds --record docs/code.gif \
+         --record-fps 10 --record-seconds 23 --record-size 48x16 --seed 64
+
+# The murmuration at dusk, beside the code: 72x20 cells is 576x320, the same
+# size. No hawk, and the default 2000 birds. A space has no BOIDS to write, so
+# it opens on the flock. Seed 96 of 120 that were recorded: the nearest birds
+# pour out in a stream that sweeps round in front of the camera, and the flock
+# folds back into one body much as it opened, so the loop barely jumps. Half the
+# seeds are over 2.5 MB at this size; this one is 2.1.
+./cbirds --record docs/dusk.gif --record-fps 25 --record-seconds 8 \
+         --record-size 72x20 --3d --color dusk --seed 96
+
+# Two signs, at the gallery's size and rate, each in a ramp the gallery had not
+# shown: the colour runs along the text from one end of the ramp to the other,
+# and the flock writes it from the first frame. A sign sizes its birds to its
+# letters, so there is no -s. 400 birds write HELLO in strokes that read at half
+# the width of the page; a clock with its seconds is eight characters, and takes
+# 500. 12:34:56 reads the same on a twelve and a twenty-four hour clock, and four
+# seconds in the minute changes while the seconds hop.
+./cbirds --record docs/hello.gif --record-fps 25 --record-seconds 8 \
+         --record-size 64x18 -n 400 --say "hello" --color prism --seed 5
+./cbirds --record docs/seconds.gif --record-fps 25 --record-seconds 8 \
+         --record-size 64x18 -n 500 --clock-at 12:34:56 --seconds --color aurora --seed 5
+
 # The text ones are what a terminal shows by default: under
 # --render braille or sextants the GIF is of the cells, not of the pixels.
 # 80 columns is an honest text terminal; dots are cheap, so they get more

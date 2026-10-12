@@ -182,9 +182,9 @@ It opens by writing BOIDS, lets go, and flocks. Move the pointer into the
 flock and it scatters. Press `q` and it flies off the top. Left alone for a
 minute, it starts moving the sliders itself; any key takes them back.
 
-`h` opens the sliders in the corner, and `--panel` opens them from the start.
-Lowercase lowers, uppercase raises, one press is one notch. With two flocks or
-more there is one row more, `avoidance` on `g`/`G`.
+`h` opens the panel of sliders in the corner, and `--panel` opens it from the
+start. Lowercase lowers, uppercase raises, one press is one notch. With two
+flocks or more there is one row more, `avoidance` on `g`/`G`.
 
 ```
 ╭────────────────────────────────────╮
@@ -282,7 +282,7 @@ runs along the text, from one end of the ramp to the other.
 
 <p align="center"><img src="docs/say.gif" alt="Birds gather into the words BACK IN FIVE on two lines, and hover in their places while the rest of the flock wheels round the sign"></p>
 
-<p align="center"><code>cbirds --render kitty --say "back in five"</code></p>
+<p align="center"><code>cbirds --render kitty --say "back in five" --color ember</code></p>
 
 The rest of the flock wheels round the sign, not through it: all of it the same
 way, on an ellipse round the text, as one river that bunches and thins, and the
@@ -326,7 +326,7 @@ a few seconds, and the flock writes the next time.
 
 <p align="center"><img src="docs/clock.gif" alt="The flock writes 10:09, and a few seconds later the two digits that change let go and other birds write 10:10 while the rest of the time stays where it is"></p>
 
-<p align="center"><code>cbirds --render kitty --clock-at 10:09:52</code></p>
+<p align="center"><code>cbirds --render kitty --clock-at 10:09:52 --color ember</code></p>
 
 `--seconds` shows the seconds too, HH:MM:SS, and is a clock on its own, as
 `--clock-at` is. A digit of the seconds is not let go: its own birds hop over to
@@ -378,20 +378,19 @@ TRAPALRM() { cbirds --screensaver --clock }
 ## Three dimensions
 
 `--3d` takes the flock off the plane and into a sky: a murmuration over its
-roost, seen from a camera that goes once round it every two minutes, so that
-the depth shows even in a still picture. A nearer bird is bigger and brighter
-than a far one, and a bird flying at the camera is short where one flying
-across it is long.
+roost, seen from a camera that goes once round it every two minutes. The depth
+shows even in a still picture: a nearer bird is bigger and brighter than a far
+one, and a bird flying at the camera is short where one flying across it is
+long.
 
 <p align="center"><img src="docs/3d.gif" alt="A murmuration in ember over a dark sky and a blue hawk: the birds near the camera are large and bright, those far from it small and dim, and the flock closes into a ring around the hawk and then folds into arcs and sheets"></p>
 
 <p align="center"><code>cbirds --render kitty --3d --color ember --hawks 1</code></p>
 
-The three rules are the same, but a bird heeds its seven nearest neighbours
-however far off they are, as starlings do, and not everything within a radius.
-It turns at a limited rate a second, so it banks. A roost calls it home when it
-strays, and the air above the roost moves slowly, which folds the flock into
-sheets and ribbons.
+The three rules are the same, but a bird heeds its seven nearest neighbours, as
+starlings do, and not everything within a radius. It turns at a limited rate a
+second, so it banks. A roost calls it home when it strays, and the air above
+the roost moves slowly, which folds the flock into sheets and ribbons.
 
 Without `-n`, `-s` or `-c` there are 2000 birds, of 8 pixels, or 5 in text, in
 `ink`: the ramp from your terminal's text colour to its background, asked for

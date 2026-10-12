@@ -3,10 +3,10 @@
  *
  * The flat flock steers on x, y and a heading. This one flies in a space: a
  * position and a heading in three dimensions, the same three rules, and a bird
- * heeds its seven or so nearest neighbours however far off they are, rather than
- * everything within a radius, because that is what starlings were measured doing
- * (Ballerini et al., PNAS 2008) and it is what lets a flock stay one body while
- * its density rises and falls. Turning is limited per second, so a bird banks.
+ * heeds its seven or so nearest neighbours, rather than everything within a
+ * radius, because that is what starlings were measured doing (Ballerini et al.,
+ * PNAS 2008) and it is what lets a flock stay one body while its density rises
+ * and falls. Turning is limited per second, so a bird banks.
  * There are no walls: a roost pulls a bird home when it strays, sideways towards
  * the roost and up or down towards a preferred height, as Hildenbrandt, Carere
  * and Hemelrijk modelled it (Behavioral Ecology 2010), and the air over it moves.
@@ -65,7 +65,7 @@ typedef struct {
 /* Everything the flight depends on, in metres and seconds, so that the caller's
  * sliders are weights here and nothing else. */
 typedef struct {
-    int neighbours; /* Nearest birds heeded, however far. */
+    int neighbours; /* How many of the nearest birds are heeded. */
     double reach;   /* And the farthest any of them may be. */
     double separation, alignment, cohesion;
     double roost;     /* The pull home. */

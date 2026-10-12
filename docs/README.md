@@ -6,9 +6,10 @@ Nothing outside this repository touched them. To regenerate:
 ```sh
 make
 
-# Every clip opens with the three seconds in which the flock writes BOIDS, so
-# eight seconds is five of flocking. Each flies slower than the tuned pace, at
-# its own notch: --speed 0 is 0.2x, 1 is 0.4x (the default), 2 is 0.6x.
+# A clip of the flock with no sign, no text and no --3d opens with the three
+# seconds in which it writes BOIDS, so eight seconds is five of flocking. Each
+# flies slower than the tuned pace, at its own notch: --speed 0 is 0.2x, 1 is
+# 0.4x (the default), 2 is 0.6x.
 
 # The clip at the top: two hawks through an ice-blue flock, at a fifth of the
 # pace and at 50 frames a second, the most a GIF can carry. 96x32 cells is
@@ -28,13 +29,15 @@ make
          --record-size 64x18 -n 160 -s 14 --color ice --depth --trails --speed 1 --seed 9
 
 # Code that flies: docs/rules.c is the loop in flock_direction(), in boids.c,
-# that sums the three rules, with the rest of it left out and its long lines
-# broken so that it fits sixteen lines of 48 columns and none wraps; pygmentize
-# colours it. A GIF of text is drawn in cells of 12 by 20 pixels, so 48x16 cells
-# is 576x320. It opens on the code at rest. At seed 64 the wave starts in the
-# middle of it and the last letter is home 21.5 seconds in, the soonest of 64
-# seeds, so 23 seconds end on the code at rest again and the GIF loops without a
-# jump. Ten frames a second, as for the letters further down.
+# that sums the three rules, with the rest of it left out, its long lines broken
+# and its one double declaration split in two, so that it fits sixteen lines of
+# 48 columns and none wraps; pygmentize colours it, Pygments 2.17.2 here, and
+# another version may colour it a little differently. A GIF of text is drawn in
+# cells of 12 by 20 pixels, so 48x16 cells is 576x320. It opens on the code at
+# rest. At seed 64 the wave starts in the middle of it and the last letter is
+# home 21.5 seconds in, the soonest of 64 seeds, so 23 seconds end on the code
+# at rest again and the GIF loops without a jump. Ten frames a second, as for
+# the letters further down.
 pygmentize -f 16m -O style=monokai docs/rules.c | ./cbirds --record docs/code.gif \
          --record-fps 10 --record-seconds 23 --record-size 48x16 --seed 64
 
@@ -81,13 +84,13 @@ cat docs/neofetch.txt | ./cbirds --record docs/letters.gif --record-fps 10 \
 # seconds at least, so eight seconds show the writing, the hovering and the
 # flock wheeling round it. 400 birds are enough for ten letters on two lines.
 ./cbirds --record docs/say.gif --record-fps 20 --record-seconds 8 \
-         --record-size 64x18 -n 400 --say "back in five" --seed 5
+         --record-size 64x18 -n 400 --say "back in five" --color ember --seed 5
 
 # The clock, started eight seconds before the next minute so that the change
 # of minute is in the clip: at 8 seconds the two digits that change let go and
 # other birds write the new ones, and the rest of the time does not move.
 ./cbirds --record docs/clock.gif --record-fps 20 --record-seconds 14 \
-         --record-size 64x18 -n 300 --clock-at 10:09:52 --seed 5
+         --record-size 64x18 -n 300 --clock-at 10:09:52 --color ember --seed 5
 
 # The murmuration, in ember and with a hawk. With no terminal to ask, ink falls
 # back to ash and the birds are grey, so the colour is named. The size of the

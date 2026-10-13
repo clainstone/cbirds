@@ -83,8 +83,9 @@ for `sudo apt install ./cbirds_*.deb`.
 
 ### Nix flake
 
-Linux and macOS, on x86_64 and aarch64. With Nix and the `nix-command` and
-`flakes` experimental features enabled, run directly from this fork:
+Linux on x86_64 and aarch64, macOS on Apple silicon. With Nix and the
+`nix-command` and `flakes` experimental features enabled, run directly from
+this repository:
 
 ```sh
 nix run github:clainstone/cbirds
@@ -96,7 +97,7 @@ Pass cbirds options after `--`, for example for sprites in Kitty or Ghostty:
 nix run github:clainstone/cbirds -- --render kitty --hawks 2 --color ice
 ```
 
-From a local checkout of this fork, use `nix run .`.
+From a local checkout of this repository, use `nix run .`.
 
 ### From source
 

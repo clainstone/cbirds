@@ -8,10 +8,17 @@
       systems = [
         "x86_64-linux"
         "aarch64-linux"
-        "x86_64-darwin"
         "aarch64-darwin"
       ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
+      # The version cbirds --version prints, so it moves with each release
+      version = nixpkgs.lib.pipe ./boids.c [
+        builtins.readFile
+        (nixpkgs.lib.splitString "\n")
+        (map (builtins.match "#define CBIRDS_VERSION \"(.*)\""))
+        (nixpkgs.lib.findFirst (m: m != null) null)
+        builtins.head
+      ];
     in
     {
       packages = forAllSystems (system:
@@ -23,7 +30,7 @@
 
           cbirds = pkgs.stdenv.mkDerivation {
             pname = "cbirds";
-            version = "1.6.0";
+            inherit version;
             src = pkgs.lib.cleanSource self;
 
             nativeBuildInputs = [ pkgs.installShellFiles ];

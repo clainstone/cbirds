@@ -78,6 +78,16 @@ macOS and Linux. Completions for bash, zsh and fish come with it, and
 brew install clainstone/tap/cbirds
 ```
 
+### MacPorts
+
+macOS, from the [port](https://ports.macports.org/port/cbirds/). Completions
+for bash, zsh and fish come with it, and
+`sudo port selfupdate && sudo port upgrade outdated` keeps it up to date.
+
+```
+sudo port install cbirds
+```
+
 ### apt
 
 Debian 12, Ubuntu 22.04 and later, and their derivatives, on amd64 or arm64,
@@ -147,6 +157,12 @@ The second line removes the tap as well; leave it out to keep it.
 ```
 brew uninstall cbirds
 brew untap clainstone/tap
+```
+
+### MacPorts
+
+```
+sudo port uninstall cbirds
 ```
 
 ### apt

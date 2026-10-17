@@ -15,13 +15,13 @@ A flock of birds in your terminal.
 <a href="https://github.com/fosslife/awesome-ricing#show-off-scripts"><img src="https://img.shields.io/badge/mentioned%20in-Awesome%20Ricing-FC60A8?logo=awesomelists&logoColor=white" alt="mentioned in Awesome Ricing"></a>
 </p>
 
-<p align="center"><img src="docs/demo.gif" alt="The flock writes BOIDS, lets go, and parts around two scarlet hawks in slow motion"></p>
+<p align="center"><img src="docs/hero.gif" alt="A murmuration of a thousand birds in three dimensions, in red, yellow, green and blue: it stretches into a long band, splits in two, opens into a loose cloud and gathers again"></p>
 
-<p align="center"><code>cbirds --render kitty --hawks 2 --color ice --speed 0</code></p>
+<p align="center"><code>cbirds --render kitty --3d --color prism</code></p>
 
 Craig Reynolds' boids, drawn in braille in any terminal, and as sprites over
 the Kitty graphics protocol in Kitty and Ghostty. One C99 program, no
-dependencies. Every clip on this page was recorded by cbirds itself.
+dependencies. Every clip on this page but the first was recorded by cbirds itself.
 
 <table>
 <tr>

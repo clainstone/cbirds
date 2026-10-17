@@ -1,7 +1,8 @@
 # The clips in the README
 
-Every one of them was recorded by cbirds itself, with its own GIF encoder.
-Nothing outside this repository touched them. To regenerate:
+Every one of them but hero.gif, the clip at the top, was recorded by cbirds
+itself, with its own GIF encoder. Nothing outside this repository touched them.
+To regenerate:
 
 ```sh
 make
@@ -11,9 +12,10 @@ make
 # flies slower than the tuned pace, at its own notch: --speed 0 is 0.2x, 1 is
 # 0.4x (the default), 2 is 0.6x.
 
-# The clip at the top: two hawks through an ice-blue flock, at a fifth of the
-# pace and at 50 frames a second, the most a GIF can carry. 96x32 cells is
-# 768x512 pixels, which GitHub shows at full size on a laptop.
+# demo.gif, which opened the README until hero.gif took its place: two hawks
+# through an ice-blue flock, at a fifth of the pace and at 50 frames a second,
+# the most a GIF can carry. 96x32 cells is 768x512 pixels, which GitHub shows
+# at full size on a laptop.
 ./cbirds --record docs/demo.gif --record-fps 50 --record-seconds 8 \
          --record-size 96x32 -n 300 -s 14 --color ice --hawks 2 --speed 0 --seed 33
 
@@ -116,7 +118,7 @@ and cbirds says so rather than pretending.
 
 A GIF frame costs about three bits per bird pixel, so the size of a clip is set
 by how many birds are on the screen and how big they are, not by the
-resolution. The clip at the top, 300 birds at fourteen pixels for eight
+resolution. demo.gif, 300 birds at fourteen pixels for eight
 seconds at 50 frames a second, with two hawks, is 5.3 megabytes; the text clips are a fraction of
 that, because dots compress. The cost is birds times sprite area times frames,
 so a slower, smoother clip pays for its frames with birds, not with
@@ -129,3 +131,11 @@ playable in any terminal with `asciinema play docs/demo.cast`.
 `--record` needs no terminal at all. `--snapshot FILE` does, because it
 photographs a live frame. The picture is what the terminal was showing, at its
 size in pixels: sprites under Kitty, dots or blocks anywhere else.
+
+hero.gif is the one clip cbirds did not record: a screen recording of
+`cbirds --render kitty --3d --color prism` in a terminal window, 7.4 seconds,
+made into a GIF with ffmpeg at 30 frames a second and 900 pixels wide:
+
+```sh
+ffmpeg -i new-cbirds.mp4 -vf "fps=30,scale=900:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle" -loop 0 docs/hero.gif
+```

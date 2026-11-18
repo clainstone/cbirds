@@ -11512,14 +11512,16 @@ static void test_a_space_records_headless(void) {
     reset_test_config();
 }
 
-/* The ramps that were there are where they were, and ink comes after them. */
+/* The ramps that were there are where they were, a new fixed ramp goes after
+ * them, and ink, learned from the terminal like theme, stays last. */
 static void test_ink_is_a_ramp_after_the_others(void) {
-    static const char *const OLD[] = {"theme",  "ember", "ice",    "acid", "matrix",
-                                      "aurora", "prism", "potion", "dusk", "ash"};
-    assert(PALETTE_COUNT == 11);
-    for (int i = 0; i < 10; i++) assert(strcmp(PALETTES[i].name, OLD[i]) == 0);
-    assert(strcmp(PALETTES[10].name, "ink") == 0 && palette_named("ink") == 10);
-    assert(PALETTES[10].shades == 5);
+    static const char *const FIXED[] = {"theme", "ember",  "ice",  "acid", "matrix", "aurora",
+                                        "prism", "potion", "dusk", "ash",  "gta6"};
+    enum { FIXED_COUNT = sizeof(FIXED) / sizeof(*FIXED) };
+    assert(PALETTE_COUNT == FIXED_COUNT + 1);
+    for (int i = 0; i < FIXED_COUNT; i++) assert(strcmp(PALETTES[i].name, FIXED[i]) == 0);
+    assert(strcmp(PALETTES[FIXED_COUNT].name, "ink") == 0 && palette_named("ink") == FIXED_COUNT);
+    assert(PALETTES[FIXED_COUNT].shades == 5);
 }
 
 /* A recording's table of colours is made from its first frame, and in a space the

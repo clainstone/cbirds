@@ -1178,6 +1178,9 @@ static const uint8_t DUSK_TINTS[][3] = {
 static const uint8_t ASH_TINTS[][3] = {
     {244, 244, 246}, {206, 208, 214}, {164, 168, 178}, {124, 128, 140}, {88, 92, 104},
 };
+static const uint8_t GTA6_TINTS[][3] = {
+    {255, 214, 92}, {255, 150, 64}, {255, 84, 128}, {214, 64, 196}, {124, 72, 230},
+};
 /* What the embedded sprite is actually painted, for the palettes that leave it
  * alone: a hawk still has to stand off that. */
 static const uint8_t SPRITE_OWN_COLOUR[3] = {237, 28, 36};
@@ -1195,6 +1198,8 @@ static const palette_t PALETTES[] = {
      PNG_TINT_REPLACE},
     {"dusk", "the sky at dusk, peach through to indigo", 5, DUSK_TINTS, PNG_TINT_REPLACE},
     {"ash", "ash, white through to slate grey", 5, ASH_TINTS, PNG_TINT_REPLACE},
+    {"gta6", "the sunset of the game it is named after, gold to violet", 5, GTA6_TINTS,
+     PNG_TINT_REPLACE},
     {"ink", "the terminal's text colour, fading into its background", 5,
      (const uint8_t (*)[3])ink_tints, PNG_TINT_REPLACE},
 };
@@ -5099,7 +5104,7 @@ static const option_t OPTIONS[] = {
      "Sliders   0 to 12, as the panel shows them", 0},
 
     {'c', "color", "palette", OPTION_ENUM, &config.palette, 0, 0, PALETTE_NAMES, "RAMP",
-     "theme, ember, ice, acid, matrix, aurora, prism, potion, dusk, ash, ink", "Look", 1},
+     "theme, ember, ice, acid, matrix, aurora, prism, potion, dusk, ash, gta6, ink", "Look", 1},
     {0, "shape", NULL, OPTION_ENUM, &config.shape, 0, 0, SHAPE_NAMES, "NAME",
      "bird, arrow, plane, dot", "Look", 1},
     {0, "sprite", NULL, OPTION_STRING, &sprite_path, 0, 0, NULL, "FILE",

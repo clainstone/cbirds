@@ -520,7 +520,7 @@ Sliders   0 to 12, as the panel shows them
       --avoidance NOTCH         how much flocks keep out of each other's way (default 4)
 
 Look
-  -c, --color RAMP              theme, ember, ice, acid, matrix, aurora, prism, potion, dusk, ash, ink
+  -c, --color RAMP              theme, ember, ice, acid, matrix, aurora, prism, potion, dusk, ash, gta6, ink
       --shape NAME              bird, arrow, plane, dot
       --sprite FILE             a PNG you supply, kept in its own colours
   -e, --trails                  faint tails behind the flock
